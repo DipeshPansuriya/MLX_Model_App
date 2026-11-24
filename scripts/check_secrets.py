@@ -42,29 +42,59 @@ RULES: list[tuple[str, str, str, str]] = [
     ("SEC-005", "OpenAI-style key", r"sk-(?:proj-|ant-)?[A-Za-z0-9_\-]{20,}", "block"),
     ("SEC-006", "Anthropic key", r"sk-ant-[A-Za-z0-9\-_]{20,}", "block"),
     ("SEC-007", "AWS access key id", r"AKIA[0-9A-Z]{16}", "block"),
-    ("SEC-008", "AWS secret access key assignment",
-     r"aws_secret_access_key\s*[=:]\s*['\"]?[A-Za-z0-9/+=]{40}", "block"),
+    (
+        "SEC-008",
+        "AWS secret access key assignment",
+        r"aws_secret_access_key\s*[=:]\s*['\"]?[A-Za-z0-9/+=]{40}",
+        "block",
+    ),
     ("SEC-009", "Google API key", r"AIza[0-9A-Za-z\-_]{35}", "block"),
     ("SEC-010", "Slack token", r"xox[baprs]-[0-9A-Za-z\-]{10,}", "block"),
     ("SEC-011", "Stripe live key", r"sk_live_[0-9A-Za-z]{24,}", "block"),
     ("SEC-012", "Hugging Face token", r"hf_[A-Za-z0-9]{30,}", "block"),
-    ("SEC-013", "Private key block", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----", "block"),
-    ("SEC-014", "JSON Web Token", r"eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}", "block"),
-
+    (
+        "SEC-013",
+        "Private key block",
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+        "block",
+    ),
+    (
+        "SEC-014",
+        "JSON Web Token",
+        r"eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}",
+        "block",
+    ),
     # Generic assignments — higher false-positive rate, so scoped and warned
-    ("SEC-020", "Hardcoded password assignment",
-     r"(?i)\b(?:password|passwd|pwd)\s*[=:]\s*['\"][^'\"\s]{8,}['\"]", "block"),
-    ("SEC-021", "Hardcoded secret assignment",
-     r"(?i)\b(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[=:]\s*['\"][^'\"\s]{12,}['\"]",
-     "block"),
+    (
+        "SEC-020",
+        "Hardcoded password assignment",
+        r"(?i)\b(?:password|passwd|pwd)\s*[=:]\s*['\"][^'\"\s]{8,}['\"]",
+        "block",
+    ),
+    (
+        "SEC-021",
+        "Hardcoded secret assignment",
+        r"(?i)\b(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[=:]\s*['\"][^'\"\s]{12,}['\"]",
+        "block",
+    ),
     ("SEC-022", "Bearer token literal", r"(?i)bearer\s+[A-Za-z0-9\-._~+/]{20,}=*", "warn"),
-    ("SEC-023", "Connection string with inline password",
-     r"(?i)(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:[^@\s]+@", "block"),
+    (
+        "SEC-023",
+        "Connection string with inline password",
+        r"(?i)(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:[^@\s]+@",
+        "block",
+    ),
     # A long random-looking value assigned to an uppercase name: the .env shape.
     # Requires mixed case plus a digit so shell variables and paths do not match.
-    ("SEC-024", "Env-style secret assignment",
-     r"(?m)^[A-Z][A-Z0-9_]{2,}\s*=\s*[\"']?(?=[A-Za-z0-9_\-]*[a-z])(?=[A-Za-z0-9_\-]*[A-Z])"
-     r"(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}[\"']?\s*$", "warn"),
+    (
+        "SEC-024",
+        "Env-style secret assignment",
+        (
+            r"(?m)^[A-Z][A-Z0-9_]{2,}\s*=\s*[\"']?(?=[A-Za-z0-9_\-]*[a-z])"
+            r"(?=[A-Za-z0-9_\-]*[A-Z])(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}[\"']?\s*$"
+        ),
+        "warn",
+    ),
 ]
 
 COMPILED = [(rid, desc, re.compile(pat), sev) for rid, desc, pat, sev in RULES]
@@ -97,9 +127,7 @@ MAX_FILE_BYTES = 2 * 1024 * 1024  # skip anything larger; secrets live in text
 
 # ── git helpers ──────────────────────────────────────────────────────────────
 def git(*args: str, text: bool = True) -> str:
-    result = subprocess.run(
-        ["git", *args], capture_output=True, text=text, check=False
-    )
+    result = subprocess.run(["git", *args], capture_output=True, text=text, check=False)
     if result.returncode != 0:
         stderr = result.stderr if text else result.stderr.decode("utf-8", "replace")
         raise RuntimeError(f"git {' '.join(args)} failed: {stderr.strip()}")
@@ -134,7 +162,7 @@ def range_files(rev_range: str) -> list[str]:
 
 def range_content(rev_range: str, path: str) -> str | None:
     """Content of `path` at the tip of the range, when it still exists."""
-    tip = rev_range.split("..")[-1] or "HEAD"
+    tip = rev_range.rsplit("..", maxsplit=1)[-1] or "HEAD"
     try:
         return git("show", f"{tip}:{path}")
     except RuntimeError:
@@ -153,9 +181,7 @@ def all_history_blobs() -> list[tuple[str, str]]:
 
 
 def blob_content(sha: str) -> str | None:
-    result = subprocess.run(
-        ["git", "cat-file", "-p", sha], capture_output=True, check=False
-    )
+    result = subprocess.run(["git", "cat-file", "-p", sha], capture_output=True, check=False)
     if result.returncode != 0:
         return None
     return result.stdout.decode("utf-8", "replace")
@@ -163,7 +189,7 @@ def blob_content(sha: str) -> str | None:
 
 # ── scanning ─────────────────────────────────────────────────────────────────
 class Finding:
-    __slots__ = ("rule", "desc", "severity", "path", "line", "excerpt")
+    __slots__ = ("desc", "excerpt", "line", "path", "rule", "severity")
 
     def __init__(self, rule, desc, severity, path, line, excerpt):
         self.rule = rule
@@ -288,8 +314,10 @@ def main() -> int:
         print(f"\033[33m⚠ {len(warning)} warning(s)\033[0m — not blocking, review above.")
 
     if not args.quiet:
-        print(f"\033[32m✓ no credentials found\033[0m in {scope} "
-              f"({len(RULES)} rules, {len(blocking)} blocking, {len(warning)} warnings)")
+        print(
+            f"\033[32m✓ no credentials found\033[0m in {scope} "
+            f"({len(RULES)} rules, {len(blocking)} blocking, {len(warning)} warnings)"
+        )
     return 0
 
 

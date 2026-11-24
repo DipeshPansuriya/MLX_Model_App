@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ruff — Python lint and format configuration
+# https://docs.astral.sh/ruff/
+#
+# Run:  ruff check .          ruff format --check .
+# CI:   .github/workflows/quality.yml
+# ─────────────────────────────────────────────────────────────────────────────
+target-version = "py310"
+line-length = 100
+src = [".", "scripts", "packaging"]
+
+[lint]
+# E/W pycodestyle · F pyflakes · I isort · UP pyupgrade · B bugbear
+# S bandit · PL pylint · RUF ruff-specific · SIM simplify · ISC implicit concat
+select = ["E", "W", "F", "I", "UP", "B", "S", "PL", "RUF", "SIM", "ISC"]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "PLR0913", # several helpers legitimately take many arguments
+    "PLR2004", # magic values in comparisons are readable here
+    # Lazy imports are deliberate: truststore, mlx and webview are optional at
+    # import time, and importing mlx at module scope would slow startup.
+    "PLC0415",
+    # subprocess is used with argument lists built in-process, never a shell
+    # string; the paths are sys.executable or fixed system binaries.
+    "S603",
+    "S607",
+    # The manifest URL is user-supplied by design and file:// is used in tests.
+    "S310",
+    # Handlers are long by nature: one method per route with explicit branches.
+    "PLR0911",
+    "PLR0912",
+    "PLR0915",
+    "PLR0917",
+]
+
+[lint.per-file-ignores]
+# The scanner's rule table is a wall of regex literals by design.
+"scripts/check_secrets.py" = ["E501", "S105", "S106"]
+# HTTP method names are mandated by BaseHTTPRequestHandler.
+"app.py" = ["N802"]
+
+[lint.isort]
+known-first-party = ["app"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

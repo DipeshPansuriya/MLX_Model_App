@@ -33,7 +33,7 @@ import hashlib
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -70,7 +70,7 @@ def main() -> int:
         "version": version,
         "url": args.url,
         "notes": args.notes,
-        "published": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "published": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
     if args.dmg:

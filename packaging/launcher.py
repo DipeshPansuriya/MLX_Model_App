@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-BUNDLE = Path(__file__).resolve().parent.parent          # …/Contents
+BUNDLE = Path(__file__).resolve().parent.parent  # …/Contents
 RESOURCES = BUNDLE / "Resources"
 APP_PY = RESOURCES / "app.py"
 LOG = Path.home() / ".mlx_studio" / "launch.log"
@@ -33,10 +33,12 @@ def find_python() -> str | None:
                     [path, "-c", "import sys; assert sys.version_info >= (3, 10)"],
                     capture_output=True,
                     timeout=20,
+                    check=False,
                 )
                 if probe.returncode == 0:
                     return path
-            except Exception:  # noqa: BLE001
+            except Exception as exc:
+                print(f"interpreter probe failed for {path}: {exc}")
                 continue
     return None
 

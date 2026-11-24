@@ -104,7 +104,9 @@ After the fix:
 ```python
 if path == "/api/quit":
     self._json({"ok": True})
-    threading.Thread(target=lambda: (time.sleep(0.3), stop_server(), sys.exit(0)), daemon=True).start()
+    threading.Thread(
+        target=lambda: (time.sleep(0.3), stop_server(), sys.exit(0)), daemon=True
+    ).start()
 ```
 
 Nothing in the UI or the launchers called it. On a loopback API with no
