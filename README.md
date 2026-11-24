@@ -75,13 +75,13 @@ python3 -m pip install pywebview
 |---|---|
 | ![Chat](screenshots/02-chat-loaded.png) | ![Models](screenshots/03-models.png) |
 
-| Download | API Server |
+| Download — best for your Mac | API Server — background mode |
 |---|---|
-| ![Download](screenshots/04-download.png) | ![Server](screenshots/05-server.png) |
+| ![Download](screenshots/09-catalog.png) | ![Server](screenshots/10-server-background.png) |
 
-| Activity | Setup |
+| Activity — log folder and export | Setup |
 |---|---|
-| ![Activity](screenshots/06-activity.png) | ![Setup](screenshots/07-setup.png) |
+| ![Activity](screenshots/11-logs-export.png) | ![Setup](screenshots/07-setup.png) |
 
 ---
 
