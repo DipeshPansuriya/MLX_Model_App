@@ -212,6 +212,7 @@ Full product, architecture and operational documentation lives in [`docs/`](docs
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, trust boundaries, controls, accepted risks |
 | [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) | 2026-11-24 audit: 21 checks, 3 findings remediated, re-run procedure |
 | [docs/PUSH-POLICY.md](docs/PUSH-POLICY.md) | No-credential rule, 19 secret rules, git hooks, CI enforcement |
+| [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md) | Branch ruleset, 7 required checks, automated PR review, zero-cost setup |
 | [docs/TESTING.md](docs/TESTING.md) | What was verified, measurements, defects found, gaps |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Start/stop, health checks, recovery, release checklist |
 | [docs/adr/](docs/adr/README.md) | 8 architecture decision records with rejected alternatives |
@@ -240,7 +241,7 @@ MLX_Model_App/
 │   ├── check_secrets.py        # 19-rule credential scanner
 │   └── install_hooks.sh        # activate git hooks
 ├── .githooks/                  # pre-commit, pre-push
-├── .github/workflows/          # security.yml
+├── .github/                    # workflows (security, quality, pr-review), CODEOWNERS
 ├── docs/                       # PRD, architecture, design, ADRs, diagrams
 ├── release/
 │   └── latest.json             # update manifest served to installed copies
@@ -267,6 +268,11 @@ plus full history). 19 rules cover platform tokens, key material, generic
 assignments and connection strings. See
 [docs/PUSH-POLICY.md](docs/PUSH-POLICY.md) and
 [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md).
+
+**`main` is protected.** A ruleset requires a pull request and seven green status
+checks, forbids direct pushes, force-pushes and deletion, and has no bypass
+actors. An automated review comment reports lint, format, secret, link and syntax
+results on every PR. See [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md).
 
 ---
 
