@@ -107,7 +107,7 @@ Because the log holds prompt text, it is owner-only: `~/.mlx_studio` is `0700` a
 | Risk | Severity | Why accepted | Mitigation available |
 |---|---|---|---|
 | **No auth on loopback API** | Medium | Single-user desktop; adding auth would break `curl` and local tooling | Bind check, documented in §6; a token could be added later |
-| **Ad-hoc signature, not notarised** | Medium | No Apple Developer account | Documented right-click → Open; Developer ID is PRD OD-1 |
+| **Ad-hoc signature, not notarised** | Medium | No Apple Developer account | Documented one-time allow via Open Anyway (macOS 15+) or right-click → Open (macOS 14−); Developer ID is PRD OD-1 |
 | **`trust_remote_code` not enabled** | — | Deliberate: no remote code execution from model repos | Users who need it must use the CLI |
 | **Prompts stored in the activity log** | Low | Required by the product ("what did I send") | Log is user-owned and clearable |
 | **Model weights are trusted input** | Medium | Weights are data, but tokenizers can carry code | `trust_remote_code` stays off |

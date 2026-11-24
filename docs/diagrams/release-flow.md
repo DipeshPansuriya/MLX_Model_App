@@ -36,7 +36,7 @@ flowchart TD
 
     N --> O["user downloads DMG"]
     O --> P["drag to Applications"]
-    P --> Q["right-click Open<br/>Gatekeeper"]
+    P --> Q["Gatekeeper blocks<br/>System Settings → Open Anyway"]
     Q --> R["app runs"]
 
     L -.->|"MLX_STUDIO_UPDATE_URL"| S["installed copy polls manifest"]

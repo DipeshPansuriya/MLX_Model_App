@@ -120,7 +120,13 @@ Requirements
   • MLX packages — install them from the app's Setup tab
 
 First launch
-  Right-click the app and choose Open (unsigned build), then confirm.
+  macOS will say "MLX Studio" Not Opened — "Apple could not verify...".
+  This is expected: the build is ad-hoc signed, not notarised by Apple.
+  Allow it once:
+    macOS 15+   System Settings > Privacy & Security > Open Anyway
+    macOS 14-   Right-click the app > Open > Open
+  Or skip the prompt from Terminal:
+    xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
 
 Update checks
   Setup → Check for updates compares MLX / MLX-LM against PyPI.
