@@ -5,10 +5,19 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [2.0.3] — 2026-11-25
 
-Install documentation fix. `2.0.2` told users to clear quarantine before
-installing, but not how to actually run the DMG afterwards. The README and the
-DMG `Read Me.txt` now give the six numbered steps in order, including mount, drag,
-eject and the ping check.
+Install documentation fix plus a single-instance fix. `2.0.2` told users to clear
+quarantine before installing, but not how to actually run the DMG afterwards, and
+every double-click of a running app started a second process that died on a busy
+port and left the user with nothing.
+
+### Fixed
+
+- **Only one instance runs.** A second launch now raises the existing window
+  instead of spawning a rival process. `POST /api/focus` restores a minimised
+  window and brings the app forward; `launcher.py` checks `/api/ping` before
+  starting anything, and `main()` re-checks after a failed bind to cover the race.
+  Previously the second process died with `OSError: [Errno 48] Address already in
+  use` and the window never appeared.
 
 ### Changed
 

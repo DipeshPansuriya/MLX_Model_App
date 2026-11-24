@@ -629,6 +629,7 @@ class State:
         self.server_down_notice: str | None = None
         self.server_pid: int | None = None
         self.server_stopping = False
+        self.window = None
         self.downloads: dict[str, dict] = {}
         self.install: dict = {"running": False, "kind": "", "lines": []}
         self.versions: dict = {"checked_at": None, "mlx_latest": None, "mlx_lm_latest": None}
@@ -1259,6 +1260,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         body = self._body()
 
+        if path == "/api/focus":
+            # A second launch asks this instance to come forward instead of
+            # starting a rival server on the same port.
+            self._json({"ok": focus_window()})
+            return
+
         if path == "/api/load":
             repo = body.get("repo") or ""
             if not repo:
@@ -1417,6 +1424,49 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"close_connection skipped: {exc}")
 
 
+def focus_window() -> bool:
+    """Bring the existing window to the front. Safe to call from a handler thread.
+
+    pywebview's cocoa backend routes show/restore through AppHelper.callAfter, so
+    this does not touch AppKit off the main thread.
+    """
+    window = STATE.window
+    if window is None:
+        return False
+    try:
+        window.restore()
+        window.show()
+        return True
+    except Exception as exc:
+        log_app("warning", "could not focus window", error=str(exc)[:200])
+        return False
+
+
+def instance_is_running() -> bool:
+    """True when another MLX Studio already answers on the app port."""
+    try:
+        with urllib.request.urlopen(f"http://{HOST}:{PORT}/api/ping", timeout=2) as resp:
+            data = json.loads(resp.read().decode())
+        return bool(data.get("ok"))
+    except Exception:
+        return False
+
+
+def request_focus_from_running_instance() -> bool:
+    """Ask the instance already on the port to raise its window."""
+    try:
+        req = urllib.request.Request(
+            f"http://{HOST}:{PORT}/api/focus",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return bool(json.loads(resp.read().decode()).get("ok"))
+    except Exception:
+        return False
+
+
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -1432,7 +1482,24 @@ def main() -> None:
         print(f"UI directory missing: {UI_DIR}")
         sys.exit(1)
 
-    httpd = serve()
+    # Single instance: a second launch must raise the existing window, not fail
+    # on a busy port and leave the user with nothing.
+    if instance_is_running():
+        focused = request_focus_from_running_instance()
+        log_app("info", "second launch forwarded to the running instance", focused=focused)
+        print(f"{APP_NAME} is already running; focused the existing window")
+        sys.exit(0)
+
+    try:
+        httpd = serve()
+    except OSError as exc:
+        # Lost the race between the check above and the bind.
+        if request_focus_from_running_instance():
+            print(f"{APP_NAME} is already running; focused the existing window")
+            sys.exit(0)
+        log_app("error", "could not bind the app port", port=PORT, error=str(exc))
+        raise
+
     url = f"http://{HOST}:{PORT}/"
     print(f"{APP_NAME} {APP_VERSION} → {url}")
 
@@ -1453,7 +1520,7 @@ def main() -> None:
     try:
         import webview
 
-        webview.create_window(
+        STATE.window = webview.create_window(
             f"{APP_NAME} {APP_VERSION}",
             url,
             width=1360,
@@ -1474,6 +1541,7 @@ def main() -> None:
         except KeyboardInterrupt:
             pass
     finally:
+        STATE.window = None
         # A background server is meant to outlive the window; leave it running
         # and let the pidfile adopt it on the next launch.
         if STATE.server_background:
