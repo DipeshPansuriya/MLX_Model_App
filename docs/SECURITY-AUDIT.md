@@ -164,12 +164,17 @@ After the fix, malformed, negative and oversized lengths all produce a clean
 could read recorded prompts. The log intentionally stores prompt text (see
 [SECURITY.md](SECURITY.md) §4.6), which makes its permissions matter.
 
-**Fix:** the directory is `0700`, the file is `0600`, both enforced on every write
-so a pre-existing loose file is corrected.
+**Fix:** the directories are `0700` and every log file is `0600`, all enforced on
+every write so a pre-existing loose file is corrected. SA-10 now walks the whole
+log folder and also checks `server.pid`.
 
 ```
 drwx------  ~/.mlx_studio
--rw-------  ~/.mlx_studio/activity.log
+drwx------  ~/.mlx_studio/logs
+-rw-------  ~/.mlx_studio/logs/activity.log
+-rw-------  ~/.mlx_studio/logs/app.log
+-rw-------  ~/.mlx_studio/logs/server.log
+-rw-------  ~/.mlx_studio/server.pid
 ```
 
 ### F-05 — Client disconnects logged as server errors (Informational)

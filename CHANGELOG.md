@@ -3,6 +3,36 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Log folder** — everything now lives in `~/.mlx_studio/logs/`
+  (`activity.log`, `app.log`, `launch.log`, `server.log`), rotated at 2 MB with
+  three backups. Logs from 2.0.0 are migrated on first start.
+- **Export diagnostics** — Activity → Export diagnostics downloads a zip of the
+  log folder plus `environment.json` (versions, paths, hardware, installed model
+  ids) so an end user can attach one file to a GitHub issue.
+- **Application log** — `app.log` records startup, shutdown, HTTP errors, model
+  load failures, download failures, install results and API server deaths.
+- **Best for your Mac** — a curated 25-model catalogue in the Download view,
+  each rated `great fit` / `good fit` / `tight fit` / `too large` against this
+  machine's unified memory using measured 4-bit weight sizes. Filter by fit band
+  or category.
+- **Background API server** — a **Background** checkbox detaches `mlx_lm server`
+  into its own session so it keeps serving after the window closes. The pid is
+  written to `~/.mlx_studio/server.pid` and adopted on the next launch.
+- **Server down notification** — a 2 s watchdog detects the server dying, shows a
+  red banner with the exit status and a **Restart** button, fires a desktop
+  notification, and logs `api server died`.
+
+### Fixed
+
+- A server restart no longer lets the old watcher delete the new pidfile or
+  raise a false "stopped unexpectedly" banner.
+- HTTP error logging now coerces the status code, which
+  `BaseHTTPRequestHandler` passes as a string.
+
 ## [2.0.0] — 2026-11-24
 
 First packaged release. Replaces the earlier Tk prototype with a web-technology

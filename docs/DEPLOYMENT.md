@@ -106,7 +106,7 @@ alert names the requirement and the fix.
 
 **Launcher** (`launcher.py`) repeats the search, then `Popen`s `app.py` with
 `start_new_session=True` and redirects stdout/stderr to
-`~/.mlx_studio/launch.log`. The log is the first place to look when a
+`~/.mlx_studio/logs/launch.log`. The log is the first place to look when a
 double-click produces nothing.
 
 ## 5. Release

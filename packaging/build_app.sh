@@ -134,8 +134,8 @@ Update checks
     {"version": "2.1.0", "url": "https://…/MLXStudio-2.1.0.dmg"}
 
 Logs
-  ~/.mlx_studio/activity.log   (in-app activity)
-  ~/.mlx_studio/launch.log     (launch failures)
+  ~/.mlx_studio/logs/          (folder: activity, app, launch, server)
+  Activity > Export diagnostics zips it for a GitHub issue.
 TXT
 
 echo "▸ creating dmg"

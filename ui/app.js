@@ -10,6 +10,8 @@ const state = {
   streaming: false,
   pollTimer: null,
   lastLoaded: null,
+  catalog: null,
+  lastServerRunning: false,
 };
 
 /* ───────────── utilities ───────────── */
@@ -45,6 +47,14 @@ function esc(s) {
   }[c]));
 }
 
+function notify(title, body) {
+  try {
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "granted") new Notification(title, { body });
+    else if (Notification.permission !== "denied") Notification.requestPermission();
+  } catch (_) { /* notifications are best effort */ }
+}
+
 /* ───────────── navigation ───────────── */
 const VIEWS = ["chat", "models", "download", "server", "logs", "settings"];
 
@@ -55,6 +65,7 @@ function showView(name) {
   if (location.hash.slice(1) !== name) location.hash = name;
   if (name === "logs") loadLogs();
   if (name === "models") refreshModels();
+  if (name === "download") loadCatalog();
 }
 $$(".nav-item").forEach((btn) => btn.addEventListener("click", () => showView(btn.dataset.view)));
 window.addEventListener("hashchange", () => showView(location.hash.slice(1)));
@@ -119,6 +130,23 @@ function render(snap) {
   $("#serverStopBtn").hidden = !server.running;
   $("#navServerDot").className = "dot " + (server.running ? "dot-ok" : "");
   $("#endpointText").textContent = server.endpoint;
+  $("#serverModePill").textContent = server.running
+    ? (server.background ? "background" : "foreground")
+    : "stopped";
+  $("#serverModePill").className = "pill " + (server.running ? (server.background ? "ok" : "") : "warn");
+  const notice = $("#serverNotice");
+  if (server.down_notice) {
+    notice.hidden = false;
+    $("#serverNoticeText").textContent = server.down_notice;
+  } else {
+    notice.hidden = true;
+  }
+  // Desktop notification the first time we observe the server going down.
+  if (state.lastServerRunning && !server.running && server.down_notice) {
+    notify("MLX Studio — API server down", server.down_notice);
+    toast(server.down_notice, true);
+  }
+  state.lastServerRunning = server.running;
   const sLog = $("#serverLog");
   if (sLog) {
     const atBottom = sLog.scrollTop + sLog.clientHeight >= sLog.scrollHeight - 40;
@@ -266,6 +294,74 @@ function renderModelCards(models, loaded) {
 }
 
 async function refreshModels() { await refreshState(); }
+
+/* ───────────── catalogue ───────────── */
+const FIT_LABEL = { great: "great fit", good: "good fit", tight: "tight fit", "too-large": "too large", unknown: "unknown" };
+
+async function loadCatalog() {
+  try {
+    const { catalog, hardware } = await api("/api/catalog");
+    state.catalog = catalog;
+    $("#catalogHardware").textContent =
+      `${hardware.chip} · ${hardware.ram} unified — rated on 4-bit weight size`;
+    renderCatalog();
+  } catch (err) { toast(err.message, true); }
+}
+
+function renderCatalog() {
+  const wrap = $("#catalogCards");
+  if (!wrap || !state.catalog) return;
+  const filter = $("#catalogFilter").value;
+  const rows = state.catalog.filter((m) =>
+    filter === "all" || m.fit === filter || m.category === filter);
+  $("#catalogEmpty").hidden = rows.length > 0;
+  wrap.innerHTML = rows.map((m) => {
+    const short = m.repo.split("/").pop();
+    const disabled = m.fit === "too-large";
+    return `
+      <div class="card">
+        <div class="card-top">
+          <div>
+            <div class="card-name">${esc(short)}</div>
+            <div class="card-sub">${esc(m.repo)}</div>
+          </div>
+          <span class="fit fit-${esc(m.fit)}">${esc(FIT_LABEL[m.fit] || m.fit)}</span>
+        </div>
+        <div class="card-sub">${esc(m.params)} · ${m.size_gb} GB · ${esc(m.category)}</div>
+        <div class="card-sub">${esc(m.use)}</div>
+        <div class="card-actions">
+          ${m.installed
+            ? '<button class="btn btn-mini" disabled>Installed</button>'
+            : `<button class="btn btn-mini btn-primary" data-cat-download="${esc(m.repo)}" ${disabled ? "disabled" : ""}>${disabled ? "Needs more RAM" : "Download"}</button>`}
+          ${m.installed ? `<button class="btn btn-mini" data-cat-load="${esc(m.repo)}">Load</button>` : ""}
+        </div>
+      </div>`;
+  }).join("");
+
+  wrap.querySelectorAll("[data-cat-download]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Downloading…";
+      try {
+        await api("/api/download", { method: "POST", body: JSON.stringify({ repo: btn.dataset.catDownload }) });
+        toast("Download started");
+      } catch (err) {
+        toast(err.message, true);
+        btn.disabled = false;
+        btn.textContent = "Download";
+      }
+    });
+  });
+  wrap.querySelectorAll("[data-cat-load]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        await api("/api/load", { method: "POST", body: JSON.stringify({ repo: btn.dataset.catLoad }) });
+        toast("Loading model…");
+        refreshState();
+      } catch (err) { toast(err.message, true); }
+    });
+  });
+}
 
 /* ───────────── downloads ───────────── */
 function renderDownloads(downloads) {
@@ -460,6 +556,65 @@ async function loadLogs() {
       </tr>`;
     }).join("");
   } catch (err) { toast(err.message, true); }
+  loadLogFiles();
+  loadAppLog();
+}
+
+async function loadLogFiles() {
+  try {
+    const { dir, files } = await api("/api/logs/files");
+    $("#logDirPill").textContent = `${files.length} file${files.length === 1 ? "" : "s"}`;
+    $("#logDirPath").textContent = dir;
+    $("#logFileTable").hidden = files.length === 0;
+    $("#logFileBody").innerHTML = files.map((f) => `<tr>
+        <td class="mono">${esc(f.name)}</td>
+        <td>${esc(f.size_h)}</td>
+        <td>${esc(f.modified)}</td>
+      </tr>`).join("");
+  } catch (err) { toast(err.message, true); }
+}
+
+async function loadAppLog() {
+  try {
+    const { entries } = await api("/api/logs/app?limit=300");
+    const level = $("#appLogLevel").value;
+    const rows = entries.filter((e) => level === "all" || e.level === level).reverse();
+    $("#appLogEmpty").hidden = rows.length > 0;
+    $("#appLogTable").hidden = rows.length === 0;
+    $("#appLogBody").innerHTML = rows.map((e) => {
+      const cls = e.level === "error" ? "st-bad" : e.level === "warning" ? "st-run" : "st-ok";
+      const extra = Object.entries(e)
+        .filter(([k]) => !["timestamp", "level", "message"].includes(k))
+        .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
+        .join(" ");
+      return `<tr>
+        <td>${esc(e.timestamp)}</td>
+        <td class="${cls}">${esc(e.level)}</td>
+        <td>${esc(e.message)}${extra ? ` <span class="mono">${esc(extra)}</span>` : ""}</td>
+      </tr>`;
+    }).join("");
+  } catch (err) { toast(err.message, true); }
+}
+
+async function exportDiagnostics() {
+  try {
+    toast("Building diagnostics bundle…");
+    const res = await fetch("/api/logs/export");
+    if (!res.ok) throw new Error(`export failed (${res.status})`);
+    const blob = await res.blob();
+    const disp = res.headers.get("Content-Disposition") || "";
+    const match = disp.match(/filename="([^"]+)"/);
+    const name = match ? match[1] : "mlx-studio-diagnostics.zip";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast(`Saved ${name} (${Math.round(blob.size / 1024)} KB)`);
+  } catch (err) { toast(err.message, true); }
 }
 
 /* ───────────── wiring ───────────── */
@@ -505,16 +660,40 @@ function wire() {
   $("#showAllBtn").addEventListener("click", () => { $("#searchInput").value = ""; doSearch(""); });
 
   $("#refreshModelsBtn").addEventListener("click", refreshModels);
+  $("#catalogFilter").addEventListener("change", renderCatalog);
 
   $("#serverStartBtn").addEventListener("click", async () => {
     const repo = $("#serverModelSelect").value;
     if (!repo) { toast("No model selected", true); return; }
-    try { await api("/api/server/start", { method: "POST", body: JSON.stringify({ repo }) }); refreshState(); }
-    catch (err) { toast(err.message, true); }
+    const background = $("#serverBackground").checked;
+    try {
+      await api("/api/server/start", {
+        method: "POST",
+        body: JSON.stringify({ repo, background }),
+      });
+      toast(background ? "Starting in background…" : "Starting server…");
+      refreshState();
+    } catch (err) { toast(err.message, true); }
   });
   $("#serverStopBtn").addEventListener("click", async () => {
     try { await api("/api/server/stop", { method: "POST", body: "{}" }); refreshState(); }
     catch (err) { toast(err.message, true); }
+  });
+  $("#serverNoticeDismiss").addEventListener("click", async () => {
+    try { await api("/api/server/notice/clear", { method: "POST", body: "{}" }); refreshState(); }
+    catch (err) { toast(err.message, true); }
+  });
+  $("#serverRestartBtn").addEventListener("click", async () => {
+    const repo = $("#serverModelSelect").value || state.snapshot?.server?.repo;
+    if (!repo) { toast("Pick a model first", true); return; }
+    try {
+      await api("/api/server/start", {
+        method: "POST",
+        body: JSON.stringify({ repo, background: $("#serverBackground").checked }),
+      });
+      toast("Restarting server…");
+      refreshState();
+    } catch (err) { toast(err.message, true); }
   });
   $("#copyEndpoint").addEventListener("click", async () => {
     try { await navigator.clipboard.writeText($("#endpointText").textContent); toast("Endpoint copied"); }
@@ -523,8 +702,17 @@ function wire() {
 
   $("#refreshLogsBtn").addEventListener("click", loadLogs);
   $("#logFilter").addEventListener("change", loadLogs);
+  $("#appLogLevel").addEventListener("change", loadAppLog);
+  $("#refreshLogFiles").addEventListener("click", loadLogFiles);
+  $("#exportLogsBtn").addEventListener("click", exportDiagnostics);
+  $("#copyLogDir").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("#logDirPath").textContent);
+      toast("Folder path copied");
+    } catch (_) { toast("Copy failed", true); }
+  });
   $("#clearLogsBtn").addEventListener("click", async () => {
-    if (!confirm("Clear the activity log?")) return;
+    if (!confirm("Clear the activity log? app.log and launch.log are kept.")) return;
     try { await api("/api/logs/clear", { method: "POST", body: "{}" }); loadLogs(); toast("Log cleared"); }
     catch (err) { toast(err.message, true); }
   });
@@ -551,5 +739,6 @@ function wire() {
   -d '{"model":"<model>","messages":[{"role":"user","content":"Hello!"}]}'`;
   showView(location.hash.slice(1) || "chat");
   await refreshState();
+  loadCatalog();
   state.pollTimer = setInterval(refreshState, 2000);
 })();

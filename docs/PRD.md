@@ -75,9 +75,12 @@ person, one Mac, one process.
 | **Cached** | Present on disk under the Hugging Face hub cache, not necessarily loaded |
 | **Repo id** | `org/name`; the stable key for download, load, delete and logging |
 | **Pill** | The coloured status chip in the sidebar and tab headers |
-| **Activity entry** | One JSON object per line in `~/.mlx_studio/activity.log` |
+| **Activity entry** | One JSON object per line in `~/.mlx_studio/logs/activity.log` |
+| **Log folder** | `~/.mlx_studio/logs/` — activity, app, launch and server logs |
+| **Fit rating** | `great` / `good` / `tight` / `too large`, from 4-bit weight size ÷ installed RAM |
 | **Manifest** | `release/latest.json`, the app's update channel document |
 | **API server** | The `mlx_lm server` subprocess exposing an OpenAI-compatible surface |
+| **Background server** | The same subprocess started detached, so it outlives the window |
 
 ## 5. Functional requirements and acceptance criteria
 
@@ -118,6 +121,8 @@ person, one Mac, one process.
 | F16 | Search the `mlx-community` org | Query returns repo ids; empty query returns the catalogue head |
 | F17 | Download with visible status | Card shows `running` → `success` or `failed` |
 | F18 | Refuse concurrent duplicate downloads | Second request for the same repo returns `409` |
+| F18a | Recommend models for this machine | 25 curated models rated `great` / `good` / `tight` / `too large` from measured 4-bit weight size against installed RAM; filterable by band and category |
+| F18b | Never offer a model that cannot fit | `too large` cards show a disabled **Needs more RAM** button |
 
 ### 5.5 API server
 
@@ -127,15 +132,20 @@ person, one Mac, one process.
 | F20 | Show server state | Pill green while running, amber when stopped; nav dot mirrors it |
 | F21 | Stream server output | Subprocess stdout appears in the Server tab |
 | F22 | Stop cleanly | Terminate, then kill after 5 s; state returns to stopped; logged once |
+| F22a | Run in the background | With **Background** ticked the child is detached (`start_new_session`), keeps serving after the window closes, and writes `~/.mlx_studio/logs/server.log` |
+| F22b | Survive an app restart | The pid is written to `~/.mlx_studio/server.pid`; the next launch adopts the running server instead of starting a second one |
+| F22c | Warn when the server dies | A 2 s watchdog flips state to stopped, shows a red banner with the exit status and a **Restart** button, fires a desktop notification, and logs `api server died` |
 
 ### 5.6 Activity log
 
 | ID | Requirement | Acceptance |
 |---|---|---|
 | F23 | Record every action | Load, unload, chat, download, delete, server, install, update, app launch |
-| F24 | Persist across restarts | Entries append to `~/.mlx_studio/activity.log`, one JSON object per line |
+| F24 | Persist across restarts | Entries append to `~/.mlx_studio/logs/activity.log`, one JSON object per line |
 | F25 | Filter and colour | Filter by action; green success, red failure, blue running |
-| F26 | Clear on request | Clear truncates the file after confirmation |
+| F26 | Clear on request | Clear truncates the activity log after confirmation; `app.log` and `launch.log` are kept |
+| F26a | Keep a log folder | `~/.mlx_studio/logs/` holds `activity.log`, `app.log`, `launch.log`, `server.log`; 2 MB rotation with three backups; folder `0700`, files `0600` |
+| F26b | Let the user share logs | **Export diagnostics** produces one zip of the log folder plus `environment.json` for a GitHub issue |
 
 ### 5.7 Versions and updates
 
@@ -206,7 +216,8 @@ person, one Mac, one process.
 | No context trimming | Very long chats grow the prompt until the model's window is reached | New chat; OD-3 |
 | Chat history is in-memory | Closing the app loses the transcript | Activity log records prompts and outcomes |
 | Port 8765 and 8080 are fixed | A second instance or another server conflicts | Documented in [RUNBOOK.md](RUNBOOK.md) §5 |
-| `mlx_lm server` is a child process | Orphaned on hard kill of the parent | Terminated on window close; [RUNBOOK.md](RUNBOOK.md) §5.3 |
+| `mlx_lm server` is a child process | Orphaned on hard kill of the parent | Terminated on window close; a background server is intentional and adopted from the pidfile; [RUNBOOK.md](RUNBOOK.md) §4.4, §4.8 |
+| A background server outlives the app | A user may forget it is running | Visible as a `background` pill, pid in `~/.mlx_studio/server.pid`, stop from the Server view |
 | Ad-hoc signature | Gatekeeper warning on first launch | Documented install step |
 
 ## 11. How we know it works

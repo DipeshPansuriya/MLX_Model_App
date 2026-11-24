@@ -16,7 +16,7 @@ related:
 ## 1. Decision
 
 Activity is recorded by appending one JSON object per line to
-`~/.mlx_studio/activity.log`. There is no database, no schema migration and no
+`~/.mlx_studio/logs/activity.log`. There is no database, no schema migration and no
 index.
 
 ## 2. Context
@@ -48,7 +48,7 @@ requirement is "until the user clears it".
 - The reader tolerates malformed lines by wrapping them as `raw`, so a torn write
   degrades one row instead of breaking the table.
 - Users can inspect and filter with standard tools:
-  `jq -r 'select(.action=="chat")' ~/.mlx_studio/activity.log`
+  `jq -r 'select(.action=="chat")' ~/.mlx_studio/logs/activity.log`
 - Clearing is `unlink`; there is no vacuum, no WAL, no sidecar file.
 
 **Bad**

@@ -47,7 +47,7 @@ flowchart TB
             end
 
             subgraph FILES["durable files"]
-                LOG[("~/.mlx_studio<br/>activity.log")]
+                LOG[("~/.mlx_studio/logs<br/>activity · app · server")]
                 CACHE[("~/.cache/huggingface/hub<br/>models--org--name")]
             end
         end
@@ -103,7 +103,7 @@ flowchart TB
 | Server is a child process | `Popen([... "mlx_lm", "server" ...])` | `app.py:466` |
 | Inference is in-process | `stream_generate(model, ...)` | `app.py:315` |
 | One model slot | `State.model` | `app.py:223` |
-| Log is a file | `~/.mlx_studio/activity.log` | `app.py:39` |
+| Logs are files | `~/.mlx_studio/logs/` | `app.py:39` |
 | Weights are a file tree | `~/.cache/huggingface/hub` | `app.py:37` |
 | Remote calls are explicit | download, install, version check | `app.py:378`, `383`, `410` |
 
