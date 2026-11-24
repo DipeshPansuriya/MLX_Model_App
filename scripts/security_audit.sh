@@ -27,13 +27,33 @@ info() { printf '  \033[36mINFO\033[0m  %-6s %s\n' "$1" "$2"; }
 
 section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
-# Portable file mode: BSD stat (macOS) and GNU stat (Linux) differ.
-file_mode() {
-    stat -f "%Sp" "$1" 2>/dev/null || stat -c "%A" "$1" 2>/dev/null
-}
-
 IS_MACOS=0
 [ "$(uname -s)" = "Darwin" ] && IS_MACOS=1
+# Test hook: MLX_AUDIT_PLATFORM=linux exercises the non-macOS paths locally.
+[ "${MLX_AUDIT_PLATFORM:-}" = "linux" ] && IS_MACOS=0
+
+# Portable file mode. Branch on the platform, never on the exit status: GNU
+# `stat -f` means "filesystem status", so it succeeds while printing something
+# that is not a mode at all. Falls back to Python when the platform tool is
+# unavailable, so a simulated run still reports real modes.
+file_mode() {
+    local out=""
+    if [ "$IS_MACOS" -eq 1 ]; then
+        out=$(stat -f "%Sp" "$1" 2>/dev/null)
+    else
+        out=$(stat -c "%A" "$1" 2>/dev/null)
+    fi
+    if [ -z "$out" ]; then
+        out=$(python3 - "$1" <<'PY' 2>/dev/null
+import os, stat, sys
+st = os.stat(sys.argv[1])
+kind = "d" if stat.S_ISDIR(st.st_mode) else "-"
+print(kind + stat.filemode(stat.S_IMODE(st.st_mode))[1:])
+PY
+)
+    fi
+    printf '%s' "$out"
+}
 
 # ── SA-01 static patterns ────────────────────────────────────────────────────
 section "SA-01  Dangerous code patterns"
