@@ -206,7 +206,7 @@ made genuine errors harder to spot.
 
 | Check | Warning | Why accepted |
 |---|---|---|
-| SA-11 | Ad-hoc signature; Gatekeeper warns on first launch | No Apple Developer account. Documented right-click → Open. [ADR-007](adr/ADR-007-adhoc-signing.md); PRD OD-1 |
+| SA-11 | Ad-hoc signature; Gatekeeper warns on first launch | No Apple Developer account. Documented one-time allow: Open Anyway (macOS 15+) or right-click → Open (macOS 14−). [ADR-007](adr/ADR-007-adhoc-signing.md); PRD OD-1 |
 | SA-11 | `spctl` rejects the bundle | Consequence of the above: not notarised |
 
 Both clear the moment a Developer ID certificate and a notarisation step are

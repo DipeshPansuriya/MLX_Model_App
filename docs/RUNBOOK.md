@@ -171,8 +171,52 @@ The file is recreated on the next action.
 
 ### 4.7 Gatekeeper blocks the app
 
-Right-click the app → **Open** → **Open**. For a permanent fix, sign with a
-Developer ID and notarise (PRD OD-1).
+**Symptom.** After dragging the app to `/Applications` and double-clicking it:
+
+> **"MLX Studio" Not Opened** — Apple could not verify "MLX Studio.app" is free of
+> malware that may harm your Mac or compromise your privacy.
+
+**Cause.** The bundle is ad-hoc signed and not notarised by Apple
+([ADR-007](adr/ADR-007-adhoc-signing.md)). The DMG is downloaded through a
+browser, so macOS tags it `com.apple.quarantine`; on first launch
+`syspolicyd`/`AppleSystemPolicy` refuses the process because there is no
+Developer ID team and no notarisation ticket. Confirmed in the unified log:
+
+```
+(AppleSystemPolicy) ASP: Security policy would not allow process: 6048,
+  /Applications/MLX Studio.app/Contents/MacOS/MLXStudio
+```
+
+`spctl -a -vvv -t exec "/Applications/MLX Studio.app"` returns `rejected`, and
+`codesign --verify --deep --strict` returns `valid on disk` — the signature is
+intact, it just is not a signature Apple trusts for distribution.
+
+**Fix — allow it once.**
+
+| macOS | Route |
+|---|---|
+| **15 Sequoia or newer** (incl. 26, 27) | **System Settings → Privacy & Security → Security → Open Anyway**, authenticate, confirm **Open** |
+| **14 Sonoma or older** | Right-click the app → **Open** → **Open** |
+
+Control-click → Open was removed in macOS 15
+([Apple, Aug 2024](https://developer.apple.com/news/?id=saqachfa)), so on current
+systems the right-click route shows no **Open** button. `spctl --add` and
+`spctl --master-disable` are also no longer supported (`This operation is no
+longer supported`, rc=4).
+
+**Fix — clear the quarantine flag instead (any macOS version).**
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
+open "/Applications/MLX Studio.app"
+```
+
+Verified: after the strip, `open` starts the app, `GET /` on
+`http://127.0.0.1:8765/` returns `200`, and `/api/state` reports
+`"version": "2.0.0"`.
+
+**Permanent fix.** Sign with a Developer ID and notarise (PRD OD-1). Until then
+every fresh download shows the prompt once.
 
 ## 5. Ports and paths
 

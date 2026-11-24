@@ -16,8 +16,10 @@ related:
 ## 1. Decision
 
 The `.app` bundle is signed ad-hoc (`codesign --force --deep --sign -`) and
-distributed in a DMG without notarisation. Users right-click → **Open** on first
-launch.
+distributed in a DMG without notarisation. On first launch macOS refuses it; the
+user allows it once via **System Settings → Privacy & Security → Open Anyway**
+(macOS 15+) or right-click → **Open** (macOS 14 and older), or clears the
+quarantine attribute with `xattr -dr com.apple.quarantine`.
 
 ## 2. Context
 
@@ -47,9 +49,10 @@ notarisation round trip through Apple's service on every release.
 **Bad**
 
 - Gatekeeper still warns on first launch: "Apple could not verify…". The user must
-  right-click → Open, or clear the quarantine attribute. This is a real friction
-  point for a non-technical user and is documented in the README and
-  [RUNBOOK.md](../RUNBOOK.md) §4.7.
+  allow it once through System Settings → Privacy & Security → **Open Anyway**
+  (macOS 15+; the right-click → Open shortcut was removed in Sequoia), or clear
+  the quarantine attribute. This is a real friction point for a non-technical user
+  and is documented in the README and [RUNBOOK.md](../RUNBOOK.md) §4.7.
 - No team identifier, so the signature proves integrity but not authorship.
 - No hardened runtime, no entitlements; the app runs with the interpreter's
   permissions.

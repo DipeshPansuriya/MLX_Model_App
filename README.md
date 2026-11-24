@@ -24,8 +24,23 @@ reports installed versions and tells you when updates are available.
 1. Grab the latest **`MLX Studio-<version>.dmg`** from
    [**Releases**](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
 2. Open the DMG and drag **MLX Studio** onto the **Applications** folder.
-3. First launch: right-click the app → **Open** → **Open** (the build is ad-hoc
-   signed, not notarised).
+3. First launch: macOS will say **"MLX Studio" Not Opened** — "Apple could not
+   verify…". This is expected: the build is ad-hoc signed, not notarised by
+   Apple. Allow it once, using the route for your macOS version:
+
+   | macOS | How to allow it |
+   |---|---|
+   | **15 Sequoia or newer** (incl. 26, 27) | Open **System Settings → Privacy & Security**, scroll to **Security**, click **Open Anyway** next to *"MLX Studio" was blocked*, then authenticate and confirm **Open** |
+   | **14 Sonoma or older** | Right-click the app → **Open** → **Open** |
+
+   Control-click → Open was removed in macOS 15, so it does nothing on current
+   systems. The prompt appears once per install.
+
+   Terminal alternative (any macOS version, skips the prompt entirely):
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
+   ```
 
 ### Run from source
 
@@ -316,8 +331,11 @@ results on every PR. See [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md).
 
 ## Troubleshooting
 
-**"MLX Studio is damaged" / Gatekeeper warning** — right-click the app → **Open**.
-For a permanently trusted build, sign with a Developer ID and notarise.
+**"MLX Studio" Not Opened / "Apple could not verify…"** — expected on an
+ad-hoc-signed build. Allow it once via **System Settings → Privacy & Security →
+Open Anyway** (macOS 15+), or right-click → **Open** on macOS 14 and older. See
+[Install](#install) step 3. For a permanently trusted build, sign with a
+Developer ID and notarise (PRD OD-1).
 
 **No native window** — `python3 -m pip install pywebview`; otherwise the app
 opens in your default browser.

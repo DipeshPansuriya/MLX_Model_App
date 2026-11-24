@@ -191,7 +191,7 @@ person, one Mac, one process.
 
 | ID | Question | Owner | Current behaviour |
 |---|---|---|---|
-| OD-1 | Developer ID signing and notarisation? | Dipesh | Ad-hoc signed; right-click → Open on first launch |
+| OD-1 | Developer ID signing and notarisation? | Dipesh | Ad-hoc signed; user allows it once via System Settings → Privacy & Security → Open Anyway (macOS 15+) or right-click → Open (macOS 14−) |
 | OD-2 | CI builds the DMG on tag push? | Dipesh | Built locally by `packaging/build_app.sh` |
 | OD-3 | Context trimming for long conversations? | Dipesh | Full history sent; `max_tokens=2048` per turn |
 | OD-4 | Sampling defaults exposed in the UI? | Dipesh | Fixed at `temp=0.7`, `top_p=0.95` |
@@ -225,7 +225,7 @@ JavaScript errors before a tag is pushed.
 | Hugging Face rate limits | Medium | Medium | Unauthenticated requests warned; `HF_TOKEN` respected by the library |
 | Model larger than free memory | Medium | Medium | Sizing table in README; load failure surfaces the error |
 | Port collision | Low | Medium | Documented recovery in the runbook |
-| Unsigned build blocked by Gatekeeper | High on first launch | Low | Documented right-click → Open |
+| Unsigned build blocked by Gatekeeper | High on first launch | Low | Documented one-time allow: Open Anyway (macOS 15+) or right-click → Open (macOS 14−) |
 
 ## 13. Sources read for this file
 
