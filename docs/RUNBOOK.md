@@ -204,7 +204,21 @@ systems the right-click route shows no **Open** button. `spctl --add` and
 `spctl --master-disable` are also no longer supported (`This operation is no
 longer supported`, rc=4).
 
-**Fix — clear the quarantine flag instead (any macOS version).**
+**Fix — prevent it instead of allowing it afterwards.** The quarantine flag comes
+from the browser, not from the app. Two routes never set it:
+
+```bash
+# 1. the installer: downloads, checks sha256, installs, clears quarantine
+curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh | bash
+
+# 2. clear the flag on the DMG before installing
+xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-2.0.1.dmg
+```
+
+Verified: both produce an app with no `com.apple.quarantine` attribute, and it
+launches with `GET /api/ping` returning `{"ok": true, "app": "2.0.1"}`.
+
+**Fix — clear it after install (any macOS version).**
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
@@ -213,10 +227,19 @@ open "/Applications/MLX Studio.app"
 
 Verified: after the strip, `open` starts the app, `GET /` on
 `http://127.0.0.1:8765/` returns `200`, and `/api/state` reports
-`"version": "2.0.0"`.
+`"version": "2.0.1"`.
+
+**What does not work** (measured, [ADR-007](adr/ADR-007-adhoc-signing.md) §7):
+
+- `brew install --cask` from a tap — Homebrew applies quarantine and the app is
+  rejected. `HOMEBREW_CASK_OPTS=--no-quarantine` was ignored, and a
+  `quarantine false` stanza is not a valid cask directive.
+- A self-signed certificate, even trusted in the login keychain — `spctl` still
+  returns `rejected` with `origin=…`.
+- `spctl --add`, `spctl --master-disable` — no longer supported.
 
 **Permanent fix.** Sign with a Developer ID and notarise (PRD OD-1). Until then
-every fresh download shows the prompt once.
+every browser download shows the prompt once.
 
 ### 4.8 The API server died
 

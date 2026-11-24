@@ -344,6 +344,53 @@ else
 fi
 rm -rf __pycache__ 2>/dev/null
 
+# ── SA-16 installer safety ──────────────────────────────────────────────────
+section "SA-16  Installer safety"
+INSTALLER="$ROOT/scripts/install.sh"
+if [ ! -f "$INSTALLER" ]; then
+    info SA-16 "scripts/install.sh not present"
+elif ! bash -n "$INSTALLER" 2>/dev/null; then
+    bad SA-16 "scripts/install.sh has a syntax error"
+else
+    ok SA-16 "scripts/install.sh parses"
+    # The installer downloads and runs privileged steps, so it must verify the
+    # artifact and must not pipe a remote script into a shell.
+    if grep -q 'shasum -a 256' "$INSTALLER"; then
+        ok SA-16 "installer verifies a SHA-256 checksum"
+    else
+        bad SA-16 "installer does not verify a checksum"
+    fi
+    if grep -q 'codesign --verify' "$INSTALLER"; then
+        ok SA-16 "installer verifies the bundle signature"
+    else
+        bad SA-16 "installer does not verify the signature"
+    fi
+    # Every curl in executable code must write to a file, never to a shell. The
+    # bootstrap one-liner in the usage text is documentation, not code, so it is
+    # excluded by dropping comment lines and the heredoc block.
+    CODE="$(sed -n '/^usage()/,/^USAGE$/!p' "$INSTALLER" | grep -v '^[[:space:]]*#')"
+    PIPED="$(printf '%s\n' "$CODE" | grep -E 'curl[^|]*\|[[:space:]]*(ba)?sh' || true)"
+    if [ -n "$PIPED" ]; then
+        bad SA-16 "installer pipes a download into a shell"
+    else
+        ok SA-16 "installer never pipes a download into a shell"
+    fi
+    # Safe forms: writing to a file (-o/-O) or capturing into a variable ($(curl …)).
+    UNSAFE="$(printf '%s\n' "$CODE" | grep -E '(^|[^[:alnum:]_-])curl[[:space:]]' \
+        | grep -v 'command -v curl' | grep -vE '(-o|-O)[[:space:]]' \
+        | grep -v '\$(curl' || true)"
+    if [ -n "$UNSAFE" ]; then
+        warn SA-16 "curl without an output file: $(printf '%s' "$UNSAFE" | head -1)"
+    else
+        ok SA-16 "every curl writes to a file"
+    fi
+    if grep -q 'xattr -dr com.apple.quarantine' "$INSTALLER"; then
+        ok SA-16 "installer clears quarantine on the artifact it verified"
+    else
+        warn SA-16 "installer does not clear quarantine"
+    fi
+fi
+
 # ── summary ─────────────────────────────────────────────────────────────────
 printf '\n\033[1mSummary\033[0m\n'
 printf '  passed %d · warnings %d · failed %d\n' "$PASS" "$WARN" "$FAIL"

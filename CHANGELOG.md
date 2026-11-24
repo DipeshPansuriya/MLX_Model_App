@@ -3,6 +3,27 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **One-line installer** — `scripts/install.sh` downloads the latest DMG with
+  `curl`, verifies its SHA-256 against `release/latest.json`, installs to
+  `/Applications`, checks the signature and clears quarantine. `curl` sets no
+  quarantine flag, so macOS 15+ never shows the "Not Opened" dialog and no Apple
+  Developer account is needed. Supports `--version`, `--dir` and `--no-launch`.
+- **SA-16 installer safety** — the audit now checks that the installer parses,
+  verifies a checksum and the signature, clears quarantine on the artifact it
+  verified, and never pipes a download into a shell.
+
+### Changed
+
+- **Install docs lead with the prompt-free route.** README, RUNBOOK §4.7 and
+  ADR-007 now put the installer first, document clearing quarantine on the DMG
+  before installing, and record what does *not* work: Homebrew casks still apply
+  quarantine, and a self-signed certificate is still rejected by `spctl` even
+  when trusted.
+
 ## [2.0.1] — 2026-11-25
 
 Security release. The published `2.0.0` DMG was built from `c421803`, before the
