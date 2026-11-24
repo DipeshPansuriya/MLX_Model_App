@@ -1,0 +1,26 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime dependencies for MLX Studio.
+#
+# These are not installed by pip during normal use: the app's Setup tab installs
+# `mlx` and `mlx-lm`, and `pywebview` is optional (the app falls back to the
+# browser). This file exists so tooling has a manifest to read:
+#
+#   pip-audit -r requirements.txt      vulnerability scan
+#   Dependabot pip ecosystem          scheduled update PRs
+#
+# Versions are the ones verified for release 2.0.0.
+# ─────────────────────────────────────────────────────────────────────────────
+
+mlx==0.32.4
+mlx-lm==0.32.2
+huggingface-hub==2.4.0
+
+# Optional: native window. Without it the app opens in the default browser.
+pywebview==6.2.1
+
+# Pulled in transitively, pinned for reproducible audits.
+numpy==2.5.5
+transformers==5.24.0
+tokenizers==0.23.3
+safetensors==0.8.0
+truststore==0.10.5

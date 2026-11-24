@@ -249,6 +249,7 @@ MLX_Model_App/
 ├── screenshots/                # captured views
 ├── Run_MLX_Manager.command     # Finder launcher
 ├── run.sh                      # terminal launcher
+├── requirements.txt            # pins for pip-audit and Dependabot
 ├── CHANGELOG.md
 ├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
