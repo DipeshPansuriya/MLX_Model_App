@@ -19,7 +19,10 @@ reports installed versions and tells you when updates are available.
 
 ## Install
 
-### One-line installer (recommended — no Gatekeeper prompt)
+Two routes. Both end with the same app in `/Applications`. The first never shows
+a Gatekeeper dialog; the second needs one extra command.
+
+### Option A — one-line installer (no Gatekeeper prompt)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh | bash
@@ -29,12 +32,12 @@ That downloads the latest DMG, verifies its SHA-256 against
 [`release/latest.json`](release/latest.json), installs to `/Applications`,
 checks the signature, and opens the app. No dialog, no Apple Developer account.
 
-Options: `--version 2.0.1`, `--dir ~/Applications`, `--no-launch`. Pass them
+Options: `--version 2.0.3`, `--dir ~/Applications`, `--no-launch`. Pass them
 after `bash -s --`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh \
-  | bash -s -- --version 2.0.1 --no-launch
+  | bash -s -- --version 2.0.3 --no-launch
 ```
 
 Why this works: the app is ad-hoc signed, not notarised. A **browser** download
@@ -42,34 +45,88 @@ carries `com.apple.quarantine`, and macOS 15+ refuses to launch it — the dialo
 offers only **Done** and **Move to Bin**. `curl` sets no quarantine flag, so the
 check never fires. See [ADR-007](docs/adr/ADR-007-adhoc-signing.md).
 
-### Download the DMG
+### Option B — download the DMG and run it
 
-1. Grab the latest **`MLX.Studio-<version>.dmg`** from
-   [**Releases**](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
-2. Clear the quarantine flag **on the DMG, before installing** — this is the step
-   that avoids the dialog:
+Downloading through a browser always attaches a quarantine flag. Clear it on the
+**DMG**, before you open it — that is the whole trick.
 
-   ```bash
-   xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-2.0.1.dmg
-   ```
+**Step 1 — download.** Go to
+[**Releases**](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest)
+and click **`MLX.Studio-2.0.3.dmg`**. It lands in `~/Downloads`.
 
-3. Open the DMG and drag **MLX Studio** onto the **Applications** folder, then
-   launch it.
+**Step 2 — clear the flag on the DMG.** Open **Terminal** (⌘-Space, type
+`Terminal`) and paste:
 
-If you skip step 2, macOS will say **"MLX Studio" Not Opened** — "Apple could not
-verify…". That is expected for an ad-hoc-signed build. Allow it once:
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-2.0.3.dmg
+```
 
-| macOS | How to allow it |
+No output means it worked. Confirm with:
+
+```bash
+xattr -l ~/Downloads/MLX.Studio-2.0.3.dmg
+```
+
+There should be **no** `com.apple.quarantine` line in the output.
+
+**Step 3 — mount the DMG.** Double-click `MLX.Studio-2.0.3.dmg` in Finder. A
+volume named **MLX Studio 2.0.3** appears in the sidebar and on the Desktop. It
+contains three items:
+
+```
+MLX Studio.app      the application
+Applications        a shortcut to your Applications folder
+Read Me.txt         the same instructions as this section
+```
+
+**Step 4 — drag it across.** Drag **MLX Studio** onto the **Applications**
+shortcut in the same window. Finder copies the bundle to `/Applications`. This
+takes a second or two; the DMG window does not close by itself.
+
+**Step 5 — eject the DMG.** Click the ⏏ next to **MLX Studio 2.0.3** in the
+Finder sidebar. The app does not run from the DMG; it runs from
+`/Applications`.
+
+**Step 6 — launch.** Open **Applications** and double-click **MLX Studio**. The
+window opens at 1360×900 and the sidebar shows `v2.0.3`.
+
+**Step 7 — confirm it is running.** The sidebar status pill turns green with the
+model name, or shows `No model loaded` until you pick one. From Terminal:
+
+```bash
+curl -s http://127.0.0.1:8765/api/ping
+# {"ok": true, "app": "2.0.3"}
+```
+
+#### If you skipped step 2
+
+macOS shows **"MLX Studio" Not Opened** — *"Apple could not verify "MLX
+Studio.app" is free of malware…"* with only **Done** and **Move to Bin**. The app
+is fine; the flag is still attached. Clear it on the installed copy and relaunch:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
+open "/Applications/MLX Studio.app"
+```
+
+The GUI equivalent, if you prefer not to use Terminal:
+
+| macOS | Route |
 |---|---|
 | **15 Sequoia or newer** (incl. 26, 27) | **System Settings → Privacy & Security → Security → Open Anyway**, authenticate, confirm **Open** |
 | **14 Sonoma or older** | Right-click the app → **Open** → **Open** |
 
 Control-click → Open was removed in macOS 15, so it does nothing on current
-systems. Clearing it after install also works:
+systems. See [RUNBOOK §4.7](docs/RUNBOOK.md) for the full diagnosis.
+
+#### Uninstall
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
+rm -rf "/Applications/MLX Studio.app"
 ```
+
+Model weights stay in `~/.cache/huggingface/hub/`; logs stay in
+`~/.mlx_studio/`. Remove those too if you want a clean slate.
 
 ### Run from source
 

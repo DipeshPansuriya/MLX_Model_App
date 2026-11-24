@@ -3,6 +3,27 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] — 2026-11-25
+
+Install documentation fix. `2.0.2` told users to clear quarantine before
+installing, but not how to actually run the DMG afterwards. The README and the
+DMG `Read Me.txt` now give the six numbered steps in order, including mount, drag,
+eject and the ping check.
+
+### Changed
+
+- **README install section split into two numbered routes.** Option A is the
+  one-line installer; Option B is the DMG, with Step 1 clear the flag, Step 2
+  mount, Step 3 drag to Applications, Step 4 eject, Step 5 launch, Step 6 verify
+  with `curl -s http://127.0.0.1:8765/api/ping`. Adds the recovery path for
+  skipping Step 1, the GUI equivalent, and an uninstall command.
+- **DMG `Read Me.txt` rewritten as a numbered walkthrough.** It now names the
+  three items in the mounted volume, says the DMG window stays open after the
+  drag, tells the user to eject, and gives the ping check that proves the app is
+  running.
+- **Stale `2.0.1` references** in the README and RUNBOOK §4.7 corrected to
+  `2.0.2`.
+
 ## [2.0.2] — 2026-11-25
 
 Documentation and packaging fix. `2.0.1` shipped a `Read Me.txt` that told users
@@ -144,6 +165,7 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
+[2.0.3]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.3
 [2.0.2]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.2
 [2.0.1]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.1
 [2.0.0]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.0
