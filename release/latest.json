@@ -2,7 +2,7 @@
   "version": "2.0.3",
   "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.3/MLX.Studio-2.0.3.dmg",
   "notes": "Install documentation fix and single-instance fix: the README and DMG Read Me give six numbered steps for running the DMG, and a second launch now raises the existing window instead of starting a rival process. Includes the one-line curl installer, the log folder with diagnostics export, the model fit catalogue, the background API server with a down notification, and the 2.0.1 security fixes.",
-  "published": "2026-11-24T20:53:17Z",
-  "sha256": "1563f111d3e4d7230ad35cf4b963943d9ba614d98845f8ffcf5522be06c647d9",
-  "size": 991848
+  "published": "2026-11-24T20:55:35Z",
+  "sha256": "110dfad9cccba61abb8473a9bb9595e51daff89ec0e1ba055c3995e718b3162d",
+  "size": 991809
 }
