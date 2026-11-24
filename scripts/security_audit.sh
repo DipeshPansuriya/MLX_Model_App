@@ -27,6 +27,14 @@ info() { printf '  \033[36mINFO\033[0m  %-6s %s\n' "$1" "$2"; }
 
 section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# Portable file mode: BSD stat (macOS) and GNU stat (Linux) differ.
+file_mode() {
+    stat -f "%Sp" "$1" 2>/dev/null || stat -c "%A" "$1" 2>/dev/null
+}
+
+IS_MACOS=0
+[ "$(uname -s)" = "Darwin" ] && IS_MACOS=1
+
 # ── SA-01 static patterns ────────────────────────────────────────────────────
 section "SA-01  Dangerous code patterns"
 PATTERNS='shell=True|os\.system|os\.popen|\beval\(|\bexec\(|pickle\.load|__import__\(|verify=False|ssl\._create_unverified|trust_remote_code\s*=\s*True'
@@ -93,16 +101,15 @@ fi
 
 # ── SA-07 secrets in tracked files ──────────────────────────────────────────
 section "SA-07  Secret leakage"
-SECRET_RE='ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY'
-LEAKS=""
-while IFS= read -r f; do
-    case "$f" in *.png|*.icns|*.jpg) continue ;; esac
-    if grep -qIE "$SECRET_RE" "$f" 2>/dev/null; then LEAKS="$LEAKS $f"; fi
-done < <(git ls-files)
-if [ -n "$LEAKS" ]; then
-    bad SA-07 "secret-like string in:$LEAKS"
+# Delegate to the single rule set so the audit and the git hooks cannot drift.
+if [ -f "$ROOT/scripts/check_secrets.py" ]; then
+    if python3 "$ROOT/scripts/check_secrets.py" --quiet >/tmp/sa07.log 2>&1; then
+        ok SA-07 "no credentials in tracked files (check_secrets.py)"
+    else
+        bad SA-07 "credentials found: $(grep -c 'BLOCK' /tmp/sa07.log) blocking finding(s); run ./scripts/check_secrets.py"
+    fi
 else
-    ok SA-07 "no credentials in tracked files"
+    warn SA-07 "scripts/check_secrets.py missing; cannot scan"
 fi
 
 # ── SA-08 gitignore coverage ────────────────────────────────────────────────
@@ -122,7 +129,7 @@ section "SA-09  File permissions"
 WW=""
 while IFS= read -r f; do
     [ -f "$f" ] || continue
-    perm=$(stat -f "%Sp" "$f" 2>/dev/null)
+    perm=$(file_mode "$f")
     case "$perm" in *w*w*) WW="$WW $f" ;; esac
 done < <(git ls-files)
 if [ -n "$WW" ]; then
@@ -135,7 +142,7 @@ fi
 section "SA-10  Runtime state permissions"
 LOG="$HOME/.mlx_studio/activity.log"
 if [ -d "$HOME/.mlx_studio" ]; then
-    dperm=$(stat -f "%Sp" "$HOME/.mlx_studio")
+    dperm=$(file_mode "$HOME/.mlx_studio")
     case "$dperm" in
         drwx------) ok SA-10 "~/.mlx_studio is 0700" ;;
         *) warn SA-10 "~/.mlx_studio is $dperm (expected drwx------)" ;;
@@ -144,7 +151,7 @@ else
     info SA-10 "~/.mlx_studio does not exist yet"
 fi
 if [ -f "$LOG" ]; then
-    lperm=$(stat -f "%Sp" "$LOG")
+    lperm=$(file_mode "$LOG")
     case "$lperm" in
         -rw-------) ok SA-10 "activity.log is 0600" ;;
         *) warn SA-10 "activity.log is $lperm (expected -rw-------)" ;;
@@ -154,7 +161,9 @@ fi
 # ── SA-11 bundle signature ──────────────────────────────────────────────────
 section "SA-11  Bundle signature"
 APP="$ROOT/dist/MLX Studio.app"
-if [ -d "$APP" ]; then
+if [ "$IS_MACOS" -ne 1 ]; then
+    info SA-11 "not macOS; bundle signature checks skipped"
+elif [ -d "$APP" ]; then
     if codesign --verify --deep --strict "$APP" 2>/dev/null; then
         ok SA-11 "codesign --verify --deep --strict passes"
     else
