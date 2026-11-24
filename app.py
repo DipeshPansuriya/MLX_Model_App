@@ -44,6 +44,11 @@ PORT = 8765
 SERVER_PORT = 8080
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
+# The activity log records prompts, so keep it owner-only.
+try:
+    APP_DIR.chmod(0o700)
+except OSError:
+    pass
 
 
 # --------------------------------------------------------------------------- #
@@ -60,6 +65,10 @@ def log_activity(action: str, model: str, status: str, detail: str) -> None:
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        try:
+            LOG_FILE.chmod(0o600)
+        except OSError:
+            pass
     except OSError as exc:
         print(f"log write failed: {exc}")
 
@@ -513,6 +522,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # quieter console
         pass
 
+    def handle_one_request(self) -> None:
+        """Treat client disconnects as normal, not as server errors."""
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
+
     # -- plumbing -------------------------------------------------------- #
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
         self.send_response(code)
@@ -525,9 +541,15 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code: int = 200) -> None:
         self._send(code, json.dumps(obj).encode("utf-8"))
 
+    MAX_BODY = 8 * 1024 * 1024  # 8 MiB: chat history is the largest legitimate body
+
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if not length:
+        raw = self.headers.get("Content-Length") or "0"
+        try:
+            length = int(raw)
+        except (TypeError, ValueError):
+            return {}
+        if length <= 0 or length > self.MAX_BODY:
             return {}
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
@@ -537,8 +559,11 @@ class Handler(BaseHTTPRequestHandler):
     # -- static ---------------------------------------------------------- #
     def _static(self, path: str) -> None:
         rel = path.lstrip("/") or "index.html"
-        target = (UI_DIR / rel).resolve()
-        if not str(target).startswith(str(UI_DIR.resolve())) or not target.is_file():
+        root = UI_DIR.resolve()
+        target = (root / rel).resolve()
+        # is_relative_to compares path components, so a sibling such as
+        # "ui-evil/" cannot pass by sharing the "ui" string prefix.
+        if not target.is_relative_to(root) or not target.is_file():
             self._send(404, b"not found", "text/plain")
             return
         ctype = {
@@ -677,11 +702,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)}, 500)
                 return
             self._json({"ok": True})
-            return
-
-        if path == "/api/quit":
-            self._json({"ok": True})
-            threading.Thread(target=lambda: (time.sleep(0.3), stop_server(), sys.exit(0)), daemon=True).start()
             return
 
         self._json({"error": "unknown endpoint"}, 404)

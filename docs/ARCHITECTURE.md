@@ -78,11 +78,11 @@ system and no network listener beyond loopback.
 | Block | File | Responsibility |
 |---|---|---|
 | UI | `ui/` | Render state, capture intent, stream tokens |
-| HTTP handler | `app.py:509` | Route `/api/*`, serve static assets, emit SSE |
-| State | `app.py:214` | Single mutable snapshot behind a lock |
-| Workers | `app.py:347–493` | Load, download, install, version check, server pump |
-| Inference | `app.py:306` | `stream_generate` over a chat template |
-| Log | `app.py:52` | Append JSON lines, read back for the Activity tab |
+| HTTP handler | `app.py:518` | Route `/api/*`, serve static assets, emit SSE |
+| State | `app.py:223` | Single mutable snapshot behind a lock |
+| Workers | `app.py:356–502` | Load, download, install, version check, server pump |
+| Inference | `app.py:315` | `stream_generate` over a chat template |
+| Log | `app.py:57` | Append JSON lines, read back for the Activity tab |
 | Packaging | `packaging/` | Bundle, sign, DMG, manifest |
 
 ## 4. Process and thread model
@@ -102,7 +102,7 @@ Consequences:
 - **Only one model is resident.** `State.model` is a single slot; a second load
   while one is in flight is refused with `409`.
 - **`State` is guarded by a lock** for mutation, but readers take a snapshot
-  without holding it for the whole render (`State.snapshot`, `app.py:248`).
+  without holding it for the whole render (`State.snapshot`, `app.py:257`).
 - **The server is deliberately out-of-process** so a crashed or wedged server
   cannot take the UI with it, and so its memory is reclaimable by killing a PID.
 
@@ -121,7 +121,7 @@ There is no database. Three file-backed stores:
     └── trees/
 ```
 
-`installed_models()` (`app.py:159`) walks each `models--*` directory, follows the
+`installed_models()` (`app.py:168`) walks each `models--*` directory, follows the
 snapshot symlinks, and de-duplicates by `(st_dev, st_ino)` so a blob shared by two
 models is counted once and a symlink is not counted as a second copy. This is the
 fix recorded in [CHANGELOG.md](../CHANGELOG.md): sizes previously read `8.0 GB`
@@ -168,10 +168,10 @@ wrapping them as `raw`.
 
 ```
 UI send → POST /api/chat {messages}
-        → Handler._stream_chat                       app.py:690
+        → Handler._stream_chat                       app.py:710
         → State.generating = True, stop_flag = False
         → 200 text/event-stream
-        → stream_chat(messages)                      app.py:306
+        → stream_chat(messages)                      app.py:315
             tokenizer.apply_chat_template(add_generation_prompt=True)
             make_sampler(temp=0.7, top_p=0.95)
             stream_generate(model, tokenizer, prompt, max_tokens=2048)
@@ -190,7 +190,7 @@ generator checks it per token, and the partial answer is preserved.
 POST /api/load {repo}
   → 409 if another load is in flight
   → 200 immediately {ok, loading: repo}
-  → worker_load(repo) on a thread           app.py:347
+  → worker_load(repo) on a thread           app.py:356
       mlx_lm.load(repo)
       State.model / tokenizer / loaded_repo set under lock
   → UI observes the transition on its next 2 s poll
@@ -203,7 +203,7 @@ request must not hold a connection open that long.
 
 ```
 POST /api/server/start {repo}
-  → worker_server_start(repo)               app.py:457
+  → worker_server_start(repo)               app.py:466
       stop_server()                          # idempotent
       Popen([python, -m, mlx_lm, server, --model, repo, --host, 127.0.0.1, --port, 8080])
       pump stdout into State.server_lines[-400:]
@@ -227,13 +227,13 @@ a few KB and idempotent rendering removes a class of stale-state bugs.
 
 | Concern | Approach | Location |
 |---|---|---|
-| Thread safety | One lock around `State` mutation; snapshot reads | `app.py:214` |
+| Thread safety | One lock around `State` mutation; snapshot reads | `app.py:223` |
 | Error surface | Every failure becomes a JSON `{error}` with a status code, or an SSE `error` event | `Handler` |
-| Path safety | Static handler resolves the target and rejects anything outside `ui/` | `app.py:538` |
-| Logging | JSON lines, append-only, truncated detail on errors | `app.py:52` |
-| Version comparison | Numeric tuple compare, never string compare | `app.py:125` |
-| TLS trust | `truststore` injected before PyPI/manifest fetches | `app.py:111` |
-| Shutdown | Window close → stop server → `httpd.shutdown()` | `app.py:748` |
+| Path safety | Static handler resolves the target and rejects anything outside `ui/` | `app.py:560` |
+| Logging | JSON lines, append-only, truncated detail on errors | `app.py:57` |
+| Version comparison | Numeric tuple compare, never string compare | `app.py:134` |
+| TLS trust | `truststore` injected before PyPI/manifest fetches | `app.py:120` |
+| Shutdown | Window close → stop server → `httpd.shutdown()` | `app.py:768` |
 
 ## 8. Decisions
 

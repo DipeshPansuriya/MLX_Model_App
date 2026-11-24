@@ -70,8 +70,8 @@ sequenceDiagram
 
 | Rule | Where |
 |---|---|
-| Chat refuses without a loaded model | `409`, `app.py:583` |
-| Tokens are flushed per emission | `emit` writes and flushes, `app.py:704` |
+| Chat refuses without a loaded model | `409`, `app.py:608` |
+| Tokens are flushed per emission | `emit` writes and flushes, `app.py:724` |
 | Stop is a flag, not a kill | `State.stop_flag`, checked per token |
 | The partial answer survives a stop | `_finish_generation` keeps accumulated text |
 | Every completed turn is logged | `log_activity("chat", …)` in `_stream_chat` |

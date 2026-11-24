@@ -70,7 +70,7 @@ multi-model comparison feature is requested.
 
 | Claim | Location |
 |---|---|
-| Single slot | `app.py:214` (`State.__init__`) |
-| Concurrent-load refusal | `app.py:583` (`POST /api/load`, `409`) |
-| Cache release | `app.py:234` (`State.unload`) |
+| Single slot | `app.py:223` (`State.__init__`) |
+| Concurrent-load refusal | `app.py:608` (`POST /api/load`, `409`) |
+| Cache release | `app.py:243` (`State.unload`) |
 | History clear on unload | `ui/app.js` `unload` handler resets `state.messages` |

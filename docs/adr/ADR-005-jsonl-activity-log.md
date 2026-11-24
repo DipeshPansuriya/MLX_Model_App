@@ -72,8 +72,8 @@ retention policies; or if the file routinely exceeds a few hundred thousand line
 
 | Claim | Location |
 |---|---|
-| Append writer | `app.py:52` (`log_activity`) |
-| Tolerant reader | `app.py:67` (`read_activity`) |
+| Append writer | `app.py:57` (`log_activity`) |
+| Tolerant reader | `app.py:76` (`read_activity`) |
 | Truncation on error | `app.py` `str(exc)[:300]` in worker paths |
 | Clear | `POST /api/logs/clear` |
 | Filter | `ui/index.html` `#logFilter`, `ui/app.js` `loadLogs` |

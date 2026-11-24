@@ -52,7 +52,7 @@ available for free. The question was whether to depend on it.
 **Bad**
 
 - Routing is a hand-written `if path == …` chain in `do_GET`/`do_POST`
-  (`app.py:555`, `app.py:583`). Adding endpoints means editing two methods.
+  (`app.py:580`, `app.py:608`). Adding endpoints means editing two methods.
 - No automatic JSON serialisation, validation or error handling; each handler
   parses its own body and picks its own status code.
 - No middleware layer, so cross-cutting concerns (logging, auth if ever added)
@@ -70,7 +70,7 @@ multiplexing, or the server must bind beyond loopback.
 
 | Claim | Location |
 |---|---|
-| Server construction | `app.py:741` (`serve`) |
-| Handler class | `app.py:509` |
-| Route dispatch | `app.py:555`, `app.py:583` |
-| SSE write loop | `app.py:690` |
+| Server construction | `app.py:761` (`serve`) |
+| Handler class | `app.py:518` |
+| Route dispatch | `app.py:580`, `app.py:608` |
+| SSE write loop | `app.py:710` |

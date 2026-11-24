@@ -72,8 +72,8 @@ model and share it.
 
 | Claim | Location |
 |---|---|
-| In-process load | `app.py:347` (`worker_load`) |
-| In-process streaming | `app.py:306` (`stream_chat`) |
-| Sampler and cap | `app.py:321`, `app.py:324` |
-| Child server start | `app.py:457` (`worker_server_start`) |
-| Terminate-then-kill | `app.py:493` (`stop_server`) |
+| In-process load | `app.py:356` (`worker_load`) |
+| In-process streaming | `app.py:315` (`stream_chat`) |
+| Sampler and cap | `app.py:330`, `app.py:333` |
+| Child server start | `app.py:466` (`worker_server_start`) |
+| Terminate-then-kill | `app.py:502` (`stop_server`) |

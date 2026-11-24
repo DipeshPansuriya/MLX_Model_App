@@ -100,12 +100,12 @@ flowchart TB
 |---|---|---|
 | UI/API port | `127.0.0.1:8765` | `app.py:43` |
 | OpenAI server port | `127.0.0.1:8080` | `app.py:44` |
-| Server is a child process | `Popen([... "mlx_lm", "server" ...])` | `app.py:457` |
-| Inference is in-process | `stream_generate(model, ...)` | `app.py:306` |
-| One model slot | `State.model` | `app.py:214` |
+| Server is a child process | `Popen([... "mlx_lm", "server" ...])` | `app.py:466` |
+| Inference is in-process | `stream_generate(model, ...)` | `app.py:315` |
+| One model slot | `State.model` | `app.py:223` |
 | Log is a file | `~/.mlx_studio/activity.log` | `app.py:39` |
 | Weights are a file tree | `~/.cache/huggingface/hub` | `app.py:37` |
-| Remote calls are explicit | download, install, version check | `app.py:369`, `383`, `410` |
+| Remote calls are explicit | download, install, version check | `app.py:378`, `383`, `410` |
 
 ## What is deliberately absent
 

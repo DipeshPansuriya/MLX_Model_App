@@ -75,7 +75,7 @@ SSE channel), or if the app is ever served beyond loopback (then polling must go
 
 | Claim | Location |
 |---|---|
-| SSE response headers | `app.py:690` (`_stream_chat`) |
-| Event emission | `app.py:704` (`emit`) |
+| SSE response headers | `app.py:710` (`_stream_chat`) |
+| Event emission | `app.py:724` (`emit`) |
 | Poll interval | `ui/app.js` `setInterval(refreshState, 2000)` |
 | SSE reader | `ui/app.js` `sendMessage` stream loop |

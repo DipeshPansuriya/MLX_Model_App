@@ -49,16 +49,20 @@ LAN.
 
 ### 4.1 Path traversal
 
-`Handler._static` (`app.py:538`) resolves the requested path against `UI_DIR` and
-rejects anything whose resolved form does not start with the resolved `UI_DIR`:
+`Handler._static` (`app.py:560`) resolves the requested path against `UI_DIR` and
+rejects anything that is not a descendant of it:
 
 ```python
-target = (UI_DIR / rel).resolve()
-if not str(target).startswith(str(UI_DIR.resolve())) or not target.is_file():
+root = UI_DIR.resolve()
+target = (root / rel).resolve()
+if not target.is_relative_to(root) or not target.is_file():
     self._send(404, b"not found", "text/plain")
 ```
 
-`..` segments, absolute paths and symlinks out of the directory all fail closed.
+`is_relative_to` compares path **components**, so a sibling directory such as
+`ui-evil/` cannot pass by sharing the `ui` string prefix. An earlier
+`str.startswith` check had exactly that flaw; see
+[SECURITY-AUDIT.md](SECURITY-AUDIT.md) F-01.
 
 ### 4.2 Destructive actions require intent
 
@@ -94,6 +98,9 @@ build output. No credential is read, stored or transmitted by the app.
 environment variables, tokens or file contents. Prompts are recorded up to 120
 characters for chat entries — a deliberate product choice so the Activity tab can
 answer "what did I send to which model".
+
+Because the log holds prompt text, it is owner-only: `~/.mlx_studio` is `0700` and
+`activity.log` is `0600`, enforced on every write.
 
 ## 5. Accepted risks
 
@@ -132,18 +139,26 @@ answer "what did I send to which model".
 | Check | Result |
 |---|---|
 | Path traversal via `/../app.py` | 404 |
-| Static handler confined to `ui/` | confirmed by resolution check |
+| Sibling-prefix bypass via `/../ui-evil/leak.txt` | 404 (was 200; fixed) |
+| Static handler confined to `ui/` | confirmed by component-wise containment |
 | Both listeners bound to loopback | `lsof` shows `127.0.0.1` only |
-| No credential in repo | `.gitignore` + manual review |
+| No credential in repo | `.gitignore` + tracked-file scan |
 | TLS verification enabled | `truststore` injected; verification never disabled |
 | Signature valid | `codesign --verify --deep --strict` passes |
 | DMG checksum | matches published SHA-256 |
+| Dependency advisories | `pip-audit`: none known |
+| Runtime log permissions | `0700` / `0600` |
+
+The full audit, including three remediated findings, is in
+[SECURITY-AUDIT.md](SECURITY-AUDIT.md). Re-run it with
+`./scripts/security_audit.sh`.
 
 ## 9. Sources read for this file
 
 | Source | Used for |
 |---|---|
-| `app.py` (`_static`, `log_activity`, subprocess calls, binds) | §4 controls |
+| `app.py` (`_static`, `_body`, `log_activity`, subprocess calls, binds) | §4 controls |
 | `packaging/build_app.sh` | Signing behaviour |
 | `.gitignore` | §4.5 |
+| `scripts/security_audit.sh` | §8 results |
 | Release verification run, 2026-11-24 | §8 table |

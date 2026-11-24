@@ -73,7 +73,7 @@ a local HTTP server.
 
 | Claim | Location |
 |---|---|
-| Window creation and fallback | `app.py:748` (`main`) |
+| Window creation and fallback | `app.py:768` (`main`) |
 | Window size and minimum | `app.py` `create_window(..., width=1360, height=900, min_size=(1080, 720))` |
 | No build step | `ui/` contains only `.html`, `.css`, `.js` |
-| Static serving | `app.py:538` (`_static`) |
+| Static serving | `app.py:560` (`_static`) |

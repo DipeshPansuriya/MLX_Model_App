@@ -85,9 +85,9 @@ become a problem.
 
 | Claim | Location |
 |---|---|
-| PyPI lookup | `app.py:111` (`latest_pypi_version`) |
-| Version compare | `app.py:125` (`vt`), `app.py:131` (`is_newer`) |
-| Manifest fetch | `app.py:428` (`latest_app_version`) |
+| PyPI lookup | `app.py:120` (`latest_pypi_version`) |
+| Version compare | `app.py:134` (`vt`), `app.py:140` (`is_newer`) |
+| Manifest fetch | `app.py:437` (`latest_app_version`) |
 | Channel default | `app.py:34` (`APP_UPDATE_URL`) |
 | Manifest generator | `packaging/release_manifest.py` |
 | Published manifest | `release/latest.json` |
