@@ -3,6 +3,37 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.4] — 2026-11-25
+
+Test suite, `.pkg` installer and the single-instance fallback. From this release
+the `.pkg` is the primary artifact; the `.dmg` stays for people who want it.
+
+### Added
+
+- **Test suite** — 161 pytest tests across five modules: pure helpers, logging
+  and rotation, every HTTP endpoint, API server lifecycle, and packaging. Runs in
+  about 32 s with no MLX installed because `app.py` imports nothing heavy at
+  module scope. `pytest.ini` registers the `integration` marker for tests that
+  shell out to macOS tooling.
+- **`Tests` CI job** — `.github/workflows/quality.yml` runs the suite on
+  `ubuntu-latest` for every PR.
+- **`.pkg` installer** — `packaging/build_app.sh` now emits
+  `MLX.Studio-<version>.pkg` alongside the `.app` and `.dmg`. `pkgbuild` installs
+  to `/Applications` with one double-click, and the installed bundle carries no
+  `com.apple.quarantine` attribute, so the "Not Opened" dialog does not appear.
+- **AppleScript focus fallback** — `launcher.py` raises the running window via
+  `osascript` when `/api/focus` is unavailable, which is what happens when a
+  2.0.4 launcher meets a 2.0.2 or 2.0.3 instance.
+
+### Fixed
+
+- **Silent second launch.** A 2.0.3 launcher meeting a 2.0.2 instance got a 404
+  from `/api/focus`, logged `focus requested (ok=False)` and exited 0 with
+  nothing on screen. The fallback now runs, and the outcome is recorded in
+  `launch.log` either way.
+- **`POST /api/delete` with no repo** returned `404 not installed`; it now
+  returns `400 repo required`, matching every other endpoint.
+
 ## [2.0.3] — 2026-11-25
 
 Install documentation fix plus a single-instance fix. `2.0.2` told users to clear
@@ -174,6 +205,7 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
+[2.0.4]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.4
 [2.0.3]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.3
 [2.0.2]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.2
 [2.0.1]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.1

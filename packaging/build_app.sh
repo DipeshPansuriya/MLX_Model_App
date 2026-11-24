@@ -1,8 +1,8 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# build_app.sh — package MLX Studio as a .app bundle and a distributable .dmg
+# build_app.sh — package MLX Studio as a .app bundle, a .dmg and a .pkg
 #
-#   ./build_app.sh              build dist/MLX Studio.app and dist/MLX Studio-<ver>.dmg
+#   ./build_app.sh              build dist/MLX Studio.app, the .dmg and the .pkg
 #   ./build_app.sh --app-only   build just the .app
 #   ./build_app.sh --no-sign    skip ad-hoc codesigning
 #
@@ -219,4 +219,28 @@ rm -rf "$STAGE"
 SIZE="$(du -h "$DMG" | cut -f1)"
 echo "▸ $DMG ($SIZE)"
 shasum -a 256 "$DMG" | awk '{print "  sha256 " $1}'
+
+# ── pkg ──────────────────────────────────────────────────────────────────────
+# A flat installer package installs to /Applications with one double-click and,
+# unlike a browser-downloaded DMG, carries no com.apple.quarantine attribute on
+# the installed bundle. This is the primary artifact from 2.0.4 on.
+PKG="$DIST/MLX.Studio-$VERSION.pkg"
+PKG_ROOT="$DIST/.pkg-root"
+rm -rf "$PKG_ROOT" "$PKG"
+mkdir -p "$PKG_ROOT/Applications"
+cp -R "$APP" "$PKG_ROOT/Applications/"
+
+echo "▸ creating pkg"
+pkgbuild \
+    --root "$PKG_ROOT" \
+    --identifier "$BUNDLE_ID" \
+    --version "$VERSION" \
+    --install-location / \
+    --ownership recommended \
+    "$PKG" >/dev/null
+rm -rf "$PKG_ROOT"
+
+PKG_SIZE="$(du -h "$PKG" | cut -f1)"
+echo "▸ $PKG ($PKG_SIZE)"
+shasum -a 256 "$PKG" | awk '{print "  sha256 " $1}'
 echo "done"

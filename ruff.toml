@@ -38,6 +38,9 @@ ignore = [
 "scripts/check_secrets.py" = ["E501", "S105", "S106"]
 # HTTP method names are mandated by BaseHTTPRequestHandler.
 "app.py" = ["N802"]
+# Tests assert by design, shell out to macOS tooling, and use fixed loopback
+# ports that bandit flags as hardcoded bind addresses.
+"tests/*" = ["S101", "S603", "S607", "S105", "S106", "S108", "PLR2004"]
 
 [lint.isort]
 known-first-party = ["app"]
