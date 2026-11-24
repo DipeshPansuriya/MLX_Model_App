@@ -212,12 +212,19 @@ placeholder does not need a rule change.
 | 7.1 | Dependabot config | `.github/dependabot.yml` | Actions tab shows Dependabot |
 | 7.2 | `github-actions` ecosystem | weekly, grouped | PR appears after the schedule |
 | 7.3 | Runtime ecosystem (`pip`, `npm`, `cargo`, …) | weekly | same |
+| 7.3a | A manifest exists for that ecosystem | `requirements.txt`, `package.json`, … | the ecosystem job fails without one |
 | 7.4 | `open-pull-requests-limit` set | 5 is a sane default | config |
 | 7.5 | Commit prefix per ecosystem | `ci:` / `deps:` | PR titles |
 | 7.6 | Vulnerability scan in CI | `pip-audit`, `npm audit`, `cargo audit` | a CI job |
 
 Dependabot rewrites a pinned SHA and keeps the trailing tag comment, so 5.2 and
 7.2 work together.
+
+**The pip ecosystem needs a manifest.** MLX Studio declared `package-ecosystem:
+pip` with no `requirements.txt`, so the Dependabot pip job failed with
+`Dependabot failure` while the `github-actions` job succeeded. Add a
+`requirements.txt` (or `pyproject.toml`) before enabling that ecosystem — even a
+pin-only file whose only purpose is to give tooling something to read.
 
 ---
 
@@ -361,12 +368,12 @@ Copy this into a new project and tick as you go.
 | 4. Tag protection | 4 | 4/4 |
 | 5. Actions hardening | 6 | 6/6 |
 | 6. Secret scanning | 7 | 5/7 (2 plan-limited) |
-| 7. Dependency updates | 6 | 6/6 |
+| 7. Dependency updates | 7 | 7/7 |
 | 8. CI quality gates | 8 | 8/8 |
 | 9. Release integrity | 6 | 5/6 (stale DMG pending rebuild) |
 | 10. Automated review | 6 | 6/6 |
 | 11. Bypass verification | 10 | 10/10 |
-| **Total** | **79** | **76/79** |
+| **Total** | **80** | **77/80** |
 
 The three open items are one plan limitation (6.6, 6.7) and one stale artifact
 (9.4), all named in the documents rather than hidden.

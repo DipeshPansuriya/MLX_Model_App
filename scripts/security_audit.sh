@@ -280,7 +280,10 @@ if [ "$QUICK" -eq 1 ]; then
     info SA-13 "skipped (--quick)"
 elif python3 -c "import pip_audit" 2>/dev/null; then
     REQS=$(mktemp)
-    python3 - "$REQS" <<'PY'
+    if [ -f "$ROOT/requirements.txt" ]; then
+        cp "$ROOT/requirements.txt" "$REQS"
+    else
+        python3 - "$REQS" <<'PY'
 import importlib.metadata as md, sys
 names = ["mlx","mlx-lm","huggingface-hub","pywebview","numpy","transformers",
          "tokenizers","safetensors","truststore","bottle"]
@@ -292,6 +295,7 @@ for n in names:
         pass
 open(sys.argv[1], "w").write("\n".join(out) + "\n")
 PY
+    fi
     if python3 -m pip_audit --progress-spinner off -r "$REQS" >/tmp/sa13.log 2>&1; then
         ok SA-13 "pip-audit: no known vulnerabilities in runtime dependencies"
     else
