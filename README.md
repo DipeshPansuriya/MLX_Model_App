@@ -211,6 +211,7 @@ Full product, architecture and operational documentation lives in [`docs/`](docs
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Bundle layout, build, signing, DMG, release, rollback |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, trust boundaries, controls, accepted risks |
 | [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) | 2026-11-24 audit: 21 checks, 3 findings remediated, re-run procedure |
+| [docs/PUSH-POLICY.md](docs/PUSH-POLICY.md) | No-credential rule, 19 secret rules, git hooks, CI enforcement |
 | [docs/TESTING.md](docs/TESTING.md) | What was verified, measurements, defects found, gaps |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Start/stop, health checks, recovery, release checklist |
 | [docs/adr/](docs/adr/README.md) | 8 architecture decision records with rejected alternatives |
@@ -235,7 +236,11 @@ MLX_Model_App/
 │   ├── icon_1024.png           # rendered icon
 │   └── AppIcon.icns            # compiled icon
 ├── scripts/
-│   └── security_audit.sh       # re-runnable security checks
+│   ├── security_audit.sh       # re-runnable security checks
+│   ├── check_secrets.py        # 19-rule credential scanner
+│   └── install_hooks.sh        # activate git hooks
+├── .githooks/                  # pre-commit, pre-push
+├── .github/workflows/          # security.yml
 ├── docs/                       # PRD, architecture, design, ADRs, diagrams
 ├── release/
 │   └── latest.json             # update manifest served to installed copies
@@ -249,14 +254,19 @@ MLX_Model_App/
 ## Security
 
 ```bash
+./scripts/install_hooks.sh           # activate pre-commit and pre-push hooks
+./scripts/check_secrets.py           # scan the working tree
+./scripts/check_secrets.py --all-history
 ./scripts/security_audit.sh          # 21 checks, exit 0 on pass
 ./scripts/security_audit.sh --quick  # skip the dependency scan
 ```
 
-Covers dangerous code patterns, loopback binding, static-file containment, body
-limits, endpoint surface, TLS, secret leakage, ignore rules, file permissions,
-runtime log permissions, bundle signature, release checksums, dependency
-advisories and syntax gates. See [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md).
+**No credential may enter the repository.** Enforced at three points: pre-commit
+(staged content), pre-push (commits leaving the machine), and CI (working tree
+plus full history). 19 rules cover platform tokens, key material, generic
+assignments and connection strings. See
+[docs/PUSH-POLICY.md](docs/PUSH-POLICY.md) and
+[docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md).
 
 ---
 

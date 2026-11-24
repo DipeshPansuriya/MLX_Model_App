@@ -41,6 +41,7 @@ where a document describes intent rather than code, it says so explicitly.
 | 4 | [DEPLOYMENT.md](DEPLOYMENT.md) | How a build becomes an installed app: bundling, signing, DMG, release channel |
 | 5 | [SECURITY.md](SECURITY.md) | Trust boundaries, what is exposed, what is deliberately not defended |
 | 5a | [SECURITY-AUDIT.md](SECURITY-AUDIT.md) | The 2026-11-24 audit: 21 checks, 3 findings remediated, re-run procedure |
+| 5b | [PUSH-POLICY.md](PUSH-POLICY.md) | No-credential rule, 19 secret rules, hooks, suppression, CI enforcement |
 | 6 | [TESTING.md](TESTING.md) | What was verified, how, and what remains unverified |
 | 7 | [RUNBOOK.md](RUNBOOK.md) | Operator procedures: start, stop, recover, rotate a release |
 | 8 | [adr/README.md](adr/README.md) | The decisions behind the design, with alternatives rejected |
@@ -71,6 +72,8 @@ where a document describes intent rather than code, it says so explicitly.
 | GitHub release with asset | Built | [DEPLOYMENT.md](DEPLOYMENT.md) §5 |
 | Developer ID signing / notarisation | Open | [SECURITY.md](SECURITY.md) §5 |
 | Security audit | Built — 21 checks, 3 findings fixed | [SECURITY-AUDIT.md](SECURITY-AUDIT.md) |
+| Secret scanning on commit and push | Built — 19 rules, 3 enforcement points | [PUSH-POLICY.md](PUSH-POLICY.md) |
+| CI security workflow | Built — 3 jobs on push and PR | [PUSH-POLICY.md](PUSH-POLICY.md) §7 |
 | Automated CI build on tag | Open | [DEPLOYMENT.md](DEPLOYMENT.md) §7 |
 | Multi-turn context trimming | Open | [PRD.md](PRD.md) §10 |
 
@@ -84,7 +87,9 @@ MLX_Model_App/
 │   ├── style.css
 │   └── app.js
 ├── packaging/                  # .app/.dmg builder, launcher, manifest generator
-├── scripts/                    # security_audit.sh
+├── scripts/                    # security_audit.sh, check_secrets.py, install_hooks.sh
+├── .githooks/                  # pre-commit, pre-push
+├── .github/workflows/          # security.yml
 ├── release/latest.json         # update manifest served to installed copies
 ├── docs/                       # this documentation set
 ├── screenshots/                # captured views referenced by DESIGN.md

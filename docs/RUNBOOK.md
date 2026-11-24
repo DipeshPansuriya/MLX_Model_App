@@ -211,6 +211,8 @@ Collect these before reporting a problem:
 
 - [ ] `APP_VERSION` bumped in `app.py`
 - [ ] `CHANGELOG.md` has an entry for the new version
+- [ ] `./scripts/install_hooks.sh --check` reports hooks active
+- [ ] `./scripts/check_secrets.py --all-history` finds no credentials
 - [ ] `./scripts/security_audit.sh` passes (0 failures)
 - [ ] `python3 -m py_compile app.py` passes
 - [ ] `node --check ui/app.js` passes

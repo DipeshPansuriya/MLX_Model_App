@@ -1,0 +1,64 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so --all-history works
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan working tree
+        run: python3 scripts/check_secrets.py
+
+      - name: Scan full history
+        run: python3 scripts/check_secrets.py --all-history
+
+  audit:
+    name: Security audit
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install audit tooling
+        run: python3 -m pip install --upgrade pip pip-audit
+
+      - name: Run audit script
+        run: ./scripts/security_audit.sh
+
+  hooks:
+    name: Hook installer
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and verify hooks
+        run: |
+          ./scripts/install_hooks.sh
+          ./scripts/install_hooks.sh --check
