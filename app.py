@@ -13,10 +13,10 @@ No Flask/FastAPI dependency: only stdlib + mlx + huggingface_hub.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
-import queue
 import re
 import shutil
 import subprocess
@@ -45,10 +45,8 @@ SERVER_PORT = 8080
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
 # The activity log records prompts, so keep it owner-only.
-try:
+with contextlib.suppress(OSError):
     APP_DIR.chmod(0o700)
-except OSError:
-    pass
 
 
 # --------------------------------------------------------------------------- #
@@ -65,10 +63,8 @@ def log_activity(action: str, model: str, status: str, detail: str) -> None:
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        try:
+        with contextlib.suppress(OSError):
             LOG_FILE.chmod(0o600)
-        except OSError:
-            pass
     except OSError as exc:
         print(f"log write failed: {exc}")
 
@@ -78,15 +74,23 @@ def read_activity(limit: int = 2000) -> list[dict]:
         return []
     out: list[dict] = []
     try:
-        with open(LOG_FILE, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
+        with open(LOG_FILE, encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
                 if not line:
                     continue
                 try:
                     out.append(json.loads(line))
                 except json.JSONDecodeError:
-                    out.append({"timestamp": "", "action": "raw", "model": "", "status": "info", "detail": line})
+                    out.append(
+                        {
+                            "timestamp": "",
+                            "action": "raw",
+                            "model": "",
+                            "status": "info",
+                            "detail": line,
+                        }
+                    )
     except OSError:
         return []
     return out[-limit:]
@@ -97,14 +101,14 @@ def read_activity(limit: int = 2000) -> list[dict]:
 # --------------------------------------------------------------------------- #
 def run_cmd(cmd: list[str], timeout: int | None = None) -> tuple[bool, str]:
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
         out = proc.stdout or ""
         if proc.stderr:
             out += ("\n" if out else "") + proc.stderr
         return proc.returncode == 0, out
     except subprocess.TimeoutExpired:
         return False, "Command timed out."
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, str(exc)
 
 
@@ -113,7 +117,7 @@ def pkg_version(name: str) -> str | None:
         from importlib.metadata import version
 
         return version(name)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -123,11 +127,11 @@ def latest_pypi_version(package: str) -> str | None:
             import truststore
 
             truststore.inject_into_ssl()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:
+            print(f"truststore unavailable, using default CA bundle: {exc}")
         with urllib.request.urlopen(f"https://pypi.org/pypi/{package}/json", timeout=12) as resp:
             return json.loads(resp.read().decode())["info"]["version"]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -212,7 +216,7 @@ def search_hf(query: str) -> list[dict]:
         api = HfApi()
         found = api.list_models(author=HF_ORG, search=query or None, limit=80)
         return [{"repo": m.modelId, "downloads": getattr(m, "downloads", 0) or 0} for m in found]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"search failed: {exc}")
         return []
 
@@ -250,8 +254,8 @@ class State:
             import mlx.core as mx
 
             mx.clear_cache()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:
+            print(f"mlx cache release skipped: {exc}")
         return repo
 
     def snapshot(self) -> dict:
@@ -346,7 +350,7 @@ def stream_chat(messages: list[dict]):
             "repo": repo,
         }
         yield ("done", meta)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         yield ("error", str(exc))
 
 
@@ -368,7 +372,7 @@ def worker_load(repo: str) -> None:
             STATE.loaded_repo = repo
             STATE.loading_repo = None
         log_activity("model", repo, "success", "loaded into memory")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         with STATE.lock:
             STATE.loading_repo = None
             STATE.load_error = str(exc)[:500]
@@ -382,10 +386,20 @@ def worker_download(repo: str) -> None:
         from huggingface_hub import snapshot_download
 
         snapshot_download(repo_id=repo, cache_dir=str(Path.home() / ".cache" / "huggingface"))
-        STATE.downloads[repo] = {"repo": repo, "status": "success", "detail": "complete", "pct": 100}
+        STATE.downloads[repo] = {
+            "repo": repo,
+            "status": "success",
+            "detail": "complete",
+            "pct": 100,
+        }
         log_activity("download", repo, "success", "download complete")
-    except Exception as exc:  # noqa: BLE001
-        STATE.downloads[repo] = {"repo": repo, "status": "failed", "detail": str(exc)[:200], "pct": 0}
+    except Exception as exc:
+        STATE.downloads[repo] = {
+            "repo": repo,
+            "status": "failed",
+            "detail": str(exc)[:200],
+            "pct": 0,
+        }
         log_activity("download", repo, "failed", str(exc)[:300])
 
 
@@ -403,12 +417,17 @@ def worker_install(kind: str) -> None:
     STATE.install["lines"].append("$ " + " ".join(cmd))
     ok = False
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        assert proc.stdout is not None
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+        )
+        if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
+            STATE.install["lines"].append("error: no stdout stream")
+            proc.kill()
+            return
         for line in proc.stdout:
             STATE.install["lines"].append(line.rstrip())
         ok = proc.wait() == 0
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         STATE.install["lines"].append(f"error: {exc}")
 
     log_activity("install", "mlx + mlx-lm", "success" if ok else "failed", f"{kind} finished")
@@ -448,8 +467,8 @@ def latest_app_version() -> str | None:
             import truststore
 
             truststore.inject_into_ssl()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:
+            print(f"truststore unavailable, using default CA bundle: {exc}")
         with urllib.request.urlopen(APP_UPDATE_URL, timeout=10) as resp:
             data = json.loads(resp.read().decode())
         STATE.app_release = {
@@ -459,7 +478,7 @@ def latest_app_version() -> str | None:
             "sha256": data.get("sha256"),
         }
         return data.get("version")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -482,7 +501,7 @@ def worker_server_start(repo: str) -> None:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         STATE.server_lines.append(f"failed to start: {exc}")
         return
 
@@ -490,7 +509,9 @@ def worker_server_start(repo: str) -> None:
     STATE.server_repo = repo
     log_activity("server", repo, "running", f"listening on {HOST}:{SERVER_PORT}")
 
-    assert proc.stdout is not None
+    if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
+        STATE.server_lines.append("error: no stdout stream")
+        return
     for line in proc.stdout:
         STATE.server_lines.append(line.rstrip())
         STATE.server_lines = STATE.server_lines[-400:]
@@ -553,7 +574,7 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             return {}
 
     # -- static ---------------------------------------------------------- #
@@ -577,7 +598,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, target.read_bytes(), ctype)
 
     # -- GET ------------------------------------------------------------- #
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
@@ -605,7 +626,7 @@ class Handler(BaseHTTPRequestHandler):
         self._static(path)
 
     # -- POST ------------------------------------------------------------ #
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
         body = self._body()
 
@@ -751,8 +772,8 @@ class Handler(BaseHTTPRequestHandler):
             STATE.stop_flag = False
             try:
                 self.close_connection = True
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:
+                print(f"close_connection skipped: {exc}")
 
 
 # --------------------------------------------------------------------------- #
@@ -780,7 +801,7 @@ def main() -> None:
     try:
         import webview
 
-        window = webview.create_window(
+        webview.create_window(
             f"{APP_NAME} {APP_VERSION}",
             url,
             width=1360,
@@ -789,7 +810,7 @@ def main() -> None:
             background_color="#0f1115",
         )
         webview.start()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"native window unavailable ({exc}); opening browser")
         import webbrowser
 

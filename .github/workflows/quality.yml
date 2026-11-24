@@ -1,0 +1,79 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: python3 -m pip install --upgrade pip ruff
+
+      - name: ruff check
+        run: ruff check --output-format=github .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+  syntax:
+    name: Syntax gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Python compiles
+        run: |
+          python3 -m py_compile app.py
+          python3 -m py_compile scripts/check_secrets.py
+          python3 -m py_compile packaging/launcher.py
+          python3 -m py_compile packaging/release_manifest.py
+
+      - name: JavaScript parses
+        run: node --check ui/app.js
+
+      - name: Shell scripts parse
+        run: |
+          for f in run.sh Run_MLX_Manager.command scripts/*.sh .githooks/*; do
+            bash -n "$f"
+          done
+
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Relative links resolve
+        run: python3 scripts/check_docs.py
