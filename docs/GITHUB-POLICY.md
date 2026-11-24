@@ -33,6 +33,7 @@ visible at `/rules/`.
 | Enforcement | active |
 | Bypass actors | none |
 | `current_user_can_bypass` | `never` |
+| Tag ruleset | `release-tags` (id `28006578`), `refs/tags/v*` |
 
 ## 2. Rules in force
 
@@ -69,6 +70,58 @@ visible at `/rules/`.
 
 `strict_required_status_checks_policy` is `true`, so a PR must be rebased or
 merged with `main` before it can land — a green run on a stale base does not count.
+
+### 2.3 Tag ruleset
+
+`release-tags` covers `refs/tags/v*` with two rules: `deletion` and
+`non_fast_forward`. A published release tag can be neither deleted nor moved.
+Verified — `git push origin :refs/tags/v2.0.0` is rejected with
+`GH013: Cannot delete this tag`.
+
+### 2.4 Repository settings
+
+| Setting | Value | Why |
+|---|---|---|
+| `allow_squash_merge` | `true` | The default merge path |
+| `allow_merge_commit` | `true` | Allowed for multi-commit PRs |
+| `allow_rebase_merge` | `false` | Would conflict with `required_linear_history` intent |
+| `delete_branch_on_merge` | `true` | No stale branches |
+| `allow_auto_merge` | `true` | Merge once checks pass |
+| `allow_update_branch` | `true` | Satisfies the strict up-to-date policy from the PR page |
+
+### 2.5 Actions hardening
+
+| Setting | Value | Effect |
+|---|---|---|
+| `sha_pinning_required` | `true` | A tag reference cannot be used; every `uses:` must be a commit SHA |
+| `allowed_actions` | `all` | Any action, but only pinned |
+| `default_workflow_permissions` | `read` | A workflow must ask for write explicitly |
+| `can_approve_pull_request_reviews` | `false` | `GITHUB_TOKEN` cannot approve a PR |
+
+Every `uses:` in the three workflows is pinned to a commit SHA with the tag kept
+in a trailing comment:
+
+| Action | SHA | Tag |
+|---|---|---|
+| `actions/checkout` | `11d5960…` | v4 |
+| `actions/setup-python` | `a26af69…` | v5 |
+| `actions/setup-node` | `49933ea…` | v4 |
+| `actions/github-script` | `f28e40c…` | v7 |
+
+### 2.6 Secret scanning
+
+| Feature | State |
+|---|---|
+| Secret scanning | enabled |
+| Push protection | enabled |
+| Dependabot security updates | enabled |
+| Non-provider patterns | disabled — not available through the API on this plan |
+| Validity checks | disabled — not available through the API on this plan |
+
+The two disabled rows are a plan limitation, not a choice. Both `PATCH` payloads
+and the dedicated endpoints return `404`/no-op, so they must be enabled in the
+repository UI if the plan ever supports them. The local scanner covers the gap:
+19 rules run at commit, push and in CI.
 
 ## 3. Workflows
 
@@ -158,6 +211,9 @@ remote: - 6 of 6 required status checks are expected.
 | Test | Expected | Result |
 |---|---|---|
 | Direct push to `main` | rejected | `GH013` rule violation |
+| Delete release tag `v2.0.0` | rejected | `GH013: Cannot delete this tag` |
+| Actions SHA pinning required | enabled | `sha_pinning_required: true` |
+| Rebase merge disabled | `false` | `allow_rebase_merge: false` |
 | Ruleset present and active | yes | `main-protection`, enforcement `active` |
 | Bypass actors | none | `[]`, `current_user_can_bypass: never` |
 | PR opened | created | [#1](https://github.com/DipeshPansuriya/MLX_Model_App/pull/1) |
@@ -172,7 +228,8 @@ remote: - 6 of 6 required status checks are expected.
 |---|---|
 | Zero required approvals | No human sign-off is enforced; the checks are the gate |
 | `Automated review` is required but advisory | It reports; it does not judge correctness |
-| Rulesets apply to branches, not tags | A tag can be pushed directly; releases are still verified by checksum |
+| Tag ruleset blocks delete and move, not creation | A new tag can still be pushed directly; releases are verified by checksum |
+| Non-provider patterns and validity checks unavailable | Two GitHub scanning features cannot be enabled via the API on this plan |
 | No signed commits required | Commit authorship is not cryptographically proven |
 | Single maintainer | Bus factor of one; CODEOWNERS documents the intended split |
 
