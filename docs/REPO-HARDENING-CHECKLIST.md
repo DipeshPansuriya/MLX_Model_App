@@ -98,18 +98,38 @@ bypass actors and required checks, and it is visible at `/rules/`.
 | 3.7 | `required_review_thread_resolution: true` | comments must be resolved | merge blocked with an open thread |
 | 3.8 | `bypass_actors: []` | nobody skips, including the owner | `current_user_can_bypass: never` |
 | 3.9 | `allowed_merge_methods` excludes rebase | keeps history linear | repo settings show rebase off |
+| 3.10 | Approval count matches collaborator count | see §3.1 | `GET /pulls/{n}/reviews` is not `NONE` when count ≥ 1 |
 
 ### 3.1 The single-maintainer trap
 
-`required_approving_review_count: 1` **deadlocks** a solo repository: GitHub
-forbids self-approval, so no PR can ever merge. Set `0`, keep the PR requirement
-and the checks, and add `CODEOWNERS` so the switch to 1 approval is a settings
-change later.
+`required_approving_review_count: 1` **deadlocks** a solo repository. GitHub
+forbids approving your own pull request — verified:
 
-| Collaborators | `required_approving_review_count` | `require_code_owner_review` |
+```
+POST /repos/{owner}/{repo}/pulls/{n}/reviews  {"event":"APPROVE"}
+HTTP 422  "Review Can not approve your own pull request"
+```
+
+So a single-account repository cannot require an approval at all. Two valid
+states, and the order of the switch matters:
+
+| Collaborators | `required_approving_review_count` | `require_last_push_approval` |
 |---|---|---|
 | 1 | `0` | `false` |
 | 2+ | `1` | `true` |
+
+**Add the collaborator first, raise the count second.** Raising it first freezes
+`main`, including urgent fixes. Automate the order:
+
+```bash
+./scripts/set_approval_gate.sh --check                  # report state
+./scripts/set_approval_gate.sh --reviewer <username>    # add, then raise to 1
+./scripts/set_approval_gate.sh --disable                # back to 0
+```
+
+Never claim "PRs are approved" when the count is 0. A merged PR with no review
+record is a PR that was never approved; check `GET /pulls/{n}/reviews` and expect
+`NONE` in single-maintainer mode.
 
 ### 3.2 Verify the ruleset
 
@@ -364,7 +384,7 @@ Copy this into a new project and tick as you go.
 |---|---|---|
 | 1. Repository basics | 9 | 9/9 |
 | 2. Community health | 8 | 8/8 (100%) |
-| 3. Branch protection | 9 | 9/9 |
+| 3. Branch protection | 10 | 9/10 (approval gate pending a 2nd account) |
 | 4. Tag protection | 4 | 4/4 |
 | 5. Actions hardening | 6 | 6/6 |
 | 6. Secret scanning | 7 | 5/7 (2 plan-limited) |
@@ -373,10 +393,11 @@ Copy this into a new project and tick as you go.
 | 9. Release integrity | 6 | 5/6 (stale DMG pending rebuild) |
 | 10. Automated review | 6 | 6/6 |
 | 11. Bypass verification | 10 | 10/10 |
-| **Total** | **80** | **77/80** |
+| **Total** | **81** | **77/81** |
 
-The three open items are one plan limitation (6.6, 6.7) and one stale artifact
-(9.4), all named in the documents rather than hidden.
+The four open items are one plan limitation (6.6, 6.7), one stale artifact (9.4)
+and one pending approval gate (3.10), all named in the documents rather than
+hidden.
 
 ---
 
