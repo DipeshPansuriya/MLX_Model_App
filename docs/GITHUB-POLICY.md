@@ -49,7 +49,7 @@ visible at `/rules/`.
 
 | Parameter | Value | Why |
 |---|---|---|
-| `required_approving_review_count` | `0` | Single maintainer; GitHub forbids self-approval, so a non-zero count would deadlock every PR. See §5 |
+| `required_approving_review_count` | `0` | Single maintainer; GitHub forbids self-approval, so a non-zero count would deadlock every PR. Target state is 1 — see §5 |
 | `dismiss_stale_reviews_on_push` | `true` | A new push invalidates earlier review state |
 | `require_code_owner_review` | `false` | Would also deadlock; `.github/CODEOWNERS` is in place to switch it on later |
 | `require_last_push_approval` | `false` | Same reason |
@@ -163,21 +163,51 @@ The workflows use `actions/checkout`, `actions/setup-python`,
 `actions/setup-node` and `actions/github-script`, all free for public repos. No
 job uses a macOS or Windows runner, which would consume paid minutes.
 
-## 5. Why zero approvals
+## 5. Approval gate
 
-GitHub does not allow a pull request author to approve their own PR. With one
-maintainer, `required_approving_review_count: 1` would make every PR
-unmergeable — including this one. The policy therefore requires the pull request
-and all checks, but not an approval.
+**Current state: 0 required approvals — single-maintainer mode.**
 
-The moment a second collaborator exists:
+GitHub forbids approving your own pull request. Verified:
 
-1. Set `required_approving_review_count` to `1`.
-2. Set `require_code_owner_review` to `true`.
-3. Keep `require_last_push_approval` as needed.
+```
+POST /repos/.../pulls/8/reviews  {"event":"APPROVE"}
+HTTP 422  "Review Can not approve your own pull request"
+```
 
-`.github/CODEOWNERS` already declares ownership per path, so step 2 needs no file
-change.
+With one account, `required_approving_review_count: 1` would make every PR
+unmergeable. The ruleset therefore requires the pull request and all seven checks
+but not an approval.
+
+**This is a configuration state, not a design choice.** The target state is one
+approval from a second account. Enable it with the script:
+
+```bash
+./scripts/set_approval_gate.sh --check                    # current state
+./scripts/set_approval_gate.sh --reviewer <username>      # add + raise to 1
+./scripts/set_approval_gate.sh --disable                  # back to 0
+```
+
+`--reviewer` does three things in order, so `main` is never frozen:
+
+1. Adds the account as a `write` collaborator.
+2. Confirms the invitation is pending or already accepted.
+3. Raises `required_approving_review_count` to `1` and sets
+   `require_last_push_approval: true`.
+
+The order matters: raising the count before a second collaborator exists would
+block every merge, including urgent fixes.
+
+### 5.1 What the gate enforces once enabled
+
+| Setting | Value | Effect |
+|---|---|---|
+| `required_approving_review_count` | `1` | One approval from someone other than the author |
+| `require_last_push_approval` | `true` | The approval must cover the latest push |
+| `dismiss_stale_reviews_on_push` | `true` | A new push invalidates the approval |
+| `require_code_owner_review` | `false` | Enable once CODEOWNERS review is wanted |
+
+`.github/CODEOWNERS` already declares ownership per path, so switching
+`require_code_owner_review` on needs no file change.
 
 ## 6. What a contributor experiences
 
@@ -211,6 +241,8 @@ remote: - 6 of 6 required status checks are expected.
 | Test | Expected | Result |
 |---|---|---|
 | Direct push to `main` | rejected | `GH013` rule violation |
+| Author approves own PR | rejected | `HTTP 422 "Can not approve your own pull request"` |
+| Reviews on merged PRs #1–#7 | none | `reviews=NONE` on all seven |
 | Delete release tag `v2.0.0` | rejected | `GH013: Cannot delete this tag` |
 | Actions SHA pinning required | enabled | `sha_pinning_required: true` |
 | Rebase merge disabled | `false` | `allow_rebase_merge: false` |
@@ -226,7 +258,7 @@ remote: - 6 of 6 required status checks are expected.
 
 | Limit | Consequence |
 |---|---|
-| Zero required approvals | No human sign-off is enforced; the checks are the gate |
+| Zero required approvals | No human sign-off is enforced; the checks are the gate. Enable with `scripts/set_approval_gate.sh --reviewer <username>` |
 | `Automated review` is required but advisory | It reports; it does not judge correctness |
 | Tag ruleset blocks delete and move, not creation | A new tag can still be pushed directly; releases are verified by checksum |
 | Non-provider patterns and validity checks unavailable | Two GitHub scanning features cannot be enabled via the API on this plan |
