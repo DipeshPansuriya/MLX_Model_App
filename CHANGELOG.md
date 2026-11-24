@@ -3,6 +3,36 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] — 2026-11-25
+
+Install documentation fix plus a single-instance fix. `2.0.2` told users to clear
+quarantine before installing, but not how to actually run the DMG afterwards, and
+every double-click of a running app started a second process that died on a busy
+port and left the user with nothing.
+
+### Fixed
+
+- **Only one instance runs.** A second launch now raises the existing window
+  instead of spawning a rival process. `POST /api/focus` restores a minimised
+  window and brings the app forward; `launcher.py` checks `/api/ping` before
+  starting anything, and `main()` re-checks after a failed bind to cover the race.
+  Previously the second process died with `OSError: [Errno 48] Address already in
+  use` and the window never appeared.
+
+### Changed
+
+- **README install section split into two numbered routes.** Option A is the
+  one-line installer; Option B is the DMG, with Step 1 clear the flag, Step 2
+  mount, Step 3 drag to Applications, Step 4 eject, Step 5 launch, Step 6 verify
+  with `curl -s http://127.0.0.1:8765/api/ping`. Adds the recovery path for
+  skipping Step 1, the GUI equivalent, and an uninstall command.
+- **DMG `Read Me.txt` rewritten as a numbered walkthrough.** It now names the
+  three items in the mounted volume, says the DMG window stays open after the
+  drag, tells the user to eject, and gives the ping check that proves the app is
+  running.
+- **Stale `2.0.1` references** in the README and RUNBOOK §4.7 corrected to
+  `2.0.2`.
+
 ## [2.0.2] — 2026-11-25
 
 Documentation and packaging fix. `2.0.1` shipped a `Read Me.txt` that told users
@@ -144,6 +174,7 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
+[2.0.3]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.3
 [2.0.2]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.2
 [2.0.1]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.1
 [2.0.0]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.0

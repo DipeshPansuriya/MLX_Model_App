@@ -9,9 +9,11 @@ starts the app, and keeps a log so failures are diagnosable from Finder.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import subprocess
 import sys
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +22,9 @@ RESOURCES = BUNDLE / "Resources"
 APP_PY = RESOURCES / "app.py"
 LOG_DIR = Path.home() / ".mlx_studio" / "logs"
 LOG = LOG_DIR / "launch.log"
+
+HOST = "127.0.0.1"
+PORT = 8765
 
 
 def note(message: str) -> None:
@@ -58,9 +63,42 @@ def find_python() -> str | None:
     return None
 
 
+def already_running() -> bool:
+    """True when an MLX Studio already answers on the app port."""
+    try:
+        with urllib.request.urlopen(f"http://{HOST}:{PORT}/api/ping", timeout=2) as resp:
+            return bool(json.loads(resp.read().decode()).get("ok"))
+    except Exception:
+        return False
+
+
+def ask_focus() -> bool:
+    """Ask the running instance to raise its window instead of starting a rival."""
+    try:
+        req = urllib.request.Request(
+            f"http://{HOST}:{PORT}/api/focus",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return bool(json.loads(resp.read().decode()).get("ok"))
+    except Exception:
+        return False
+
+
 def main() -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     note(f"launcher start · bundle={BUNDLE} · python={sys.version.split()[0]}")
+
+    # A second double-click must raise the window that already exists. Without
+    # this the new process dies on "Address already in use" and the user sees
+    # nothing happen.
+    if already_running():
+        focused = ask_focus()
+        note(f"already running; focus requested (ok={focused})")
+        return 0
+
     python = find_python()
     if not python:
         note("no Python 3.10+ interpreter found; aborting")

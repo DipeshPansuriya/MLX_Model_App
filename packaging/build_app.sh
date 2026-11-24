@@ -111,41 +111,102 @@ ln -s /Applications "$STAGE/Applications"
 
 cat > "$STAGE/Read Me.txt" <<TXT
 $APP_NAME $VERSION
+=========================================
 
-Drag "$APP_NAME" onto the Applications folder to install.
+HOW TO INSTALL — follow these steps in order
+=========================================
 
-Requirements
+Step 1. Clear the quarantine flag on this DMG.
+
+  A DMG downloaded in a browser carries a quarantine flag, and macOS 15+
+  refuses to open the app: "Apple could not verify..." with only Done and
+  Move to Bin. Clear the flag BEFORE installing.
+
+  Open Terminal (Cmd-Space, type Terminal) and paste:
+
+    xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-$VERSION.dmg
+
+  No output means it worked. Check with:
+
+    xattr -l ~/Downloads/MLX.Studio-$VERSION.dmg
+
+  There should be no com.apple.quarantine line.
+
+Step 2. Double-click this DMG to mount it.
+
+  A volume named "$APP_NAME $VERSION" appears. It contains:
+    $APP_NAME.app     the application
+    Applications      a shortcut to your Applications folder
+    Read Me.txt       this file
+
+Step 3. Drag "$APP_NAME" onto the "Applications" shortcut.
+
+  Finder copies the app to /Applications. The DMG window stays open.
+
+Step 4. Eject the DMG.
+
+  Click the eject symbol next to "$APP_NAME $VERSION" in the Finder sidebar.
+  The app runs from /Applications, not from the DMG.
+
+Step 5. Open Applications and double-click "$APP_NAME".
+
+  The window opens at 1360x900 and the sidebar shows v$VERSION.
+
+Step 6. Confirm it is running. In Terminal:
+
+    curl -s http://127.0.0.1:8765/api/ping
+    {"ok": true, "app": "$VERSION"}
+
+
+IF YOU SKIPPED STEP 1
+---------------------
+
+macOS shows "Not Opened" with only Done and Move to Bin. The app is fine; the
+flag is still attached. Clear it on the installed copy and relaunch:
+
+    xattr -dr com.apple.quarantine "/Applications/$APP_NAME.app"
+    open "/Applications/$APP_NAME.app"
+
+Or allow it once through the GUI:
+    macOS 15+   System Settings > Privacy & Security > Open Anyway
+    macOS 14-   Right-click the app > Open > Open
+
+
+SKIP THE DMG ENTIRELY
+---------------------
+
+This route never sets a quarantine flag, so no dialog appears:
+
+    curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh | bash
+
+
+UNINSTALL
+---------
+
+    rm -rf "/Applications/$APP_NAME.app"
+
+Model weights stay in ~/.cache/huggingface/hub/ and logs in ~/.mlx_studio/.
+
+
+REQUIREMENTS
+------------
+
   • macOS 12 or newer on Apple Silicon
   • Python 3.10+  (python.org build or: brew install python)
   • MLX packages — install them from the app's Setup tab
 
-IMPORTANT — read this before double-clicking
 
-  A DMG downloaded in a browser carries a quarantine flag, and macOS 15+
-  refuses to open the app: "Apple could not verify..." with only Done and
-  Move to Bin. Clear the flag BEFORE installing. Run this in Terminal:
+UPDATE CHECKS
+-------------
 
-    xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-$VERSION.dmg
-
-  Then open the DMG, drag the app to Applications, and launch it. No dialog.
-
-  If you already installed it, clear the flag on the app instead:
-
-    xattr -dr com.apple.quarantine "/Applications/$APP_NAME.app"
-
-  Alternatively allow it once:
-    macOS 15+   System Settings > Privacy & Security > Open Anyway
-    macOS 14-   Right-click the app > Open > Open
-
-  Or skip the DMG entirely:
-    curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh | bash
-
-Update checks
-  Setup → Check for updates compares MLX / MLX-LM against PyPI.
+  Setup > Check for updates compares MLX / MLX-LM against PyPI.
   Set MLX_STUDIO_UPDATE_URL to a release manifest to also check app updates:
-    {"version": "2.1.0", "url": "https://…/MLXStudio-2.1.0.dmg"}
+    {"version": "2.1.0", "url": "https://.../MLXStudio-2.1.0.dmg"}
 
-Logs
+
+LOGS
+----
+
   ~/.mlx_studio/logs/          (folder: activity, app, launch, server)
   Activity > Export diagnostics zips it for a GitHub issue.
 TXT

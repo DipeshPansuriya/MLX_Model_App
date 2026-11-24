@@ -1,11 +1,11 @@
 ---
 type: Runbook
 title: "Runbook — MLX Studio"
-status: "Built at tag v2.0.2 (2026-11-25)"
+status: "Built at tag v2.0.3 (2026-11-25)"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
-version: "2.0.2"
+version: "2.0.3"
 related:
   - DEPLOYMENT.md
   - SECURITY.md
@@ -212,11 +212,11 @@ from the browser, not from the app. Two routes never set it:
 curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh | bash
 
 # 2. clear the flag on the DMG before installing
-xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-2.0.1.dmg
+xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-2.0.3.dmg
 ```
 
 Verified: both produce an app with no `com.apple.quarantine` attribute, and it
-launches with `GET /api/ping` returning `{"ok": true, "app": "2.0.1"}`.
+launches with `GET /api/ping` returning `{"ok": true, "app": "2.0.3"}`.
 
 **Fix — clear it after install (any macOS version).**
 
@@ -227,7 +227,7 @@ open "/Applications/MLX Studio.app"
 
 Verified: after the strip, `open` starts the app, `GET /` on
 `http://127.0.0.1:8765/` returns `200`, and `/api/state` reports
-`"version": "2.0.1"`.
+`"version": "2.0.3"`.
 
 **What does not work** (measured, [ADR-007](adr/ADR-007-adhoc-signing.md) §7):
 

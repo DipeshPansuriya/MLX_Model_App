@@ -1,8 +1,8 @@
 {
-  "version": "2.0.2",
-  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.2/MLX.Studio-2.0.2.dmg",
-  "notes": "Packaging fix: the DMG Read Me now leads with clearing quarantine before installing, the step that avoids the macOS 15+ Not Opened dialog. Includes the one-line curl installer, the log folder with diagnostics export, the model fit catalogue, the background API server with a down notification, and the 2.0.1 security fixes.",
-  "published": "2026-11-24T20:16:57Z",
-  "sha256": "890bf30559272d928d4beb722c48c910de89a3bac32e6e48240e9a9f6fe2073b",
-  "size": 990288
+  "version": "2.0.3",
+  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.3/MLX.Studio-2.0.3.dmg",
+  "notes": "Install documentation fix and single-instance fix: the README and DMG Read Me give six numbered steps for running the DMG, and a second launch now raises the existing window instead of starting a rival process. Includes the one-line curl installer, the log folder with diagnostics export, the model fit catalogue, the background API server with a down notification, and the 2.0.1 security fixes.",
+  "published": "2026-11-24T20:53:17Z",
+  "sha256": "1563f111d3e4d7230ad35cf4b963943d9ba614d98845f8ffcf5522be06c647d9",
+  "size": 991848
 }
