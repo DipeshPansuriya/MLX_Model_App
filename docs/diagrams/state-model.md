@@ -1,0 +1,150 @@
+---
+type: Diagram
+title: "State model — the /api/state snapshot"
+date: 2026-11-24
+project: mlx-studio
+related:
+  - ../ARCHITECTURE.md
+  - ../DESIGN.md
+  - runtime.md
+---
+
+# State model
+
+`GET /api/state` returns one object. Every surface in the UI renders from it, so
+this shape is the contract between backend and interface.
+
+```mermaid
+classDiagram
+    class Snapshot {
+        app: AppInfo
+        hardware: Hardware
+        python: string
+        versions: Versions
+        models: Model[]
+        loaded: Loaded
+        server: Server
+        downloads: Download[]
+        install: Install
+        generating: bool
+    }
+
+    class AppInfo {
+        name: "MLX Studio"
+        version: "2.0.0"
+        latest: string or null
+        channel: string
+        update: bool
+        release: Release
+    }
+
+    class Release {
+        version: string
+        url: string
+        notes: string
+        sha256: string or null
+    }
+
+    class Hardware {
+        chip: "Apple M6"
+        ram_bytes: int
+        ram: "32 GB"
+    }
+
+    class Versions {
+        mlx: "0.32.4"
+        mlx_lm: "0.32.2"
+        huggingface_hub: "2.4.0"
+        mlx_latest: string or null
+        mlx_lm_latest: string or null
+        checked_at: string or null
+        mlx_update: bool
+        mlx_lm_update: bool
+        mlx_missing: bool
+        mlx_lm_missing: bool
+    }
+
+    class Model {
+        repo: "mlx-community/Qwen2.5-7B-Instruct-1M-4bit"
+        path: string
+        size: int
+        size_h: "4.0 GB"
+    }
+
+    class Loaded {
+        repo: string or null
+        loading: string or null
+        error: string or null
+    }
+
+    class Server {
+        running: bool
+        repo: string or null
+        port: 8080
+        endpoint: "http://127.0.0.1:8080/v1"
+        lines: string[]
+    }
+
+    class Download {
+        repo: string
+        status: running, success or failed
+        detail: string
+        pct: int
+    }
+
+    class Install {
+        running: bool
+        kind: install, update or reinstall
+        lines: string[]
+    }
+
+    Snapshot --> AppInfo
+    Snapshot --> Hardware
+    Snapshot --> Versions
+    Snapshot --> Model
+    Snapshot --> Loaded
+    Snapshot --> Server
+    Snapshot --> Download
+    Snapshot --> Install
+    AppInfo --> Release
+```
+
+## Field semantics
+
+| Field | Meaning | Consumed by |
+|---|---|---|
+| `app.version` | Running build | Sidebar, Setup |
+| `app.latest` | Newest manifest version, or null | Setup pill, update panel |
+| `app.update` | `latest > version` | Nav badge, update panel |
+| `versions.mlx_update` | PyPI newer than installed | Setup pill, nav badge |
+| `versions.mlx_missing` | Not importable | Setup pill, install button label |
+| `models[]` | Cached repos with true size | Models cards, both selects |
+| `loaded.repo` | Resident model, or null | Pill, chat header, load button |
+| `loaded.loading` | Repo currently loading | Pill pulse, button disabled |
+| `loaded.error` | Last load failure text | Chat header |
+| `server.running` | Child process alive | Server pill, nav dot |
+| `server.lines` | Last 400 stdout lines | Server console |
+| `downloads[]` | Per-repo download status | Download cards |
+| `install.lines` | pip output | Setup console |
+| `generating` | A chat stream is in flight | Send/Stop visibility |
+
+## Invariants
+
+| Invariant | Enforced by |
+|---|---|
+| `loaded.repo` and `loaded.loading` are never both set | `worker_load` sets one, clears the other |
+| `server.running` is true only while `server_proc` is not None | `worker_server_start`, `stop_server` |
+| `app.update` is false when `app.latest` is null | `is_newer` returns false for a null candidate |
+| `versions.mlx_update` is false when the latest is unknown | same |
+| `models[].size` counts each inode once | `installed_models` de-duplication |
+
+## Polling contract
+
+| Property | Value |
+|---|---|
+| Interval | 2000 ms |
+| Method | `GET /api/state` |
+| Payload | a few KB |
+| Rendering | idempotent full re-render |
+| Missed poll | self-heals on the next one |
+| Cache | `Cache-Control: no-store` |

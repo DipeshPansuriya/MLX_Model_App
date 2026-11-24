@@ -199,6 +199,24 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 ---
 
+## Documentation
+
+Full product, architecture and operational documentation lives in [`docs/`](docs/README.md).
+
+| Document | Answers |
+|---|---|
+| [docs/PRD.md](docs/PRD.md) | What the product is, users, scope, 32 acceptance criteria, open decisions |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Processes, threads, state, data model, request paths |
+| [docs/DESIGN.md](docs/DESIGN.md) | Layout, design tokens, state vocabulary, screen specs, accessibility |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Bundle layout, build, signing, DMG, release, rollback |
+| [docs/SECURITY.md](docs/SECURITY.md) | Threat model, trust boundaries, controls, accepted risks |
+| [docs/TESTING.md](docs/TESTING.md) | What was verified, measurements, defects found, gaps |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Start/stop, health checks, recovery, release checklist |
+| [docs/adr/](docs/adr/README.md) | 8 architecture decision records with rejected alternatives |
+| [docs/diagrams/](docs/diagrams/README.md) | 6 Mermaid diagrams: runtime, chat flow, lifecycle, release, updates, state |
+
+---
+
 ## Project layout
 
 ```
@@ -215,6 +233,7 @@ MLX_Model_App/
 │   ├── icon.html               # icon source
 │   ├── icon_1024.png           # rendered icon
 │   └── AppIcon.icns            # compiled icon
+├── docs/                       # PRD, architecture, design, ADRs, diagrams
 ├── release/
 │   └── latest.json             # update manifest served to installed copies
 ├── screenshots/                # captured views
