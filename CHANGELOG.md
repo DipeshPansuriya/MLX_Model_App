@@ -3,7 +3,26 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.1] — 2026-11-25
+
+Security release. The published `2.0.0` DMG was built from `c421803`, before the
+security audit fixes landed, so it still shipped the unauthenticated `/api/quit`
+endpoint and the prefix-based static path check. This release republishes the
+hardened tree and adds the log folder, the model fit catalogue and the background
+API server.
+
+### Security
+
+- **`/api/quit` removed.** It was unauthenticated and shut the app down; it now
+  returns `404`. Fixed in `799b22e`, shipped here for the first time.
+- **Static path traversal closed by construction.** The request path is a key into
+  a map built by scanning `ui/` at startup, so no filesystem path is derived from
+  user input. Replaces the `str.startswith` check that allowed
+  `/../ui-evil/leak.txt` to return `200`. Clears CodeQL alerts #1–#3
+  (`py/path-injection`). Fixed in `799b22e`.
+- **Body size limit.** `Content-Length` is parsed defensively and capped at 8 MiB,
+  so an oversized or malformed header no longer raises a traceback.
+- **Client disconnects** are treated as normal rather than server errors.
 
 ### Added
 
@@ -26,12 +45,23 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   red banner with the exit status and a **Restart** button, fires a desktop
   notification, and logs `api server died`.
 
+### Changed
+
+- **Install instructions corrected for macOS 15+.** Apple removed the
+  Control-click → Open bypass in Sequoia, so the documented step did nothing and
+  the app looked broken. The README, runbook, ADR-007, PRD, security docs and the
+  DMG `Read Me.txt` now lead with **System Settings → Privacy & Security → Open
+  Anyway**, keeping right-click → Open for macOS 14 and older, and document the
+  `xattr -dr com.apple.quarantine` alternative.
+
 ### Fixed
 
 - A server restart no longer lets the old watcher delete the new pidfile or
   raise a false "stopped unexpectedly" banner.
 - HTTP error logging now coerces the status code, which
   `BaseHTTPRequestHandler` passes as a string.
+- The watchdog polls the `Popen` handle rather than the pid, because a detached
+  child stays a zombie and `os.kill(pid, 0)` still succeeds on one.
 
 ## [2.0.0] — 2026-11-24
 
@@ -84,5 +114,6 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
+[2.0.1]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.1
 [2.0.0]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.0
 [1.0.0]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v1.0.0

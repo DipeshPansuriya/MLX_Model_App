@@ -1,11 +1,11 @@
 ---
 type: Architecture
 title: "Architecture — MLX Studio"
-status: "Built at tag v2.0.0 (2026-11-24)"
+status: "Built at tag v2.0.1 (2026-11-25)"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
-version: "2.0.0"
+version: "2.0.1"
 related:
   - PRD.md
   - DESIGN.md

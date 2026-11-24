@@ -1,8 +1,8 @@
 {
-  "version": "2.0.0",
-  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.0/MLX.Studio-2.0.0.dmg",
-  "notes": "First packaged release: native window, streaming chat, model manager, OpenAI-compatible server, activity log, version and update checks.",
-  "published": "2026-11-24T16:37:17Z",
-  "sha256": "e42366590bb4cc4eb1e2a1c980c66834680c770100e2cec52d7da6080eaff8d8",
-  "size": 979129
+  "version": "2.0.1",
+  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.1/MLX.Studio-2.0.1.dmg",
+  "notes": "Security release: removes the unauthenticated /api/quit endpoint and closes the static path traversal (CodeQL py/path-injection). Adds a log folder with one-click diagnostics export, a model fit catalogue rated for your Mac, and a background API server with a down notification. Corrects the macOS 15+ install instructions.",
+  "published": "2026-11-24T19:34:36Z",
+  "sha256": "abc8b80ef88e2e18fce39c531eafb462e25a4f68ab1047333a589fcffddcba36",
+  "size": 990064
 }
