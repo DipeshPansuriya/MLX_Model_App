@@ -119,14 +119,26 @@ Requirements
   • Python 3.10+  (python.org build or: brew install python)
   • MLX packages — install them from the app's Setup tab
 
-First launch
-  macOS will say "MLX Studio" Not Opened — "Apple could not verify...".
-  This is expected: the build is ad-hoc signed, not notarised by Apple.
-  Allow it once:
+IMPORTANT — read this before double-clicking
+
+  A DMG downloaded in a browser carries a quarantine flag, and macOS 15+
+  refuses to open the app: "Apple could not verify..." with only Done and
+  Move to Bin. Clear the flag BEFORE installing. Run this in Terminal:
+
+    xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-$VERSION.dmg
+
+  Then open the DMG, drag the app to Applications, and launch it. No dialog.
+
+  If you already installed it, clear the flag on the app instead:
+
+    xattr -dr com.apple.quarantine "/Applications/$APP_NAME.app"
+
+  Alternatively allow it once:
     macOS 15+   System Settings > Privacy & Security > Open Anyway
     macOS 14-   Right-click the app > Open > Open
-  Or skip the prompt from Terminal:
-    xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
+
+  Or skip the DMG entirely:
+    curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh | bash
 
 Update checks
   Setup → Check for updates compares MLX / MLX-LM against PyPI.

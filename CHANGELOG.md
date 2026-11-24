@@ -3,7 +3,24 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.2] — 2026-11-25
+
+Documentation and packaging fix. `2.0.1` shipped a `Read Me.txt` that told users
+to drag the app and then allow it afterwards, which is the step that fails on
+macOS 15+. The DMG now leads with clearing quarantine **before** installing.
+
+### Changed
+
+- **DMG `Read Me.txt` rewritten.** It now opens with an *IMPORTANT — read this
+  before double-clicking* block giving the `xattr -dr com.apple.quarantine` step
+  on the DMG, the same step on the installed app if it was already dragged, the
+  Open Anyway fallback, and the `curl` installer as the route that avoids the
+  dialog entirely.
+- **Install docs lead with the prompt-free route.** README, RUNBOOK §4.7 and
+  ADR-007 put the installer first, document clearing quarantine on the DMG before
+  installing, and record what does *not* work: Homebrew casks still apply
+  quarantine, and a self-signed certificate is still rejected by `spctl` even
+  when trusted.
 
 ### Added
 
@@ -15,14 +32,6 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **SA-16 installer safety** — the audit now checks that the installer parses,
   verifies a checksum and the signature, clears quarantine on the artifact it
   verified, and never pipes a download into a shell.
-
-### Changed
-
-- **Install docs lead with the prompt-free route.** README, RUNBOOK §4.7 and
-  ADR-007 now put the installer first, document clearing quarantine on the DMG
-  before installing, and record what does *not* work: Homebrew casks still apply
-  quarantine, and a self-signed certificate is still rejected by `spctl` even
-  when trusted.
 
 ## [2.0.1] — 2026-11-25
 
@@ -135,6 +144,7 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
+[2.0.2]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.2
 [2.0.1]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.1
 [2.0.0]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.0
 [1.0.0]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v1.0.0

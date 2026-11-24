@@ -1,11 +1,11 @@
 ---
 type: Runbook
 title: "Runbook — MLX Studio"
-status: "Built at tag v2.0.1 (2026-11-25)"
+status: "Built at tag v2.0.2 (2026-11-25)"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
-version: "2.0.1"
+version: "2.0.2"
 related:
   - DEPLOYMENT.md
   - SECURITY.md
