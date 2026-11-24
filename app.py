@@ -227,6 +227,7 @@ class State:
         self.downloads: dict[str, dict] = {}
         self.install: dict = {"running": False, "kind": "", "lines": []}
         self.versions: dict = {"checked_at": None, "mlx_latest": None, "mlx_lm_latest": None}
+        self.app_release: dict = {}
         self.setup_lines: list[str] = []
 
     # -- models ---------------------------------------------------------- #
@@ -257,6 +258,7 @@ class State:
                 "latest": self.versions.get("app_latest"),
                 "channel": self.versions.get("app_channel"),
                 "update": is_newer(self.versions.get("app_latest"), APP_VERSION),
+                "release": self.app_release,
             },
             "hardware": hw,
             "python": platform.python_version(),
@@ -427,7 +429,7 @@ def latest_app_version() -> str | None:
     """Look up the newest MLX Studio release from a manifest, if configured.
 
     Set MLX_STUDIO_UPDATE_URL to a JSON file shaped like
-    {"version": "2.1.0", "url": "https://…/MLXStudio.zip"} to enable it.
+    {"version": "2.1.0", "url": "https://…/MLXStudio-2.1.0.dmg"} to enable it.
     Without a channel the app reports itself as a local build.
     """
     if not APP_UPDATE_URL:
@@ -441,6 +443,12 @@ def latest_app_version() -> str | None:
             pass
         with urllib.request.urlopen(APP_UPDATE_URL, timeout=10) as resp:
             data = json.loads(resp.read().decode())
+        STATE.app_release = {
+            "version": data.get("version"),
+            "url": data.get("url"),
+            "notes": data.get("notes") or "",
+            "sha256": data.get("sha256"),
+        }
         return data.get("version")
     except Exception:  # noqa: BLE001
         return None

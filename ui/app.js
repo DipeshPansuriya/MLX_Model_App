@@ -141,6 +141,22 @@ function render(snap) {
     appPill.textContent = "local build";
     appPill.className = "pill";
   }
+
+  const rel = app.release || {};
+  const updPanel = $("#appUpdatePanel");
+  if (app.update && rel.url) {
+    updPanel.hidden = false;
+    $("#appUpdatePill").textContent = `v${rel.version || app.latest}`;
+    $("#appUpdateVersion").textContent = `v${rel.version || app.latest}`;
+    $("#appUpdateNotes").textContent = rel.notes || "—";
+    $("#appUpdateDownload").onclick = () => window.open(rel.url, "_blank");
+    $("#appUpdateCopy").onclick = async () => {
+      try { await navigator.clipboard.writeText(rel.url); toast("Download link copied"); }
+      catch (_) { toast("Copy failed", true); }
+    };
+  } else {
+    updPanel.hidden = true;
+  }
   $("#setPython").textContent = python;
   $("#setHardware").textContent = `${hardware.chip} · ${hardware.ram}`;
   $("#setCheckedAt").textContent = versions.checked_at || "never";

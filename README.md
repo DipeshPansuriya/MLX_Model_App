@@ -1,104 +1,170 @@
-# MLX Studio — a modern local-AI desktop app for Apple Silicon
+# MLX Studio
 
-MLX Studio is an LM Studio / Ollama–style app for running MLX models on a Mac.
-It has a real chat window with streaming replies, a model manager, a download
-browser, an OpenAI-compatible API server, a day-to-day activity log, and a
-Setup screen that reports installed versions and update availability.
+**A native macOS app for running local AI models on Apple Silicon — LM Studio / Ollama style, built on Apple's MLX.**
 
-![Chat](screenshots/02-chat-loaded.png)
+[![Release](https://img.shields.io/github/v/release/DipeshPansuriya/MLX_Model_App?color=4f8cff&label=release)](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-macOS%2012%2B%20Apple%20Silicon-000000?logo=apple)](#requirements)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](#requirements)
+[![License](https://img.shields.io/badge/license-MIT-37d399)](#license)
+[![Stars](https://img.shields.io/github/stars/DipeshPansuriya/MLX_Model_App?color=f0a23c)](https://github.com/DipeshPansuriya/MLX_Model_App/stargazers)
 
-## Files
+MLX Studio wraps Apple's MLX runtime in a desktop UI: load a model, chat with
+streaming replies, download and delete weights, serve an OpenAI-compatible API
+for Claude Code or DeepSeek, and review a day-to-day activity log. It also
+reports installed versions and tells you when updates are available.
 
-| File | Purpose |
-|------|---------|
-| `app.py` | Backend: stdlib HTTP server + JSON/SSE API + native window host |
-| `ui/index.html` | Single-page interface |
-| `ui/style.css` | Dark LM Studio–style theme |
-| `ui/app.js` | Front-end controller (routing, streaming, polling) |
-| `Run_MLX_Manager.command` | Double-click launcher (Finder) |
-| `run.sh` | Terminal launcher |
-| `screenshots/` | Captured views of every screen |
+![Chat view](screenshots/02-chat-loaded.png)
+
+---
+
+## Install
+
+### Download the DMG (recommended)
+
+1. Grab the latest **`MLX Studio-<version>.dmg`** from
+   [**Releases**](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
+2. Open the DMG and drag **MLX Studio** onto the **Applications** folder.
+3. First launch: right-click the app → **Open** → **Open** (the build is ad-hoc
+   signed, not notarised).
+
+### Run from source
+
+```bash
+git clone https://github.com/DipeshPansuriya/MLX_Model_App.git
+cd MLX_Model_App
+./run.sh
+```
+
+`Run_MLX_Manager.command` is the double-clickable Finder launcher.
+
+---
 
 ## Requirements
 
-- macOS on Apple Silicon
-- Python 3.10+
-- `mlx`, `mlx-lm`, `huggingface_hub` — installed by the Setup tab if missing
-- `pywebview` for the native window (optional; falls back to the browser)
+| | |
+|---|---|
+| OS | macOS 12+ on Apple Silicon (M1–M4) |
+| Python | 3.10+ — [python.org](https://www.python.org/downloads/macos/) or `brew install python` |
+| Packages | `mlx`, `mlx-lm` — installed from the in-app **Setup** tab |
+| Optional | `pywebview` for the native window (falls back to the browser) |
 
 ```bash
 python3 -m pip install pywebview
 ```
 
-## Run
-
-Double-click **`Run_MLX_Manager.command`**, or:
-
-```bash
-cd "/Users/dipesh/Desktop/Dipesh/Project Idea/MLX_Model_App"
-./run.sh
-```
-
-The app opens a native 1360×900 window. The local server listens on
-`http://127.0.0.1:8765` and is reachable from a browser too.
+---
 
 ## Screens
 
+| Chat | Models |
+|---|---|
+| ![Chat](screenshots/02-chat-loaded.png) | ![Models](screenshots/03-models.png) |
+
+| Download | API Server |
+|---|---|
+| ![Download](screenshots/04-download.png) | ![Server](screenshots/05-server.png) |
+
+| Activity | Setup |
+|---|---|
+| ![Activity](screenshots/06-activity.png) | ![Setup](screenshots/07-setup.png) |
+
+---
+
+## Features
+
 ### Chat
-- Model dropdown, **Load** / **Unload**, and a live state indicator:
-  grey `Not loaded`, pulsing `Loading …`, green `Loaded — <model>`.
-- The sidebar pill mirrors the same state, so it is visible from every screen.
-- Replies stream token by token; each turn ends with
-  `N tokens · X tok/s · Y GB peak`.
-- **Stop** cancels generation, **New chat** clears history.
-- `Enter` sends, `Shift+Enter` adds a newline; the composer grows as you type.
+- Load / unload models in-process with a live state pill: `Not loaded` →
+  pulsing `Loading…` → green `Loaded — <model>`.
+- Token-by-token streaming; each turn reports `tokens · tok/s · GB peak`.
+- **Stop** cancels generation, **New chat** resets history.
+- `Enter` sends, `Shift+Enter` inserts a newline; the composer grows as you type.
 
 ### Models
-- Card per cached model with size and repo id, plus a `loaded` tag.
-- **Load** / **Unload**, **Reveal**, **Delete** (blocked while loaded).
+- Card per cached model with size and repo id.
+- **Load**, **Reveal**, **Delete** (blocked while the model is loaded).
 
 ### Download
-- Search the `mlx-community` organisation, or **Show all**.
-- Download cards show live status (`running` / `success` / `failed`).
+- Search the [`mlx-community`](https://huggingface.co/mlx-community) org on
+  Hugging Face, or browse everything.
+- Per-model download status: `running` / `success` / `failed`.
 
 ### API Server
-- Start `mlx_lm server` on `http://127.0.0.1:8080/v1` for a chosen model.
+- Starts `mlx_lm server` on `http://127.0.0.1:8080/v1`.
 - Live server output, copyable endpoint, ready-to-run `curl` example.
-- State pill turns green while running; stopping is logged.
 
 ### Activity
-- Filterable table: time, action, model, status, detail.
-- Backed by `~/.mlx_studio/activity.log` (one JSON object per line).
-- Green = success, red = failed, blue = running. **Clear** truncates the log.
+- Filterable log of every chat, load, download, delete, install and server event.
+- Persisted to `~/.mlx_studio/activity.log` (one JSON object per line).
 
 ### Setup
-- **Application** panel: MLX Studio version, latest release, update channel,
-  Python, hardware, and the timestamp of the last update check.
-- **Runtime packages** panel: MLX, MLX-LM and huggingface-hub with a pill per
-  row — `up to date`, `update → <version>`, or `missing`.
-- **Install / Update** runs pip and streams the output into the panel.
-- **Check for updates** re-queries PyPI; a `!` badge appears on the nav item
-  whenever any component (app or package) has an update.
+- Installed versions of MLX, MLX-LM and huggingface-hub, each with a pill:
+  `up to date`, `update → <version>`, or `missing`.
+- App version, latest release, update channel, hardware and last-check time.
+- **Check for updates** re-queries PyPI; a `!` badge marks the nav item when
+  anything is outdated.
+- **Install / Update** runs pip and streams output into the panel.
 
-## Version and update behaviour
+---
+
+## Version and update checks
 
 | Component | Source of truth |
-|-----------|-----------------|
-| MLX Studio | `APP_VERSION` in `app.py` |
-| MLX / MLX-LM | `importlib.metadata` vs. PyPI JSON API |
-| App updates | `MLX_STUDIO_UPDATE_URL` manifest (optional) |
+|---|---|
+| MLX Studio | `APP_VERSION` in [`app.py`](app.py) |
+| MLX / MLX-LM | `importlib.metadata` vs. the PyPI JSON API |
+| App updates | `MLX_STUDIO_UPDATE_URL` release manifest |
 
-Without a manifest the app reports itself as a `local build`. To enable app
-update checks, point the variable at a JSON file:
+Installed copies check for a newer release by fetching a small JSON manifest:
+
+```json
+{
+  "version": "2.1.0",
+  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.1.0/MLX.Studio-2.1.0.dmg",
+  "sha256": "…",
+  "notes": "Faster model loading",
+  "published": "2026-11-24T22:00:00Z"
+}
+```
+
+Point the app at it:
 
 ```bash
-export MLX_STUDIO_UPDATE_URL="https://example.com/mlx-studio.json"
-# {"version": "2.1.0", "url": "https://example.com/MLXStudio-2.1.0.zip"}
+export MLX_STUDIO_UPDATE_URL="https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/release/latest.json"
 ```
+
+When the manifest version is newer, Setup shows an **App update available**
+panel with the release notes and a **Download DMG** button.
+
+---
+
+## Build a DMG
+
+```bash
+cd packaging
+./build_app.sh              # dist/MLX Studio.app + dist/MLX Studio-<version>.dmg
+./build_app.sh --app-only   # app bundle only
+./build_app.sh --no-sign    # skip ad-hoc codesigning
+```
+
+The script reads `APP_VERSION` from `app.py`, generates `Info.plist`, embeds the
+icon, ad-hoc signs the bundle, and produces a compressed DMG with an
+`Applications` symlink and a `Read Me.txt`.
+
+Generate the update manifest for a release:
+
+```bash
+./release_manifest.py \
+  --dmg "../dist/MLX.Studio-2.0.0.dmg" \
+  --url "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.0/MLX.Studio-2.0.0.dmg" \
+  --notes "Initial packaged release" \
+  --out ../release/latest.json
+```
+
+---
 
 ## Connect Claude Code / DeepSeek
 
-1. Start a model in **API Server**.
+1. Start a model in the **API Server** tab.
 2. Point any OpenAI-compatible client at it:
 
 ```
@@ -120,24 +186,50 @@ curl http://127.0.0.1:8080/v1/chat/completions \
        "messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
+---
+
 ## Model sizing for 32 GB unified memory
 
 | Model | Download | Peak RAM | Use |
-|-------|----------|----------|-----|
+|---|---|---|---|
 | `mlx-community/Llama-3.2-3B-Instruct-4bit` | ~2 GB | ~2 GB | fastest replies |
 | `mlx-community/Qwen2.5-7B-Instruct-1M-4bit` | ~4 GB | ~4.4 GB | **recommended default** |
 | `mlx-community/Qwen3.5-9B-4bit` | ~5–6 GB | ~6 GB | step up in quality |
 | `mlx-community/Qwen3.8-27B-4bit` | ~16 GB | ~17 GB | strongest that still fits |
 
-## Storage
+---
 
-- Models: `~/.cache/huggingface/hub/models--<org>--<name>/`
-- Activity log: `~/.mlx_studio/activity.log`
+## Project layout
 
-## API surface
+```
+MLX_Model_App/
+├── app.py                      # backend: HTTP + JSON/SSE API, native window host
+├── ui/
+│   ├── index.html              # single-page interface
+│   ├── style.css               # dark LM Studio–style theme
+│   └── app.js                  # routing, streaming, polling
+├── packaging/
+│   ├── build_app.sh            # .app + .dmg builder
+│   ├── launcher.py             # bundle entry point
+│   ├── release_manifest.py     # update manifest generator
+│   ├── icon.html               # icon source
+│   ├── icon_1024.png           # rendered icon
+│   └── AppIcon.icns            # compiled icon
+├── release/
+│   └── latest.json             # update manifest served to installed copies
+├── screenshots/                # captured views
+├── Run_MLX_Manager.command     # Finder launcher
+├── run.sh                      # terminal launcher
+├── CHANGELOG.md
+└── LICENSE
+```
+
+---
+
+## HTTP API
 
 | Method | Path | Purpose |
-|--------|------|---------|
+|---|---|---|
 | GET | `/api/state` | Full snapshot (app, versions, models, loaded, server, downloads, install) |
 | GET | `/api/models` | Installed models |
 | GET | `/api/search?q=` | Search mlx-community |
@@ -154,7 +246,22 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 | POST | `/api/install` `{kind}` | `install` \| `update` \| `reinstall` |
 | POST | `/api/logs/clear` | Truncate the activity log |
 
+---
+
+## Storage
+
+| What | Where |
+|---|---|
+| Model weights | `~/.cache/huggingface/hub/models--<org>--<name>/` |
+| Activity log | `~/.mlx_studio/activity.log` |
+| Launch log | `~/.mlx_studio/launch.log` |
+
+---
+
 ## Troubleshooting
+
+**"MLX Studio is damaged" / Gatekeeper warning** — right-click the app → **Open**.
+For a permanently trusted build, sign with a Developer ID and notarise.
 
 **No native window** — `python3 -m pip install pywebview`; otherwise the app
 opens in your default browser.
@@ -167,3 +274,16 @@ opens in your default browser.
 The app injects `truststore` to fix macOS certificate chains.
 
 **Delete refused** — unload the model in Chat first.
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Please run `python3 -m py_compile app.py`
+and `node --check ui/app.js` before opening a PR.
+
+---
+
+## License
+
+[MIT](LICENSE) © Dipesh Pansuriya

@@ -221,6 +221,21 @@
           </div>
         </div>
 
+        <div class="panel" id="appUpdatePanel" hidden>
+          <div class="panel-head">
+            <span>App update available</span>
+            <span class="pill warn" id="appUpdatePill"></span>
+          </div>
+          <div class="kv">
+            <div class="kv-row"><span>New version</span><span class="mono" id="appUpdateVersion">—</span></div>
+            <div class="kv-row"><span>Release notes</span><span class="mono" id="appUpdateNotes">—</span></div>
+          </div>
+          <div class="card-actions" style="margin-top:12px">
+            <button class="btn btn-primary" id="appUpdateDownload">Download DMG</button>
+            <button class="btn btn-ghost" id="appUpdateCopy">Copy link</button>
+          </div>
+        </div>
+
         <div class="panel">
           <div class="panel-head">
             <span>Runtime packages</span>
