@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MLX Studio</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ───────────────────────── Sidebar ───────────────────────── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">◈</div>
+      <div class="brand-text">
+        <div class="brand-name">MLX Studio</div>
+        <div class="brand-ver" id="appVersion">v—</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-view="chat">
+        <span class="nav-ico">💬</span><span>Chat</span>
+      </button>
+      <button class="nav-item" data-view="models">
+        <span class="nav-ico">🗂</span><span>Models</span><span class="nav-count" id="navModelCount">0</span>
+      </button>
+      <button class="nav-item" data-view="download">
+        <span class="nav-ico">⬇</span><span>Download</span>
+      </button>
+      <button class="nav-item" data-view="server">
+        <span class="nav-ico">🔌</span><span>API Server</span><span class="dot" id="navServerDot"></span>
+      </button>
+      <button class="nav-item" data-view="logs">
+        <span class="nav-ico">📜</span><span>Activity</span>
+      </button>
+      <button class="nav-item" data-view="settings">
+        <span class="nav-ico">⚙</span><span>Setup</span><span class="badge-warn hidden" id="navUpdateDot">!</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="hw" id="hwInfo">—</div>
+      <div class="status-line">
+        <span class="dot" id="globalDot"></span>
+        <span id="globalStatus">No model loaded</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ───────────────────────── Main ───────────────────────── -->
+  <main class="main">
+
+    <!-- ══════════ Chat ══════════ -->
+    <section class="view active" id="view-chat">
+      <header class="topbar">
+        <div class="topbar-left">
+          <label class="field-label">Model</label>
+          <select id="chatModelSelect" class="select"></select>
+          <button class="btn btn-primary" id="loadBtn">Load</button>
+          <button class="btn btn-ghost" id="unloadBtn" hidden>Unload</button>
+          <span class="state" id="loadState"><span class="dot dot-warn"></span>Not loaded</span>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-ghost" id="newChatBtn">＋ New chat</button>
+        </div>
+      </header>
+
+      <div class="chat-scroll" id="chatScroll">
+        <div class="empty" id="chatEmpty">
+          <div class="empty-mark">◈</div>
+          <h2>Start a conversation</h2>
+          <p>Load a model above, then type below. Everything runs locally on your Apple Silicon GPU.</p>
+        </div>
+        <div id="messages"></div>
+      </div>
+
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="Send a message…  (Enter to send, Shift+Enter for newline)"></textarea>
+        <div class="composer-side">
+          <button class="btn btn-primary" id="sendBtn">Send</button>
+          <button class="btn btn-ghost" id="stopBtn" hidden>Stop</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ Models ══════════ -->
+    <section class="view" id="view-models">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="title">Installed models</h1>
+          <span class="muted" id="modelsSummary"></span>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-ghost" id="refreshModelsBtn">↻ Refresh</button>
+        </div>
+      </header>
+      <div class="scroll">
+        <div class="cards" id="modelCards"></div>
+        <div class="empty" id="modelsEmpty" hidden>
+          <div class="empty-mark">🗂</div>
+          <h2>No models yet</h2>
+          <p>Head to <b>Download</b> and grab something from <code>mlx-community</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ Download ══════════ -->
+    <section class="view" id="view-download">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="title">Download models</h1>
+        </div>
+        <div class="topbar-right">
+          <input class="input" id="searchInput" placeholder="Search mlx-community…" />
+          <button class="btn btn-primary" id="searchBtn">Search</button>
+          <button class="btn btn-ghost" id="showAllBtn">Show all</button>
+        </div>
+      </header>
+      <div class="scroll">
+        <div class="cards" id="searchResults"></div>
+        <div class="empty" id="searchEmpty">
+          <div class="empty-mark">⬇</div>
+          <h2>Find a model</h2>
+          <p>Search the <code>mlx-community</code> organisation on Hugging Face.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ Server ══════════ -->
+    <section class="view" id="view-server">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="title">API Server</h1>
+          <span class="state" id="serverState"><span class="dot dot-warn"></span>Stopped</span>
+        </div>
+        <div class="topbar-right">
+          <select id="serverModelSelect" class="select"></select>
+          <button class="btn btn-primary" id="serverStartBtn">Start</button>
+          <button class="btn btn-ghost" id="serverStopBtn" hidden>Stop</button>
+        </div>
+      </header>
+      <div class="scroll">
+        <div class="panel">
+          <div class="panel-head">
+            <span>Endpoint</span>
+            <button class="btn btn-mini" id="copyEndpoint">Copy</button>
+          </div>
+          <div class="endpoint" id="endpointText">http://127.0.0.1:8080/v1</div>
+          <p class="hint">Point Claude Code, DeepSeek, or any OpenAI-compatible client here.</p>
+          <pre class="code" id="curlExample"></pre>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><span>Server output</span></div>
+          <pre class="console" id="serverLog"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ Logs ══════════ -->
+    <section class="view" id="view-logs">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="title">Activity</h1>
+          <select id="logFilter" class="select">
+            <option value="all">All actions</option>
+            <option value="chat">Chat</option>
+            <option value="model">Model load</option>
+            <option value="download">Download</option>
+            <option value="delete">Delete</option>
+            <option value="server">Server</option>
+            <option value="install">Install</option>
+            <option value="update">Update</option>
+          </select>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-ghost" id="refreshLogsBtn">↻ Refresh</button>
+          <button class="btn btn-danger" id="clearLogsBtn">Clear</button>
+        </div>
+      </header>
+      <div class="scroll">
+        <table class="table" id="logTable">
+          <thead>
+            <tr><th>Time</th><th>Action</th><th>Model</th><th>Status</th><th>Detail</th></tr>
+          </thead>
+          <tbody id="logBody"></tbody>
+        </table>
+        <div class="empty" id="logsEmpty">
+          <div class="empty-mark">📜</div>
+          <h2>Nothing logged yet</h2>
+          <p>Loads, chats, downloads and installs all land here.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ Settings ══════════ -->
+    <section class="view" id="view-settings">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="title">Setup &amp; versions</h1>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-ghost" id="checkUpdatesBtn">Check for updates</button>
+        </div>
+      </header>
+      <div class="scroll">
+
+        <div class="panel">
+          <div class="panel-head">
+            <span>Application</span>
+            <span class="pill" id="setAppPill"></span>
+          </div>
+          <div class="kv">
+            <div class="kv-row"><span>MLX Studio</span><span class="mono" id="setAppVersion">—</span></div>
+            <div class="kv-row"><span>Latest release</span><span class="mono" id="setAppLatest">—</span></div>
+            <div class="kv-row"><span>Update channel</span><span class="mono" id="setAppChannel">—</span></div>
+            <div class="kv-row"><span>Python</span><span class="mono" id="setPython">—</span></div>
+            <div class="kv-row"><span>Hardware</span><span class="mono" id="setHardware">—</span></div>
+            <div class="kv-row"><span>Last update check</span><span class="mono" id="setCheckedAt">never</span></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span>Runtime packages</span>
+            <button class="btn btn-mini" id="installBtn">Install / Update</button>
+          </div>
+          <div class="kv">
+            <div class="kv-row">
+              <span>MLX</span>
+              <span class="mono" id="setMlx">—</span>
+              <span class="pill" id="setMlxPill"></span>
+            </div>
+            <div class="kv-row">
+              <span>MLX-LM</span>
+              <span class="mono" id="setMlxLm">—</span>
+              <span class="pill" id="setMlxLmPill"></span>
+            </div>
+            <div class="kv-row">
+              <span>huggingface-hub</span>
+              <span class="mono" id="setHf">—</span>
+              <span class="pill" id="setHfPill"></span>
+            </div>
+          </div>
+          <p class="hint" id="setupHint"></p>
+          <pre class="console" id="installLog" hidden></pre>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
