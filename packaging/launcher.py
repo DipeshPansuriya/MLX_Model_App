@@ -87,6 +87,26 @@ def ask_focus() -> bool:
         return False
 
 
+def raise_by_applescript() -> bool:
+    """Fallback for an older instance that has no /api/focus endpoint.
+
+    A 2.0.2 server answers /api/ping but 404s /api/focus, so the request above
+    returns False. Without this fallback the launcher exited 0 and the user saw
+    nothing happen at all.
+    """
+    script = 'tell application "System Events" to tell process "Python" to set frontmost to true'
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
 def main() -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     note(f"launcher start · bundle={BUNDLE} · python={sys.version.split()[0]}")
@@ -96,7 +116,13 @@ def main() -> int:
     # nothing happen.
     if already_running():
         focused = ask_focus()
+        if not focused:
+            # Older instance without /api/focus: raise it the AppKit way.
+            focused = raise_by_applescript()
+            note(f"focus endpoint unavailable; applescript fallback ok={focused}")
         note(f"already running; focus requested (ok={focused})")
+        if not focused:
+            note("could not raise the running window; leaving it as is")
         return 0
 
     python = find_python()

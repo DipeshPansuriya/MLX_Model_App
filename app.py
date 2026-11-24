@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.3"
+APP_VERSION = "2.0.4"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
@@ -1316,6 +1316,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/delete":
             repo = body.get("repo") or ""
+            if not repo:
+                self._json({"error": "repo required"}, 400)
+                return
             if STATE.loaded_repo == repo:
                 self._json({"error": "unload the model first"}, 409)
                 return
