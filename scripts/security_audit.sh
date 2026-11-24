@@ -79,10 +79,14 @@ fi
 
 # ── SA-03 path containment ───────────────────────────────────────────────────
 section "SA-03  Static file containment"
-if grep -q 'is_relative_to(root)' app.py; then
+# Strongest form: the request path is a dictionary key into a startup allowlist,
+# so no filesystem path is built from user input at all.
+if grep -q 'STATIC_FILES.get(rel)' app.py && grep -q '_build_static_allowlist' app.py; then
+    ok SA-03 "static handler uses a startup allowlist; no path built from input"
+elif grep -q 'is_relative_to(root)' app.py; then
     ok SA-03 "static handler uses Path.is_relative_to (component-wise)"
 else
-    bad SA-03 "static handler does not use is_relative_to"
+    bad SA-03 "static handler neither allowlists nor uses is_relative_to"
 fi
 
 # ── SA-04 request body limits ────────────────────────────────────────────────

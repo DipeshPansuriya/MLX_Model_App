@@ -42,7 +42,8 @@ where a document describes intent rather than code, it says so explicitly.
 | 5 | [SECURITY.md](SECURITY.md) | Trust boundaries, what is exposed, what is deliberately not defended |
 | 5a | [SECURITY-AUDIT.md](SECURITY-AUDIT.md) | The 2026-11-24 audit: 21 checks, 3 findings remediated, re-run procedure |
 | 5b | [PUSH-POLICY.md](PUSH-POLICY.md) | No-credential rule, 19 secret rules, hooks, suppression, CI enforcement |
-| 5c | [GITHUB-POLICY.md](GITHUB-POLICY.md) | Branch ruleset, 7 required checks, automated PR review, zero-cost setup |
+| 5c | [BRANCH-POLICY.md](BRANCH-POLICY.md) | **Single source of truth**: every control in force, planned, cost and verification |
+| 5c-i | [GITHUB-POLICY.md](GITHUB-POLICY.md) | Detailed ruleset and workflow reference |
 | 5d | [REPO-HARDENING-CHECKLIST.md](REPO-HARDENING-CHECKLIST.md) | Reusable 79-item checklist: 11 areas, verify commands, cost, scorecard |
 | 6 | [TESTING.md](TESTING.md) | What was verified, how, and what remains unverified |
 | 7 | [RUNBOOK.md](RUNBOOK.md) | Operator procedures: start, stop, recover, rotate a release |
@@ -76,7 +77,8 @@ where a document describes intent rather than code, it says so explicitly.
 | Security audit | Built — 21 checks, 3 findings fixed | [SECURITY-AUDIT.md](SECURITY-AUDIT.md) |
 | Secret scanning on commit and push | Built — 19 rules, 3 enforcement points | [PUSH-POLICY.md](PUSH-POLICY.md) |
 | CI security workflow | Built — 3 jobs on push and PR | [PUSH-POLICY.md](PUSH-POLICY.md) §7 |
-| Branch protection on `main` | Built — ruleset, no bypass, 7 required checks | [GITHUB-POLICY.md](GITHUB-POLICY.md) §2 |
+| Branch protection on `main` | Built — ruleset, no bypass, 7 required checks | [BRANCH-POLICY.md](BRANCH-POLICY.md) §2 |
+| CodeQL code scanning | Built — 3 languages, weekly, 3 alerts fixed | [BRANCH-POLICY.md](BRANCH-POLICY.md) §7.2 |
 | Automated PR review | Built — sticky report comment | [GITHUB-POLICY.md](GITHUB-POLICY.md) §3.1 |
 | Automated CI build on tag | Open | [DEPLOYMENT.md](DEPLOYMENT.md) §7 |
 | Multi-turn context trimming | Open | [PRD.md](PRD.md) §10 |

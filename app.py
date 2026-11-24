@@ -44,6 +44,24 @@ PORT = 8765
 SERVER_PORT = 8080
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _build_static_allowlist(root: Path) -> dict[str, Path]:
+    """Map relative posix path -> absolute file, for files under root only."""
+    allowed: dict[str, Path] = {}
+    if not root.is_dir():
+        return allowed
+    resolved_root = root.resolve()
+    for entry in resolved_root.rglob("*"):
+        if not entry.is_file():
+            continue
+        if entry.suffix.lower() not in {".html", ".css", ".js", ".svg", ".png", ".ico"}:
+            continue
+        allowed[entry.relative_to(resolved_root).as_posix()] = entry
+    return allowed
+
+
+STATIC_FILES = _build_static_allowlist(UI_DIR)
 # The activity log records prompts, so keep it owner-only.
 with contextlib.suppress(OSError):
     APP_DIR.chmod(0o700)
@@ -578,13 +596,13 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     # -- static ---------------------------------------------------------- #
+    # The request path is never used to build a filesystem path. It is used as a
+    # dictionary key into a map built by scanning ui/ at startup, so traversal is
+    # impossible by construction rather than by validation.
     def _static(self, path: str) -> None:
         rel = path.lstrip("/") or "index.html"
-        root = UI_DIR.resolve()
-        target = (root / rel).resolve()
-        # is_relative_to compares path components, so a sibling such as
-        # "ui-evil/" cannot pass by sharing the "ui" string prefix.
-        if not target.is_relative_to(root) or not target.is_file():
+        target = STATIC_FILES.get(rel)
+        if target is None:
             self._send(404, b"not found", "text/plain")
             return
         ctype = {
