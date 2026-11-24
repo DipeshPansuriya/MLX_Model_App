@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependabot — automated dependency and action updates
+#
+# Alerts and security updates are already enabled at the repository level; this
+# file adds scheduled version updates so a stale pin is visible as a pull request
+# instead of drifting silently.
+# ─────────────────────────────────────────────────────────────────────────────
+version: 2
+
+updates:
+  # GitHub Actions pinned to commit SHAs. Dependabot rewrites the SHA and keeps
+  # the trailing "# vX" comment in step.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Python runtime dependencies. The app has no requirements file, so the
+  # versions in docs and packaging are tracked here for visibility.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"

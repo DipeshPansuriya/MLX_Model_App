@@ -205,10 +205,28 @@ else
     info SA-11 "no built bundle; run packaging/build_app.sh"
 fi
 
-# ── SA-12 DMG integrity and manifest match ─────────────────────────────────
+# ── SA-12 release manifest integrity ───────────────────────────────────────
 section "SA-12  Release integrity"
 MANIFEST="$ROOT/release/latest.json"
 if [ -f "$MANIFEST" ]; then
+    if python3 - "$MANIFEST" <<'PY'
+import json, re, sys
+m = json.load(open(sys.argv[1]))
+ok = (
+    isinstance(m.get("version"), str)
+    and isinstance(m.get("url"), str) and m["url"].startswith("https://")
+    and isinstance(m.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", m["sha256"])
+    and isinstance(m.get("size"), int) and m["size"] > 0
+)
+sys.exit(0 if ok else 1)
+PY
+    then ok SA-12 "manifest has version, https url, 64-hex sha256 and size"
+    else bad SA-12 "manifest is missing a field or has a malformed sha256/url"
+    fi
+
+    # A local rebuild legitimately differs from the published asset, so a
+    # mismatch is a warning: it means the manifest must be regenerated before
+    # the next release, not that the repository is broken.
     DMG=$(python3 - "$MANIFEST" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1])).get("url", "").rsplit("/", 1)[-1])
@@ -223,14 +241,37 @@ dmg = pathlib.Path(sys.argv[2])
 h = hashlib.sha256(dmg.read_bytes()).hexdigest()
 sys.exit(0 if h == m.get("sha256") and dmg.stat().st_size == m.get("size") else 1)
 PY
-        then ok SA-12 "local DMG matches manifest sha256 and size"
-        else bad SA-12 "local DMG does not match the manifest"
+        then ok SA-12 "local DMG matches the manifest sha256 and size"
+        else warn SA-12 "local DMG differs from the manifest: regenerate it before releasing"
         fi
     else
         info SA-12 "DMG not built locally; cannot compare"
     fi
 else
     warn SA-12 "no release/latest.json"
+fi
+
+# ── SA-15 shipped bundle matches source ────────────────────────────────────
+# A bundle built before a security fix ships the vulnerable code while the
+# source looks clean. Compare the bundled app.py with the working tree.
+section "SA-15  Bundle freshness"
+BUNDLED="$ROOT/dist/MLX Studio.app/Contents/Resources/app.py"
+if [ -f "$BUNDLED" ]; then
+    if cmp -s "$BUNDLED" "$ROOT/app.py"; then
+        ok SA-15 "bundled app.py matches the working tree"
+    else
+        bad SA-15 "bundled app.py differs from source: rebuild before releasing"
+    fi
+    BUNDLED_UI="$ROOT/dist/MLX Studio.app/Contents/Resources/ui/app.js"
+    if [ -f "$BUNDLED_UI" ]; then
+        if cmp -s "$BUNDLED_UI" "$ROOT/ui/app.js"; then
+            ok SA-15 "bundled ui/app.js matches the working tree"
+        else
+            bad SA-15 "bundled ui/app.js differs from source: rebuild before releasing"
+        fi
+    fi
+else
+    info SA-15 "no built bundle; run packaging/build_app.sh"
 fi
 
 # ── SA-13 dependency vulnerabilities ───────────────────────────────────────

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/DipeshPansuriya/MLX_Model_App/security/advisories/new
+    about: Report privately. Do not open a public issue.
+  - name: Documentation
+    url: https://github.com/DipeshPansuriya/MLX_Model_App/tree/main/docs
+    about: PRD, architecture, design, security, runbook, ADRs and diagrams.
