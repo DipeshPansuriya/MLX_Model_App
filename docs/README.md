@@ -43,6 +43,7 @@ where a document describes intent rather than code, it says so explicitly.
 | 5a | [SECURITY-AUDIT.md](SECURITY-AUDIT.md) | The 2026-11-24 audit: 21 checks, 3 findings remediated, re-run procedure |
 | 5b | [PUSH-POLICY.md](PUSH-POLICY.md) | No-credential rule, 19 secret rules, hooks, suppression, CI enforcement |
 | 5c | [GITHUB-POLICY.md](GITHUB-POLICY.md) | Branch ruleset, 7 required checks, automated PR review, zero-cost setup |
+| 5d | [REPO-HARDENING-CHECKLIST.md](REPO-HARDENING-CHECKLIST.md) | Reusable 79-item checklist: 11 areas, verify commands, cost, scorecard |
 | 6 | [TESTING.md](TESTING.md) | What was verified, how, and what remains unverified |
 | 7 | [RUNBOOK.md](RUNBOOK.md) | Operator procedures: start, stop, recover, rotate a release |
 | 8 | [adr/README.md](adr/README.md) | The decisions behind the design, with alternatives rejected |
