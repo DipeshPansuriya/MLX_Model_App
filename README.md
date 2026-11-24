@@ -99,6 +99,12 @@ python3 -m pip install pywebview
 - **Load**, **Reveal**, **Delete** (blocked while the model is loaded).
 
 ### Download
+- **Best for your Mac** — a curated catalogue of 25 `mlx-community` models, each
+  rated against this machine's unified memory: `great fit`, `good fit`,
+  `tight fit` or `too large`. Ratings use the measured 4-bit weight size, not the
+  parameter count, because that is what has to fit in RAM.
+- Filter by fit band or by category (`Fast`, `Balanced`, `Quality`, `Code`,
+  `Reasoning`, `Heavy`).
 - Search the [`mlx-community`](https://huggingface.co/mlx-community) org on
   Hugging Face, or browse everything.
 - Per-model download status: `running` / `success` / `failed`.
@@ -106,10 +112,19 @@ python3 -m pip install pywebview
 ### API Server
 - Starts `mlx_lm server` on `http://127.0.0.1:8080/v1`.
 - Live server output, copyable endpoint, ready-to-run `curl` example.
+- **Background** checkbox — the server detaches into its own session and keeps
+  serving after the window closes. Its pid is written to
+  `~/.mlx_studio/server.pid`, so the next launch adopts the running server
+  instead of starting a second one.
+- **Down notification** — a watchdog polls the server every 2 s. If it dies, the
+  Server view shows a red banner with the exit status and a **Restart** button, a
+  desktop notification fires, and `app.log` records `api server died`.
 
 ### Activity
 - Filterable log of every chat, load, download, delete, install and server event.
-- Persisted to `~/.mlx_studio/activity.log` (one JSON object per line).
+- Persisted to `~/.mlx_studio/logs/activity.log` (one JSON object per line).
+- **Export diagnostics** downloads a zip of the whole log folder plus an
+  environment report — one file to attach to a GitHub issue.
 
 ### Setup
 - Installed versions of MLX, MLX-LM and huggingface-hub, each with a pill:
@@ -305,6 +320,11 @@ results on every PR. See [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md).
 | GET | `/api/models` | Installed models |
 | GET | `/api/search?q=` | Search mlx-community |
 | GET | `/api/logs` | Activity entries |
+| GET | `/api/logs/app?limit=` | Application log (startup, HTTP errors, worker failures) |
+| GET | `/api/logs/files` | Files in the log folder with size and mtime |
+| GET | `/api/logs/export` | Zip of the log folder + `environment.json` |
+| GET | `/api/environment` | Versions, paths, hardware, installed model ids |
+| GET | `/api/catalog` | Curated models rated against this machine's RAM |
 | GET | `/api/versions` | Re-check PyPI, then return versions |
 | POST | `/api/load` `{repo}` | Load a model |
 | POST | `/api/unload` | Unload and clear the MLX cache |
@@ -312,8 +332,9 @@ results on every PR. See [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md).
 | POST | `/api/chat/stop` | Cancel generation |
 | POST | `/api/download` `{repo}` | Start a download |
 | POST | `/api/delete` `{repo}` | Delete a cached model |
-| POST | `/api/server/start` `{repo}` | Start the OpenAI-compatible server |
+| POST | `/api/server/start` `{repo, background}` | Start the OpenAI-compatible server |
 | POST | `/api/server/stop` | Stop it |
+| POST | `/api/server/notice/clear` | Dismiss the "server stopped" banner |
 | POST | `/api/install` `{kind}` | `install` \| `update` \| `reinstall` |
 | POST | `/api/logs/clear` | Truncate the activity log |
 
@@ -324,8 +345,33 @@ results on every PR. See [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md).
 | What | Where |
 |---|---|
 | Model weights | `~/.cache/huggingface/hub/models--<org>--<name>/` |
-| Activity log | `~/.mlx_studio/activity.log` |
-| Launch log | `~/.mlx_studio/launch.log` |
+| Log folder | `~/.mlx_studio/logs/` |
+| Activity log | `~/.mlx_studio/logs/activity.log` |
+| Application log | `~/.mlx_studio/logs/app.log` |
+| Launch log | `~/.mlx_studio/logs/launch.log` |
+| Background server output | `~/.mlx_studio/logs/server.log` |
+| Background server pid | `~/.mlx_studio/server.pid` |
+
+Logs rotate at 2 MB with three backups, and the folder is `0700` with `0600`
+files because `activity.log` records prompts.
+
+### Sharing logs for an issue
+
+**Activity → Export diagnostics** writes one zip:
+
+```
+mlx-studio-diagnostics-YYYYMMDD-HHMMSS.zip
+├── environment.json     versions, paths, hardware, installed model ids
+└── logs/                activity.log, app.log, launch.log, server.log
+```
+
+Attach that file to a
+[GitHub issue](https://github.com/DipeshPansuriya/MLX_Model_App/issues/new?template=bug_report.md).
+It contains your prompts — skim it before posting. The equivalent from a shell:
+
+```bash
+cd ~/.mlx_studio && zip -r ~/mlx-studio-logs.zip logs
+```
 
 ---
 

@@ -122,7 +122,7 @@ Because the log holds prompt text, it is owner-only: `~/.mlx_studio` is `0700` a
 | Expose the API to another machine | Do not. Use an SSH tunnel: `ssh -L 8080:127.0.0.1:8080 you@mac` |
 | Need the server on the LAN | Not supported; the bind is fixed at `127.0.0.1` |
 | Want a verified download | Compare the DMG's `shasum -a 256` with `release/latest.json` |
-| Want to audit prompts | Read `~/.mlx_studio/activity.log` |
+| Want to audit prompts | Read `~/.mlx_studio/logs/activity.log` |
 
 ## 7. What would change the model
 

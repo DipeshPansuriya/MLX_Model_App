@@ -8,15 +8,30 @@ starts the app, and keeps a log so failures are diagnosable from Finder.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 BUNDLE = Path(__file__).resolve().parent.parent  # …/Contents
 RESOURCES = BUNDLE / "Resources"
 APP_PY = RESOURCES / "app.py"
-LOG = Path.home() / ".mlx_studio" / "launch.log"
+LOG_DIR = Path.home() / ".mlx_studio" / "logs"
+LOG = LOG_DIR / "launch.log"
+
+
+def note(message: str) -> None:
+    """Append a timestamped line so a failed launch is diagnosable from Finder."""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {message}\n")
+        with contextlib.suppress(OSError):
+            LOG.chmod(0o600)
+    except OSError:
+        pass
 
 
 def find_python() -> str | None:
@@ -38,20 +53,22 @@ def find_python() -> str | None:
                 if probe.returncode == 0:
                     return path
             except Exception as exc:
-                print(f"interpreter probe failed for {path}: {exc}")
+                note(f"interpreter probe failed for {path}: {exc}")
                 continue
     return None
 
 
 def main() -> int:
-    LOG.parent.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    note(f"launcher start · bundle={BUNDLE} · python={sys.version.split()[0]}")
     python = find_python()
     if not python:
-        LOG.write_text("No Python 3.10+ interpreter found.\n", encoding="utf-8")
+        note("no Python 3.10+ interpreter found; aborting")
         return 1
+    note(f"interpreter={python}")
 
     if not APP_PY.exists():
-        LOG.write_text(f"Missing app.py at {APP_PY}\n", encoding="utf-8")
+        note(f"missing app.py at {APP_PY}; aborting")
         return 1
 
     with open(LOG, "a", encoding="utf-8") as fh:
@@ -64,7 +81,9 @@ def main() -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    return proc.wait()
+    code = proc.wait()
+    note(f"app exited with status {code}")
+    return code
 
 
 if __name__ == "__main__":

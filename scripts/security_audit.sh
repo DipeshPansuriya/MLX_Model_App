@@ -164,21 +164,37 @@ fi
 
 # ── SA-10 runtime log permissions ───────────────────────────────────────────
 section "SA-10  Runtime state permissions"
-LOG="$HOME/.mlx_studio/activity.log"
-if [ -d "$HOME/.mlx_studio" ]; then
-    dperm=$(file_mode "$HOME/.mlx_studio")
-    case "$dperm" in
-        drwx------) ok SA-10 "~/.mlx_studio is 0700" ;;
-        *) warn SA-10 "~/.mlx_studio is $dperm (expected drwx------)" ;;
-    esac
-else
+LOGDIR="$HOME/.mlx_studio/logs"
+LOG="$LOGDIR/activity.log"
+for dir in "$HOME/.mlx_studio" "$LOGDIR"; do
+    if [ -d "$dir" ]; then
+        dperm=$(file_mode "$dir")
+        case "$dperm" in
+            drwx------) ok SA-10 "$(basename "$dir") is 0700" ;;
+            *) warn SA-10 "$dir is $dperm (expected drwx------)" ;;
+        esac
+    fi
+done
+if [ ! -d "$HOME/.mlx_studio" ]; then
     info SA-10 "~/.mlx_studio does not exist yet"
 fi
-if [ -f "$LOG" ]; then
-    lperm=$(file_mode "$LOG")
-    case "$lperm" in
-        -rw-------) ok SA-10 "activity.log is 0600" ;;
-        *) warn SA-10 "activity.log is $lperm (expected -rw-------)" ;;
+# Every log file must be owner-only: activity.log holds prompts, server.log holds
+# model output, app.log holds paths and errors.
+if [ -d "$LOGDIR" ]; then
+    for f in "$LOGDIR"/*; do
+        [ -f "$f" ] || continue
+        lperm=$(file_mode "$f")
+        case "$lperm" in
+            -rw-------) ok SA-10 "$(basename "$f") is 0600" ;;
+            *) warn SA-10 "$(basename "$f") is $lperm (expected -rw-------)" ;;
+        esac
+    done
+fi
+if [ -f "$HOME/.mlx_studio/server.pid" ]; then
+    pperm=$(file_mode "$HOME/.mlx_studio/server.pid")
+    case "$pperm" in
+        -rw-------) ok SA-10 "server.pid is 0600" ;;
+        *) warn SA-10 "server.pid is $pperm (expected -rw-------)" ;;
     esac
 fi
 

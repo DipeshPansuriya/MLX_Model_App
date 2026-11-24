@@ -119,6 +119,34 @@
         </div>
       </header>
       <div class="scroll">
+        <div class="catalog-head">
+          <div>
+            <h2>Best for your Mac</h2>
+            <span class="muted" id="catalogHardware">—</span>
+          </div>
+          <select id="catalogFilter" class="select">
+            <option value="all">All models</option>
+            <option value="great">Great fit</option>
+            <option value="good">Good fit</option>
+            <option value="tight">Tight fit</option>
+            <option value="Code">Code</option>
+            <option value="Reasoning">Reasoning</option>
+            <option value="Fast">Fast</option>
+          </select>
+        </div>
+        <div class="cards" id="catalogCards"></div>
+        <div class="empty" id="catalogEmpty" hidden>
+          <div class="empty-mark">🎯</div>
+          <h2>Nothing matches that filter</h2>
+          <p>Pick another fit or category.</p>
+        </div>
+
+        <div class="catalog-head">
+          <div>
+            <h2>Search Hugging Face</h2>
+            <span class="muted">Anything else in <code>mlx-community</code></span>
+          </div>
+        </div>
         <div class="cards" id="searchResults"></div>
         <div class="empty" id="searchEmpty">
           <div class="empty-mark">⬇</div>
@@ -137,11 +165,25 @@
         </div>
         <div class="topbar-right">
           <select id="serverModelSelect" class="select"></select>
+          <label class="check" title="Keep the server running after the window closes">
+            <input type="checkbox" id="serverBackground" />
+            <span>Background</span>
+          </label>
           <button class="btn btn-primary" id="serverStartBtn">Start</button>
           <button class="btn btn-ghost" id="serverStopBtn" hidden>Stop</button>
         </div>
       </header>
       <div class="scroll">
+        <div class="notice" id="serverNotice" hidden>
+          <div class="notice-body">
+            <div class="notice-title">API server stopped</div>
+            <div class="notice-text" id="serverNoticeText">—</div>
+          </div>
+          <div class="notice-actions">
+            <button class="btn btn-mini btn-primary" id="serverRestartBtn">Restart</button>
+            <button class="btn btn-mini btn-ghost" id="serverNoticeDismiss">Dismiss</button>
+          </div>
+        </div>
         <div class="panel">
           <div class="panel-head">
             <span>Endpoint</span>
@@ -152,7 +194,10 @@
           <pre class="code" id="curlExample"></pre>
         </div>
         <div class="panel">
-          <div class="panel-head"><span>Server output</span></div>
+          <div class="panel-head">
+            <span>Server output</span>
+            <span class="pill" id="serverModePill">foreground</span>
+          </div>
           <pre class="console" id="serverLog"></pre>
         </div>
       </div>
@@ -176,10 +221,63 @@
         </div>
         <div class="topbar-right">
           <button class="btn btn-ghost" id="refreshLogsBtn">↻ Refresh</button>
+          <button class="btn btn-primary" id="exportLogsBtn">⤓ Export diagnostics</button>
           <button class="btn btn-danger" id="clearLogsBtn">Clear</button>
         </div>
       </header>
       <div class="scroll">
+
+        <div class="panel">
+          <div class="panel-head">
+            <span>Log folder</span>
+            <span class="pill" id="logDirPill">—</span>
+          </div>
+          <div class="kv">
+            <div class="kv-row">
+              <span>Location</span>
+              <span class="mono" id="logDirPath">—</span>
+            </div>
+          </div>
+          <p class="hint">
+            Everything the app records lives here. <strong>Export diagnostics</strong>
+            zips this folder with an environment report, so you can attach one file
+            to a GitHub issue. Prompts are included — review before sharing.
+          </p>
+          <div class="card-actions" style="margin-top:12px">
+            <button class="btn btn-ghost" id="copyLogDir">Copy folder path</button>
+            <button class="btn btn-ghost" id="refreshLogFiles">↻ Refresh files</button>
+          </div>
+          <table class="table" id="logFileTable" hidden>
+            <thead>
+              <tr><th>File</th><th>Size</th><th>Modified</th></tr>
+            </thead>
+            <tbody id="logFileBody"></tbody>
+          </table>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span>Application log</span>
+            <select id="appLogLevel" class="select">
+              <option value="all">All levels</option>
+              <option value="error">Errors</option>
+              <option value="warning">Warnings</option>
+              <option value="info">Info</option>
+            </select>
+          </div>
+          <table class="table" id="appLogTable" hidden>
+            <thead>
+              <tr><th>Time</th><th>Level</th><th>Message</th></tr>
+            </thead>
+            <tbody id="appLogBody"></tbody>
+          </table>
+          <div class="empty" id="appLogEmpty">
+            <div class="empty-mark">🧾</div>
+            <h2>No application events yet</h2>
+            <p>Startup, HTTP errors and worker failures land here.</p>
+          </div>
+        </div>
+
         <table class="table" id="logTable">
           <thead>
             <tr><th>Time</th><th>Action</th><th>Model</th><th>Status</th><th>Detail</th></tr>

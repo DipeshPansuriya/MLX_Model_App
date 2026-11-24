@@ -120,6 +120,16 @@ html, body {
 .select:focus, .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79, 140, 255, .16); }
 .input { min-width: 260px; }
 
+.check {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px; color: var(--text-2); cursor: pointer;
+  padding: 7px 11px; border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm); background: var(--panel);
+  user-select: none;
+}
+.check input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+.check:hover { border-color: var(--line-2); color: var(--text); }
+
 .btn {
   border: 1px solid var(--line-2); border-radius: var(--radius-sm);
   background: var(--panel); color: var(--text);
@@ -263,6 +273,42 @@ html, body {
 .st-ok { color: var(--green) !important; }
 .st-bad { color: var(--red) !important; }
 .st-run { color: var(--accent) !important; }
+
+/* ───────────── Notice banner ───────────── */
+.notice {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 16px; margin-bottom: 16px;
+  border: 1px solid rgba(255, 107, 107, .35);
+  background: rgba(255, 107, 107, .07);
+  border-radius: var(--radius-sm);
+}
+.notice[hidden] { display: none; }
+.notice-body { flex: 1; min-width: 0; }
+.notice-title {
+  font-size: 12.5px; font-weight: 700; color: var(--red);
+  margin-bottom: 3px;
+}
+.notice-text { font-size: 12px; color: var(--text-2); line-height: 1.5; }
+.notice-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
+/* ───────────── Fit rating ───────────── */
+.fit {
+  font-size: 10px; font-family: var(--mono); font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em;
+  padding: 2px 8px; border-radius: 20px; border: 1px solid var(--line-2);
+  color: var(--text-3);
+}
+.fit-great { color: var(--green); border-color: rgba(55, 211, 153, .35); background: rgba(55, 211, 153, .08); }
+.fit-good { color: var(--accent); border-color: rgba(79, 140, 255, .35); background: rgba(79, 140, 255, .08); }
+.fit-tight { color: var(--amber); border-color: rgba(240, 162, 60, .35); background: rgba(240, 162, 60, .08); }
+.fit-too-large { color: var(--red); border-color: rgba(255, 107, 107, .35); background: rgba(255, 107, 107, .08); }
+
+.catalog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin: 22px 0 12px;
+}
+.catalog-head h2 { font-size: 14px; font-weight: 700; letter-spacing: -.01em; }
+.catalog-head .muted { font-size: 12px; }
 
 /* ───────────── Empty ───────────── */
 .empty { text-align: center; padding: 64px 20px; color: var(--text-3); max-width: 460px; margin: 0 auto; }

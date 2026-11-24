@@ -19,12 +19,14 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,14 +38,23 @@ APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 HF_ORG = "mlx-community"
 CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 APP_DIR = Path.home() / ".mlx_studio"
-LOG_FILE = APP_DIR / "activity.log"
+LOG_DIR = APP_DIR / "logs"
+ACTIVITY_LOG = LOG_DIR / "activity.log"
+APP_LOG = LOG_DIR / "app.log"
+LAUNCH_LOG = LOG_DIR / "launch.log"
+SERVER_LOG = LOG_DIR / "server.log"
 UI_DIR = Path(__file__).resolve().parent / "ui"
+
+# Rotation keeps the folder small enough to attach to a GitHub issue.
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUPS = 3
 
 HOST = "127.0.0.1"
 PORT = 8765
 SERVER_PORT = 8080
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _build_static_allowlist(root: Path) -> dict[str, Path]:
@@ -62,14 +73,68 @@ def _build_static_allowlist(root: Path) -> dict[str, Path]:
 
 
 STATIC_FILES = _build_static_allowlist(UI_DIR)
-# The activity log records prompts, so keep it owner-only.
-with contextlib.suppress(OSError):
-    APP_DIR.chmod(0o700)
+# The logs record prompts, so keep the whole tree owner-only.
+for _private in (APP_DIR, LOG_DIR):
+    with contextlib.suppress(OSError):
+        _private.chmod(0o700)
 
 
 # --------------------------------------------------------------------------- #
-# Activity log
+# Logging
 # --------------------------------------------------------------------------- #
+def _rotate(path: Path) -> None:
+    """Keep path, path.1 … path.N, dropping the oldest. Best effort."""
+    try:
+        if not path.exists() or path.stat().st_size < LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+    with contextlib.suppress(OSError):
+        for index in range(LOG_BACKUPS - 1, 0, -1):
+            older = path.with_name(f"{path.name}.{index}")
+            if older.exists():
+                older.replace(path.with_name(f"{path.name}.{index + 1}"))
+        path.replace(path.with_name(f"{path.name}.1"))
+
+
+def _migrate_legacy_logs() -> None:
+    """Move 2.0.0-era logs from ~/.mlx_studio/ into ~/.mlx_studio/logs/."""
+    for legacy in (APP_DIR / "activity.log", APP_DIR / "launch.log"):
+        if not legacy.is_file():
+            continue
+        target = LOG_DIR / legacy.name
+        with contextlib.suppress(OSError):
+            if not target.exists():
+                legacy.replace(target)
+                target.chmod(0o600)
+            else:
+                legacy.unlink(missing_ok=True)
+
+
+def _append(path: Path, line: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate(path)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line if line.endswith("\n") else line + "\n")
+        with contextlib.suppress(OSError):
+            path.chmod(0o600)
+    except OSError as exc:
+        print(f"log write failed ({path.name}): {exc}")
+
+
+def log_app(level: str, message: str, **fields) -> None:
+    """Structured application log: lifecycle, HTTP errors, worker failures."""
+    entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "level": level,
+        "message": message,
+    }
+    if fields:
+        entry.update(fields)
+    _append(APP_LOG, json.dumps(entry, ensure_ascii=False, default=str))
+
+
 def log_activity(action: str, model: str, status: str, detail: str) -> None:
     entry = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -78,21 +143,15 @@ def log_activity(action: str, model: str, status: str, detail: str) -> None:
         "status": status,
         "detail": detail,
     }
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        with contextlib.suppress(OSError):
-            LOG_FILE.chmod(0o600)
-    except OSError as exc:
-        print(f"log write failed: {exc}")
+    _append(ACTIVITY_LOG, json.dumps(entry, ensure_ascii=False))
 
 
-def read_activity(limit: int = 2000) -> list[dict]:
-    if not LOG_FILE.exists():
+def _read_jsonl(path: Path, limit: int) -> list[dict]:
+    if not path.exists():
         return []
     out: list[dict] = []
     try:
-        with open(LOG_FILE, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for raw_line in fh:
                 line = raw_line.strip()
                 if not line:
@@ -112,6 +171,94 @@ def read_activity(limit: int = 2000) -> list[dict]:
     except OSError:
         return []
     return out[-limit:]
+
+
+def read_activity(limit: int = 2000) -> list[dict]:
+    return _read_jsonl(ACTIVITY_LOG, limit)
+
+
+def read_app_log(limit: int = 500) -> list[dict]:
+    return _read_jsonl(APP_LOG, limit)
+
+
+def log_files() -> list[dict]:
+    """Every file in the log folder, newest first, with size and mtime."""
+    out: list[dict] = []
+    if not LOG_DIR.is_dir():
+        return out
+    for path in sorted(LOG_DIR.iterdir()):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        out.append(
+            {
+                "name": path.name,
+                "size": stat.st_size,
+                "size_h": human_size(stat.st_size),
+                "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "path": str(path),
+            }
+        )
+    out.sort(key=lambda f: f["modified"], reverse=True)
+    return out
+
+
+def environment_report() -> dict:
+    """Facts a maintainer needs to triage a report, with no prompts included."""
+    hw = hardware()
+    return {
+        "app": {"name": APP_NAME, "version": APP_VERSION},
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "chip": hw["chip"],
+        "ram": hw["ram"],
+        "packages": {
+            "mlx": pkg_version("mlx"),
+            "mlx-lm": pkg_version("mlx-lm"),
+            "huggingface-hub": pkg_version("huggingface-hub"),
+            "pywebview": pkg_version("pywebview"),
+        },
+        "paths": {
+            "app_dir": str(APP_DIR),
+            "log_dir": str(LOG_DIR),
+            "cache_dir": str(CACHE_DIR),
+            "ui_dir": str(UI_DIR),
+        },
+        "ports": {"app": PORT, "server": SERVER_PORT},
+        "env": {
+            "MLX_STUDIO_UPDATE_URL": APP_UPDATE_URL or "",
+            "HF_TOKEN": "set" if os.environ.get("HF_TOKEN") else "",
+        },
+        "models": [m["repo"] for m in installed_models()],
+        "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def build_diagnostic_bundle() -> tuple[bytes, str]:
+    """Zip the log folder plus an environment report, ready to attach to an issue.
+
+    Prompts live in activity.log; the bundle is written by the user and never
+    uploaded anywhere automatically.
+    """
+    import io
+
+    buffer = io.BytesIO()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    name = f"mlx-studio-diagnostics-{stamp}.zip"
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "environment.json", json.dumps(environment_report(), indent=2, ensure_ascii=False)
+        )
+        if LOG_DIR.is_dir():
+            for path in sorted(LOG_DIR.iterdir()):
+                if path.is_file():
+                    with contextlib.suppress(OSError):
+                        archive.write(path, arcname=f"logs/{path.name}")
+    return buffer.getvalue(), name
 
 
 # --------------------------------------------------------------------------- #
@@ -240,6 +387,227 @@ def search_hf(query: str) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# Curated catalogue
+# --------------------------------------------------------------------------- #
+# Sizes are the on-disk 4-bit weight totals measured from the Hugging Face API,
+# not parameter counts, because that is what has to fit in unified memory.
+MODEL_CATALOG: list[dict] = [
+    {
+        "repo": "mlx-community/Qwen3-0.6B-4bit",
+        "size_gb": 0.35,
+        "params": "0.6B",
+        "category": "Fast",
+        "use": "Instant replies, autocomplete, smoke tests",
+    },
+    {
+        "repo": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+        "size_gb": 0.29,
+        "params": "0.5B",
+        "category": "Fast",
+        "use": "Smallest useful chat model",
+    },
+    {
+        "repo": "mlx-community/gemma-3-1b-it-4bit",
+        "size_gb": 0.77,
+        "params": "1B",
+        "category": "Fast",
+        "use": "Short answers, low memory",
+    },
+    {
+        "repo": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        "size_gb": 0.71,
+        "params": "1B",
+        "category": "Fast",
+        "use": "Cheap drafting and rewriting",
+    },
+    {
+        "repo": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+        "size_gb": 0.88,
+        "params": "1.5B",
+        "category": "Fast",
+        "use": "Everyday chat without the wait",
+    },
+    {
+        "repo": "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit",
+        "size_gb": 0.88,
+        "params": "1.5B",
+        "category": "Code",
+        "use": "Inline code completion",
+    },
+    {
+        "repo": "mlx-community/Qwen3-1.7B-4bit",
+        "size_gb": 0.98,
+        "params": "1.7B",
+        "category": "Fast",
+        "use": "Reasoning at small size",
+    },
+    {
+        "repo": "mlx-community/gemma-2-2b-it-4bit",
+        "size_gb": 1.49,
+        "params": "2B",
+        "category": "Balanced",
+        "use": "Polite, compact assistant",
+    },
+    {
+        "repo": "mlx-community/Qwen2.5-3B-Instruct-4bit",
+        "size_gb": 1.75,
+        "params": "3B",
+        "category": "Balanced",
+        "use": "Best quality per gigabyte",
+    },
+    {
+        "repo": "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        "size_gb": 1.82,
+        "params": "3B",
+        "category": "Balanced",
+        "use": "Strong English writing",
+    },
+    {
+        "repo": "mlx-community/Phi-3.5-mini-instruct-4bit",
+        "size_gb": 2.15,
+        "params": "3.8B",
+        "category": "Balanced",
+        "use": "Reasoning and maths",
+    },
+    {
+        "repo": "mlx-community/Qwen3-4B-4bit",
+        "size_gb": 2.28,
+        "params": "4B",
+        "category": "Balanced",
+        "use": "Modern general assistant",
+    },
+    {
+        "repo": "mlx-community/gemma-3-4b-it-4bit",
+        "size_gb": 3.44,
+        "params": "4B",
+        "category": "Balanced",
+        "use": "Multilingual, long context",
+    },
+    {
+        "repo": "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
+        "size_gb": 4.08,
+        "params": "7B",
+        "category": "Quality",
+        "use": "Reliable instruction following",
+    },
+    {
+        "repo": "mlx-community/Qwen2.5-7B-Instruct-1M-4bit",
+        "size_gb": 4.3,
+        "params": "7B",
+        "category": "Quality",
+        "use": "Long documents, 1M context",
+    },
+    {
+        "repo": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+        "size_gb": 4.3,
+        "params": "7B",
+        "category": "Code",
+        "use": "Code generation and refactors",
+    },
+    {
+        "repo": "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
+        "size_gb": 4.3,
+        "params": "7B",
+        "category": "Reasoning",
+        "use": "Step-by-step reasoning",
+    },
+    {
+        "repo": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
+        "size_gb": 4.53,
+        "params": "8B",
+        "category": "Quality",
+        "use": "Well-rounded default",
+    },
+    {
+        "repo": "mlx-community/Qwen3-8B-4bit",
+        "size_gb": 4.62,
+        "params": "8B",
+        "category": "Quality",
+        "use": "Best all-round 8B",
+    },
+    {
+        "repo": "mlx-community/gemma-2-9b-it-4bit",
+        "size_gb": 5.22,
+        "params": "9B",
+        "category": "Quality",
+        "use": "Careful, factual answers",
+    },
+    {
+        "repo": "mlx-community/gemma-3-12b-it-4bit",
+        "size_gb": 8.07,
+        "params": "12B",
+        "category": "Heavy",
+        "use": "Needs a 24 GB machine or more",
+    },
+    {
+        "repo": "mlx-community/Qwen3-14B-4bit",
+        "size_gb": 8.32,
+        "params": "14B",
+        "category": "Heavy",
+        "use": "Needs a 24 GB machine or more",
+    },
+    {
+        "repo": "mlx-community/Qwen3-30B-A3B-4bit",
+        "size_gb": 17.19,
+        "params": "30B MoE",
+        "category": "Heavy",
+        "use": "MoE: fast tokens, large footprint",
+    },
+    {
+        "repo": "mlx-community/Qwen3-32B-4bit",
+        "size_gb": 18.45,
+        "params": "32B",
+        "category": "Heavy",
+        "use": "Best quality that still fits 32 GB",
+    },
+    {
+        "repo": "mlx-community/Llama-3.3-70B-Instruct-4bit",
+        "size_gb": 39.71,
+        "params": "70B",
+        "category": "Heavy",
+        "use": "Needs 64 GB or more",
+    },
+]
+
+# Fit is the model's 4-bit weight size as a share of physical unified memory.
+# The bands are chosen so a 32 GB machine reads: up to 8 GB great (fast, plenty
+# of headroom), up to 14 GB good, up to 22 GB tight (close to the limit), and
+# anything larger will not fit alongside macOS.
+FIT_GREAT = 0.25
+FIT_GOOD = 0.44
+FIT_TIGHT = 0.70
+
+
+def fit_rating(size_gb: float, ram_bytes: int) -> str:
+    """Rate a model against installed memory: great / good / tight / too-large."""
+    if ram_bytes <= 0:
+        return "unknown"
+    share = size_gb / (ram_bytes / 1024**3)
+    if share <= FIT_GREAT:
+        return "great"
+    if share <= FIT_GOOD:
+        return "good"
+    if share <= FIT_TIGHT:
+        return "tight"
+    return "too-large"
+
+
+def model_catalog() -> list[dict]:
+    """The curated list annotated with a fit rating for this machine."""
+    ram = hardware()["ram_bytes"]
+    installed = {m["repo"] for m in installed_models()}
+    out = []
+    for entry in MODEL_CATALOG:
+        item = dict(entry)
+        item["fit"] = fit_rating(entry["size_gb"], ram)
+        item["installed"] = entry["repo"] in installed
+        out.append(item)
+    order = {"great": 0, "good": 1, "tight": 2, "too-large": 3, "unknown": 4}
+    out.sort(key=lambda m: (order.get(m["fit"], 9), m["size_gb"]))
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Application state
 # --------------------------------------------------------------------------- #
 class State:
@@ -255,6 +623,12 @@ class State:
         self.server_proc: subprocess.Popen | None = None
         self.server_repo: str | None = None
         self.server_lines: list[str] = []
+        self.server_background = False
+        self.server_started_at: str | None = None
+        self.server_last_error: str | None = None
+        self.server_down_notice: str | None = None
+        self.server_pid: int | None = None
+        self.server_stopping = False
         self.downloads: dict[str, dict] = {}
         self.install: dict = {"running": False, "kind": "", "lines": []}
         self.versions: dict = {"checked_at": None, "mlx_latest": None, "mlx_lm_latest": None}
@@ -312,11 +686,16 @@ class State:
                 "error": self.load_error,
             },
             "server": {
-                "running": self.server_proc is not None,
+                "running": self.server_proc is not None or _pid_alive(self.server_pid),
                 "repo": self.server_repo,
                 "port": SERVER_PORT,
                 "endpoint": f"http://{HOST}:{SERVER_PORT}/v1",
                 "lines": self.server_lines[-200:],
+                "background": self.server_background,
+                "started_at": self.server_started_at,
+                "last_error": self.server_last_error,
+                "down_notice": self.server_down_notice,
+                "pid": self.server_pid,
             },
             "downloads": list(self.downloads.values()),
             "install": {
@@ -395,6 +774,7 @@ def worker_load(repo: str) -> None:
             STATE.loading_repo = None
             STATE.load_error = str(exc)[:500]
         log_activity("model", repo, "failed", str(exc)[:300])
+        log_app("error", "model load failed", repo=repo, error=str(exc)[:500])
 
 
 def worker_download(repo: str) -> None:
@@ -419,6 +799,7 @@ def worker_download(repo: str) -> None:
             "pct": 0,
         }
         log_activity("download", repo, "failed", str(exc)[:300])
+        log_app("error", "download failed", repo=repo, error=str(exc)[:500])
 
 
 def worker_install(kind: str) -> None:
@@ -449,6 +830,11 @@ def worker_install(kind: str) -> None:
         STATE.install["lines"].append(f"error: {exc}")
 
     log_activity("install", "mlx + mlx-lm", "success" if ok else "failed", f"{kind} finished")
+    log_app(
+        "info" if ok else "error",
+        f"package {kind} {'succeeded' if ok else 'failed'}",
+        tail=STATE.install["lines"][-5:],
+    )
     STATE.install["running"] = False
     worker_check_versions()
 
@@ -500,9 +886,100 @@ def latest_app_version() -> str | None:
         return None
 
 
-def worker_server_start(repo: str) -> None:
+def _pid_alive(pid: int | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _server_pidfile() -> Path:
+    return APP_DIR / "server.pid"
+
+
+def _write_server_pidfile(pid: int, repo: str, background: bool) -> None:
+    payload = {
+        "pid": pid,
+        "repo": repo,
+        "background": background,
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "port": SERVER_PORT,
+    }
+    with contextlib.suppress(OSError):
+        _server_pidfile().write_text(json.dumps(payload), encoding="utf-8")
+        _server_pidfile().chmod(0o600)
+
+
+def _clear_server_pidfile(only_pid: int | None = None) -> None:
+    """Remove the pidfile, or only when it still describes ``only_pid``.
+
+    A watcher for a server that has just been replaced must not delete the
+    pidfile written for its successor, so callers that race pass their pid.
+    """
+    path = _server_pidfile()
+    if only_pid is not None:
+        try:
+            current = json.loads(path.read_text(encoding="utf-8")).get("pid")
+        except (OSError, json.JSONDecodeError):
+            return
+        if current != only_pid:
+            return
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
+def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
+    """Notice when the API server dies and record why, so the UI can warn.
+
+    A detached child stays a zombie until it is reaped, and os.kill(pid, 0)
+    still succeeds on a zombie, so poll the Popen handle when we have one and
+    fall back to the pid probe only for a server adopted from a pidfile.
+    """
+    while True:
+        if proc is not None:
+            if proc.poll() is not None:
+                break
+        elif not _pid_alive(pid):
+            break
+        time.sleep(2)
+    if STATE.server_stopping:
+        return
+    code = None
+    if proc is not None:
+        with contextlib.suppress(Exception):
+            code = proc.returncode
+    with STATE.lock:
+        # A restart may already have installed a successor; only the watcher for
+        # the current pid is allowed to declare the server down.
+        if STATE.server_pid != pid:
+            return
+        STATE.server_proc = None
+        STATE.server_pid = None
+        STATE.server_repo = None
+        STATE.server_background = False
+        STATE.server_started_at = None
+        STATE.server_last_error = (
+            f"exited with status {code}" if code is not None else "process gone"
+        )
+        STATE.server_down_notice = (
+            f"API server for {repo.rsplit('/', maxsplit=1)[-1]} stopped unexpectedly "
+            f"({STATE.server_last_error})"
+        )
+    _clear_server_pidfile(only_pid=pid)
+    log_activity("server", repo, "failed", f"stopped unexpectedly ({STATE.server_last_error})")
+    log_app("error", "api server died", repo=repo, pid=pid, exit_code=code)
+
+
+def worker_server_start(repo: str, background: bool = False) -> None:
     stop_server()
     STATE.server_lines = []
+    STATE.server_down_notice = None
+    STATE.server_last_error = None
     cmd = [
         sys.executable,
         "-m",
@@ -516,16 +993,56 @@ def worker_server_start(repo: str) -> None:
         str(SERVER_PORT),
     ]
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-        )
+        if background:
+            # Detached: survives the app window closing, output goes to a file
+            # so the log folder still explains what happened.
+            handle = open(SERVER_LOG, "a", encoding="utf-8")  # noqa: SIM115 - kept open
+            with contextlib.suppress(OSError):
+                SERVER_LOG.chmod(0o600)
+            handle.write(f"\n=== {datetime.now():%Y-%m-%d %H:%M:%S} start {repo} ===\n")
+            handle.flush()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        else:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+            )
     except Exception as exc:
         STATE.server_lines.append(f"failed to start: {exc}")
+        STATE.server_last_error = str(exc)[:300]
+        log_app("error", "api server failed to start", repo=repo, error=str(exc)[:500])
         return
 
     STATE.server_proc = proc
+    STATE.server_pid = proc.pid
     STATE.server_repo = repo
-    log_activity("server", repo, "running", f"listening on {HOST}:{SERVER_PORT}")
+    STATE.server_background = background
+    STATE.server_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    STATE.server_stopping = False
+    _write_server_pidfile(proc.pid, repo, background)
+    log_activity(
+        "server",
+        repo,
+        "running",
+        f"listening on {HOST}:{SERVER_PORT}" + (" (background)" if background else ""),
+    )
+    log_app(
+        "info",
+        "api server started",
+        repo=repo,
+        pid=proc.pid,
+        background=background,
+        port=SERVER_PORT,
+    )
+    threading.Thread(target=_watch_server, args=(proc.pid, repo, proc), daemon=True).start()
+
+    if background:
+        return
 
     if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
         STATE.server_lines.append("error: no stdout stream")
@@ -533,22 +1050,71 @@ def worker_server_start(repo: str) -> None:
     for line in proc.stdout:
         STATE.server_lines.append(line.rstrip())
         STATE.server_lines = STATE.server_lines[-400:]
-    STATE.server_proc = None
-    STATE.server_repo = None
-    log_activity("server", repo, "info", "server stopped")
+    proc.wait()
+    with contextlib.suppress(Exception):
+        STATE.server_last_error = f"exited with status {proc.returncode}"
 
 
 def stop_server() -> None:
     proc = STATE.server_proc
-    if proc is None:
-        return
-    proc.terminate()
+    pid = STATE.server_pid
+    repo = STATE.server_repo
+    STATE.server_stopping = True
     try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-    STATE.server_proc = None
-    STATE.server_repo = None
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        elif pid and _pid_alive(pid):
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGTERM)
+            for _ in range(50):
+                if not _pid_alive(pid):
+                    break
+                time.sleep(0.1)
+            if _pid_alive(pid):
+                with contextlib.suppress(OSError):
+                    os.kill(pid, signal.SIGKILL)
+    finally:
+        with STATE.lock:
+            STATE.server_proc = None
+            STATE.server_pid = None
+            STATE.server_repo = None
+            STATE.server_background = False
+            STATE.server_started_at = None
+            STATE.server_down_notice = None
+        _clear_server_pidfile(only_pid=pid)
+        if repo:
+            log_activity("server", repo, "info", "server stopped")
+            log_app("info", "api server stopped", repo=repo, pid=pid)
+        STATE.server_stopping = False
+
+
+def restore_server_state() -> None:
+    """Adopt a background server left running by a previous app session."""
+    path = _server_pidfile()
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _clear_server_pidfile()
+        return
+    pid = data.get("pid")
+    if not isinstance(pid, int) or not _pid_alive(pid):
+        _clear_server_pidfile()
+        return
+    STATE.server_pid = pid
+    STATE.server_repo = data.get("repo")
+    STATE.server_background = bool(data.get("background"))
+    STATE.server_started_at = data.get("started_at")
+    STATE.server_stopping = False
+    log_app("info", "adopted running api server", pid=pid, repo=STATE.server_repo)
+    threading.Thread(
+        target=_watch_server, args=(pid, STATE.server_repo or "?", None), daemon=True
+    ).start()
 
 
 # --------------------------------------------------------------------------- #
@@ -559,7 +1125,15 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):  # quieter console
-        pass
+        """Keep the console clean but record failed requests in app.log.
+
+        BaseHTTPRequestHandler passes the status code as a string, so coerce
+        before comparing.
+        """
+        with contextlib.suppress(Exception):
+            code = int(args[1]) if len(args) > 1 else 0
+            if code >= 400:
+                log_app("warning", "http error", status=code, detail=fmt % args)
 
     def handle_one_request(self) -> None:
         """Treat client disconnects as normal, not as server errors."""
@@ -567,13 +1141,24 @@ class Handler(BaseHTTPRequestHandler):
             super().handle_one_request()
         except (ConnectionResetError, BrokenPipeError):
             self.close_connection = True
+        except Exception as exc:
+            log_app("error", "request failed", error=repr(exc), path=self.path)
+            raise
 
     # -- plumbing -------------------------------------------------------- #
-    def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
+    def _send(
+        self,
+        code: int,
+        body: bytes,
+        ctype: str = "application/json",
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -633,6 +1218,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/logs":
             self._json({"entries": read_activity()})
+            return
+        if path == "/api/logs/files":
+            self._json({"dir": str(LOG_DIR), "files": log_files()})
+            return
+        if path == "/api/logs/app":
+            limit = 500
+            raw = (query.get("limit") or [""])[0]
+            if raw.isdigit():
+                limit = max(1, min(int(raw), 5000))
+            self._json({"entries": read_app_log(limit)})
+            return
+        if path == "/api/logs/export":
+            body_bytes, name = build_diagnostic_bundle()
+            self._send(
+                200,
+                body_bytes,
+                "application/zip",
+                extra_headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            )
+            log_app("info", "diagnostic bundle exported", file=name, bytes=len(body_bytes))
+            return
+        if path == "/api/environment":
+            self._json(environment_report())
+            return
+        if path == "/api/catalog":
+            self._json({"catalog": model_catalog(), "hardware": hardware()})
             return
         if path == "/api/versions":
             worker_check_versions()
@@ -712,16 +1323,24 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/server/start":
             repo = body.get("repo") or ""
+            background = bool(body.get("background"))
             if not repo:
                 self._json({"error": "repo required"}, 400)
                 return
-            threading.Thread(target=worker_server_start, args=(repo,), daemon=True).start()
-            self._json({"ok": True})
+            threading.Thread(
+                target=worker_server_start, args=(repo, background), daemon=True
+            ).start()
+            self._json({"ok": True, "background": background})
             return
 
         if path == "/api/server/stop":
             # worker_server_start logs the stop once its output pump exits.
             stop_server()
+            self._json({"ok": True})
+            return
+
+        if path == "/api/server/notice/clear":
+            STATE.server_down_notice = None
             self._json({"ok": True})
             return
 
@@ -735,12 +1354,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/logs/clear":
-            try:
-                LOG_FILE.unlink(missing_ok=True)
-            except OSError as exc:
-                self._json({"error": str(exc)}, 500)
-                return
-            self._json({"ok": True})
+            cleared = []
+            for target in sorted(LOG_DIR.glob("activity.log*")):
+                try:
+                    target.unlink(missing_ok=True)
+                    cleared.append(target.name)
+                except OSError as exc:
+                    self._json({"error": str(exc)}, 500)
+                    return
+            log_app("info", "activity log cleared", files=cleared)
+            self._json({"ok": True, "cleared": cleared})
             return
 
         self._json({"error": "unknown endpoint"}, 404)
@@ -813,8 +1436,19 @@ def main() -> None:
     url = f"http://{HOST}:{PORT}/"
     print(f"{APP_NAME} {APP_VERSION} → {url}")
 
+    _migrate_legacy_logs()
+    log_app(
+        "info",
+        "started",
+        version=APP_VERSION,
+        python=platform.python_version(),
+        platform=platform.platform(),
+        log_dir=str(LOG_DIR),
+        pid=os.getpid(),
+    )
     threading.Thread(target=worker_check_versions, daemon=True).start()
     log_activity("app", "-", "info", f"{APP_NAME} {APP_VERSION} launched")
+    restore_server_state()
 
     try:
         import webview
@@ -829,6 +1463,7 @@ def main() -> None:
         )
         webview.start()
     except Exception as exc:
+        log_app("warning", "native window unavailable, using browser", error=str(exc))
         print(f"native window unavailable ({exc}); opening browser")
         import webbrowser
 
@@ -839,8 +1474,16 @@ def main() -> None:
         except KeyboardInterrupt:
             pass
     finally:
-        stop_server()
+        # A background server is meant to outlive the window; leave it running
+        # and let the pidfile adopt it on the next launch.
+        if STATE.server_background:
+            log_app(
+                "info", "window closed; background api server left running", pid=STATE.server_pid
+            )
+        else:
+            stop_server()
         httpd.shutdown()
+        log_app("info", "stopped", pid=os.getpid())
 
 
 if __name__ == "__main__":

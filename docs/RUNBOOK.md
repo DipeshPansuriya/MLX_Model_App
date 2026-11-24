@@ -55,8 +55,8 @@ curl -s http://127.0.0.1:8765/api/ping
 | API server | `curl -s http://127.0.0.1:8080/v1/models` | `200` with repo id |
 | Ports | `lsof -nP -iTCP:8765 -iTCP:8080 -sTCP:LISTEN` | `127.0.0.1` only |
 | Processes | `pgrep -fl "app.py\|mlx_lm server"` | one app, at most one server |
-| Activity | `tail -5 ~/.mlx_studio/activity.log` | recent JSON lines |
-| Launch log | `tail -20 ~/.mlx_studio/launch.log` | no traceback |
+| Activity | `tail -5 ~/.mlx_studio/logs/activity.log` | recent JSON lines |
+| Launch log | `tail -20 ~/.mlx_studio/logs/launch.log` | no traceback |
 
 ## 3. Common tasks
 
@@ -109,7 +109,7 @@ manifest shows the update panel with notes and a **Download DMG** button.
 ### 4.1 The window does not appear
 
 ```bash
-tail -40 ~/.mlx_studio/launch.log
+tail -40 ~/.mlx_studio/logs/launch.log
 ```
 
 | Log says | Cause | Fix |
@@ -164,7 +164,7 @@ killed hard (`kill -9`).
 The reader tolerates bad lines by wrapping them as `raw`. To start clean:
 
 ```bash
-mv ~/.mlx_studio/activity.log ~/.mlx_studio/activity.log.bak
+mv ~/.mlx_studio/logs/activity.log ~/.mlx_studio/logs/activity.log.bak
 ```
 
 The file is recreated on the next action.
@@ -218,21 +218,62 @@ Verified: after the strip, `open` starts the app, `GET /` on
 **Permanent fix.** Sign with a Developer ID and notarise (PRD OD-1). Until then
 every fresh download shows the prompt once.
 
+### 4.8 The API server died
+
+**Symptom.** The Server view shows a red banner — *"API server for <model>
+stopped unexpectedly (exited with status N)"* — and a desktop notification
+fires.
+
+**Cause.** The `mlx_lm server` child exited. Common reasons: out of memory while
+loading the model, a port clash on 8080, or the process was killed.
+
+**Diagnose.**
+
+```bash
+tail -40 ~/.mlx_studio/logs/server.log   # background servers only
+tail -20 ~/.mlx_studio/logs/app.log      # "api server died" with exit_code
+lsof -nP -iTCP:8080 -sTCP:LISTEN         # is something else holding the port?
+```
+
+**Fix.** Press **Restart** in the banner, or start it again from the Server view.
+Dismiss hides the banner without restarting. A background server is adopted on
+the next launch from `~/.mlx_studio/server.pid`, so a stale pidfile is cleaned up
+automatically when the pid is gone.
+
+### 4.9 The log folder is missing
+
+`~/.mlx_studio/logs/` is created on start. Logs written by 2.0.0 in
+`~/.mlx_studio/` are moved into it on first launch. If the move could not happen,
+the old files are still readable in place:
+
+```bash
+ls -la ~/.mlx_studio ~/.mlx_studio/logs
+```
+
 ## 5. Ports and paths
 
 | Item | Value |
 |---|---|
 | UI + API | `127.0.0.1:8765` |
 | OpenAI-compatible server | `127.0.0.1:8080/v1` |
-| Activity log | `~/.mlx_studio/activity.log` |
-| Launch log | `~/.mlx_studio/launch.log` |
+| Log folder | `~/.mlx_studio/logs/` |
+| Activity log | `~/.mlx_studio/logs/activity.log` |
+| Application log | `~/.mlx_studio/logs/app.log` |
+| Launch log | `~/.mlx_studio/logs/launch.log` |
+| Background server output | `~/.mlx_studio/logs/server.log` |
+| Background server pid | `~/.mlx_studio/server.pid` |
 | Model cache | `~/.cache/huggingface/hub/` |
 | Update manifest | `release/latest.json` in the repo |
 | Bundle | `/Applications/MLX Studio.app` |
 
 ## 6. Diagnostic bundle
 
-Collect these before reporting a problem:
+The in-app route is **Activity → Export diagnostics**, which writes
+`mlx-studio-diagnostics-<stamp>.zip` containing `environment.json` and every file
+in the log folder. Ask the user for that file first; it is one attachment and
+needs no shell.
+
+Collect these only when the app will not start at all:
 
 ```bash
 {
@@ -244,10 +285,17 @@ Collect these before reporting a problem:
   lsof -nP -iTCP:8765 -iTCP:8080 -sTCP:LISTEN
   echo "== processes =="
   pgrep -fl "app.py|mlx_lm server"
+  echo "== log folder =="
+  ls -la ~/.mlx_studio/logs
   echo "== launch log =="
-  tail -40 ~/.mlx_studio/launch.log
+  tail -40 ~/.mlx_studio/logs/launch.log
+  echo "== app log =="
+  tail -40 ~/.mlx_studio/logs/app.log
   echo "== activity =="
-  tail -20 ~/.mlx_studio/activity.log
+  tail -20 ~/.mlx_studio/logs/activity.log
+  echo "== server =="
+  tail -20 ~/.mlx_studio/logs/server.log 2>/dev/null
+  cat ~/.mlx_studio/server.pid 2>/dev/null
 } > ~/mlx-studio-diag.txt
 ```
 
@@ -279,6 +327,8 @@ Collect these before reporting a problem:
 | App will not start | §4.1 launch log | Reinstall from DMG |
 | Model will not load | §4.5 | Try a smaller model |
 | Server will not bind | §4.3 | Stop the conflicting process |
+| Server died banner | §4.8 `server.log` and `app.log` | Restart from the banner |
+| Logs missing | §4.9 log folder | Export diagnostics |
 | Update check fails | Check network and proxy | Manifest/PyPI unreachable is non-fatal |
 | Data loss | Check `~/.mlx_studio` and the HF cache | Weights are re-downloadable |
 

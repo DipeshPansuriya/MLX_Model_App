@@ -129,7 +129,7 @@ for a `4.0 GB` model.
 
 ### 5.2 Activity log (append-only)
 
-`~/.mlx_studio/activity.log`, one JSON object per line:
+`~/.mlx_studio/logs/activity.log`, one JSON object per line:
 
 ```json
 {"timestamp":"2026-11-24 22:08:38","action":"chat","model":"mlx-community/Qwen2.5-7B-Instruct-1M-4bit","status":"success","detail":"3 tokens @ 52.6 tok/s"}
@@ -146,6 +146,25 @@ for a `4.0 GB` model.
 Append-only by construction: `log_activity` opens in `"a"` mode and writes one
 line. `read_activity` returns the last N entries and tolerates malformed lines by
 wrapping them as `raw`.
+
+### 5.2a Log folder
+
+All four logs share `~/.mlx_studio/logs/` and one writer, `_append`, which rotates
+at 2 MB into three numbered backups and forces `0600` on every write:
+
+| File | Written by | Contents |
+|---|---|---|
+| `activity.log` | `log_activity` | One JSON object per user-visible action |
+| `app.log` | `log_app` | `level` + `message` + fields: start/stop, HTTP ≥ 400, model load failure, download failure, install result, `api server started` / `died` / `stopped`, diagnostic export |
+| `launch.log` | `packaging/launcher.py` | Timestamped launcher steps and the child's stdout |
+| `server.log` | `mlx_lm server` (background only) | Raw server output, since a detached child has no pipe to the UI |
+
+`build_diagnostic_bundle()` zips the folder with a generated `environment.json`
+(versions, paths, hardware, installed model ids) and streams it from
+`GET /api/logs/export`. The bundle is written on demand and never uploaded.
+
+Logs from 2.0.0 that sat directly in `~/.mlx_studio/` are moved into the folder by
+`_migrate_legacy_logs()` on the first start after upgrade.
 
 ### 5.3 Update manifest (read-only, remote)
 
@@ -202,19 +221,37 @@ request must not hold a connection open that long.
 ### 6.3 API server lifecycle
 
 ```
-POST /api/server/start {repo}
-  → worker_server_start(repo)               app.py:466
+POST /api/server/start {repo, background}
+  → worker_server_start(repo, background)
       stop_server()                          # idempotent
-      Popen([python, -m, mlx_lm, server, --model, repo, --host, 127.0.0.1, --port, 8080])
-      pump stdout into State.server_lines[-400:]
-  → on exit: State.server_proc = None, one "server stopped" log line
+      foreground: Popen(..., stdout=PIPE)    # pump into State.server_lines[-400:]
+      background: Popen(..., stdout=server.log, start_new_session=True)
+      write ~/.mlx_studio/server.pid {pid, repo, background, started_at, port}
+      spawn _watch_server(pid, repo, proc)
 
-POST /api/server/stop → terminate(), wait(5), kill()
+POST /api/server/stop → terminate(), wait(5), kill(); pidfile cleared
 ```
 
-The stop is logged exactly once, by the pump that observes the process exit — not
-by the stop endpoint. Logging in both places produced duplicate entries and was
-fixed during release verification.
+**Down detection.** `_watch_server` polls every 2 s. For a server this process
+started it polls the `Popen` handle, because a detached child stays a zombie and
+`os.kill(pid, 0)` still succeeds on a zombie. For a server adopted from a pidfile
+it falls back to the pid probe. On death it clears state, removes the pidfile,
+sets `server_down_notice`, and logs `api server died` with the exit code. The UI
+raises a banner and a desktop notification from that field.
+
+**Restart safety.** A restart installs a successor before the old watcher wakes,
+so the watcher only acts when `State.server_pid` still equals its own pid, and
+`_clear_server_pidfile(only_pid=…)` refuses to delete a pidfile that describes a
+different process. Without both guards a restart produced a false
+"stopped unexpectedly" banner and orphaned the new pidfile.
+
+**Adoption.** `restore_server_state()` runs at startup: if the pidfile names a
+live pid it is adopted, so a background server survives an app restart instead of
+colliding on port 8080.
+
+The foreground stop is logged once, by the pump that observes the process exit —
+not by the stop endpoint. Logging in both places produced duplicate entries and
+was fixed during release verification.
 
 ### 6.4 State poll
 
