@@ -19,28 +19,57 @@ reports installed versions and tells you when updates are available.
 
 ## Install
 
-### Download the DMG (recommended)
+### One-line installer (recommended — no Gatekeeper prompt)
 
-1. Grab the latest **`MLX Studio-<version>.dmg`** from
+```bash
+curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh | bash
+```
+
+That downloads the latest DMG, verifies its SHA-256 against
+[`release/latest.json`](release/latest.json), installs to `/Applications`,
+checks the signature, and opens the app. No dialog, no Apple Developer account.
+
+Options: `--version 2.0.1`, `--dir ~/Applications`, `--no-launch`. Pass them
+after `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh \
+  | bash -s -- --version 2.0.1 --no-launch
+```
+
+Why this works: the app is ad-hoc signed, not notarised. A **browser** download
+carries `com.apple.quarantine`, and macOS 15+ refuses to launch it — the dialog
+offers only **Done** and **Move to Bin**. `curl` sets no quarantine flag, so the
+check never fires. See [ADR-007](docs/adr/ADR-007-adhoc-signing.md).
+
+### Download the DMG
+
+1. Grab the latest **`MLX.Studio-<version>.dmg`** from
    [**Releases**](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
-2. Open the DMG and drag **MLX Studio** onto the **Applications** folder.
-3. First launch: macOS will say **"MLX Studio" Not Opened** — "Apple could not
-   verify…". This is expected: the build is ad-hoc signed, not notarised by
-   Apple. Allow it once, using the route for your macOS version:
-
-   | macOS | How to allow it |
-   |---|---|
-   | **15 Sequoia or newer** (incl. 26, 27) | Open **System Settings → Privacy & Security**, scroll to **Security**, click **Open Anyway** next to *"MLX Studio" was blocked*, then authenticate and confirm **Open** |
-   | **14 Sonoma or older** | Right-click the app → **Open** → **Open** |
-
-   Control-click → Open was removed in macOS 15, so it does nothing on current
-   systems. The prompt appears once per install.
-
-   Terminal alternative (any macOS version, skips the prompt entirely):
+2. Clear the quarantine flag **on the DMG, before installing** — this is the step
+   that avoids the dialog:
 
    ```bash
-   xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
+   xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-2.0.1.dmg
    ```
+
+3. Open the DMG and drag **MLX Studio** onto the **Applications** folder, then
+   launch it.
+
+If you skip step 2, macOS will say **"MLX Studio" Not Opened** — "Apple could not
+verify…". That is expected for an ad-hoc-signed build. Allow it once:
+
+| macOS | How to allow it |
+|---|---|
+| **15 Sequoia or newer** (incl. 26, 27) | **System Settings → Privacy & Security → Security → Open Anyway**, authenticate, confirm **Open** |
+| **14 Sonoma or older** | Right-click the app → **Open** → **Open** |
+
+Control-click → Open was removed in macOS 15, so it does nothing on current
+systems. Clearing it after install also works:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/MLX Studio.app"
+```
 
 ### Run from source
 
@@ -378,10 +407,16 @@ cd ~/.mlx_studio && zip -r ~/mlx-studio-logs.zip logs
 ## Troubleshooting
 
 **"MLX Studio" Not Opened / "Apple could not verify…"** — expected on an
-ad-hoc-signed build. Allow it once via **System Settings → Privacy & Security →
-Open Anyway** (macOS 15+), or right-click → **Open** on macOS 14 and older. See
-[Install](#install) step 3. For a permanently trusted build, sign with a
-Developer ID and notarise (PRD OD-1).
+ad-hoc-signed build downloaded through a browser. Fix it without any prompt:
+
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/MLX.Studio-<version>.dmg
+```
+
+then reinstall. Or allow it once via **System Settings → Privacy & Security →
+Open Anyway** (macOS 15+), or right-click → **Open** on macOS 14 and older. The
+one-line installer avoids the dialog entirely — see [Install](#install). For a
+permanently trusted build, sign with a Developer ID and notarise (PRD OD-1).
 
 **No native window** — `python3 -m pip install pywebview`; otherwise the app
 opens in your default browser.
