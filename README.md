@@ -212,7 +212,8 @@ Full product, architecture and operational documentation lives in [`docs/`](docs
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, trust boundaries, controls, accepted risks |
 | [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) | 2026-11-24 audit: 21 checks, 3 findings remediated, re-run procedure |
 | [docs/PUSH-POLICY.md](docs/PUSH-POLICY.md) | No-credential rule, 19 secret rules, git hooks, CI enforcement |
-| [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md) | Branch ruleset, 7 required checks, automated PR review, zero-cost setup |
+| [docs/BRANCH-POLICY.md](docs/BRANCH-POLICY.md) | **All branch, tag, scanning and CI policy in one document** — in force, planned, cost |
+| [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md) | Detailed ruleset and workflow reference |
 | [docs/REPO-HARDENING-CHECKLIST.md](docs/REPO-HARDENING-CHECKLIST.md) | Reusable 79-item hardening checklist for any repository |
 | [docs/TESTING.md](docs/TESTING.md) | What was verified, measurements, defects found, gaps |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Start/stop, health checks, recovery, release checklist |
