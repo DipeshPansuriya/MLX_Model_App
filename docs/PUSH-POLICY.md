@@ -148,6 +148,16 @@ pull request, and on demand:
 
 `fetch-depth: 0` is set so the history scan sees every commit.
 
+All three jobs run on `ubuntu-latest`. `macos-14` was tried first and never
+started: the jobs were cancelled with zero steps and no runner assigned, while an
+`ubuntu-latest` job in the same workflow completed. The audit script is therefore
+portable — it branches on the platform for `stat` and skips the `codesign` and
+`spctl` checks with an `INFO` line off macOS. `MLX_AUDIT_PLATFORM=linux`
+exercises that path locally.
+
+Latest run on `main`: **Security — success** (Secret scan, Security audit, Hook
+installer all green).
+
 ## 8. Verification performed
 
 | Test | Expected | Result |
