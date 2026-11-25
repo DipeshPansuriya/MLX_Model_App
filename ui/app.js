@@ -265,6 +265,7 @@ function renderModelCards(models, loaded) {
           ${isLoaded ? '<span class="card-tag ok">loaded</span>' : ""}
         </div>
         <div class="card-sub">${esc(m.size_h)}</div>
+        <div class="card-path" title="${esc(m.path)}">📁 ${esc(m.path)}</div>
         <div class="card-actions">
           <button class="btn btn-mini" data-act="load" data-repo="${esc(m.repo)}">${isLoaded ? "Unload" : "Load"}</button>
           <button class="btn btn-mini" data-act="reveal" data-path="${esc(m.path)}">Reveal</button>
@@ -397,6 +398,11 @@ function renderDownloads(downloads) {
       : d.status === "success"
       ? `<div class="progress-done">✓ Complete</div>`
       : "";
+    // Show the on-disk path once the download has finished.
+    const installed = (state.snapshot?.models || []).find((m) => m.repo === d.repo);
+    const pathLine = d.status === "success" && installed
+      ? `<div class="card-path" title="${esc(installed.path)}">📁 ${esc(installed.path)}</div>`
+      : "";
     card.innerHTML = `
       <div class="card-top">
         <div>
@@ -406,7 +412,8 @@ function renderDownloads(downloads) {
         <span class="card-tag ${tag}">${esc(d.status)}</span>
       </div>
       <div class="card-sub">${esc(d.detail || "")}</div>
-      ${progressBar}`;
+      ${progressBar}
+      ${pathLine}`;
   });
 }
 

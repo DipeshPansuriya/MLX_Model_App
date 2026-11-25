@@ -796,7 +796,7 @@ def worker_download(repo: str) -> None:
             hf_hub_download(
                 repo_id=repo,
                 filename=filename,
-                cache_dir=str(Path.home() / ".cache" / "huggingface"),
+                cache_dir=str(CACHE_DIR),
             )
             pct = int((downloaded / total) * 100)
             STATE.downloads[repo] = {
