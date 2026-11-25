@@ -14,6 +14,17 @@ to the Download view so users can see which model files are downloading.
   as it streams each file from Hugging Face, and the Download view renders a
   progress bar with percentage instead of only showing a static status tag.
 
+## [2.0.6] — 2026-11-25
+
+Download progress indicator — adds a progress bar and per-file percentage
+to the Download view so users can see which model files are downloading.
+
+### Fixed
+
+- **Download progress bar.** `worker_download` now reports per-file progress
+  as it streams each file from Hugging Face, and the Download view renders a
+  progress bar with percentage instead of only showing a static status tag.
+
 ## [2.0.5] — 2026-11-25
 
 Single-instance native launcher — fixes the multi-window bug.
@@ -244,6 +255,7 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
+[2.0.6]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.6
 [2.0.6]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.6
 [2.0.5]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.5
 [2.0.4]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.4
