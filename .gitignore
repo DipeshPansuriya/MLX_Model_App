@@ -79,3 +79,7 @@ models/
 *.pem
 *.key
 secrets.json
+
+# ── Native launcher binary ─────────────────────────────────────────────────
+# Compiled by packaging/build_app.sh from packaging/launcher.c
+packaging/MLXStudio
