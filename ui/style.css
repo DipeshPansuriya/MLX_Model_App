@@ -210,6 +210,20 @@ html, body {
 .card-tag.run { color: var(--accent); border-color: rgba(79, 140, 255, .35); background: rgba(79, 140, 255, .1); }
 .card-tag.bad { color: var(--red); border-color: rgba(255, 107, 107, .35); background: rgba(255, 107, 107, .08); }
 
+/* ───────────── Download Progress Bar ───────────── */
+.progress-bar {
+  width: 100%; height: 6px; background: var(--panel-2);
+  border-radius: 3px; overflow: hidden; margin-top: 8px;
+}
+.progress-fill {
+  height: 100%; background: var(--accent);
+  border-radius: 3px; transition: width .3s ease;
+}
+.progress-done {
+  font-size: 11px; font-family: var(--mono); color: var(--green);
+  text-align: center; margin-top: 8px;
+}
+
 /* ───────────── Panels ───────────── */
 .panel {
   background: var(--panel); border: 1px solid var(--line);

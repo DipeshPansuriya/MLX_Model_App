@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.5"
+APP_VERSION = "2.0.6"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
@@ -782,9 +782,30 @@ def worker_download(repo: str) -> None:
     STATE.downloads[repo] = {"repo": repo, "status": "running", "detail": "starting", "pct": 0}
     log_activity("download", repo, "running", "download started")
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import HfApi, hf_hub_download
 
-        snapshot_download(repo_id=repo, cache_dir=str(Path.home() / ".cache" / "huggingface"))
+        api = HfApi()
+        repo_info = api.repo_info(repo_id=repo, repo_type="model")
+        files = [s.rfilename for s in repo_info.siblings if s.rfilename]
+        total = len(files)
+
+        if total == 0:
+            raise Exception("No files found in repository")
+
+        for downloaded, filename in enumerate(files, start=1):
+            hf_hub_download(
+                repo_id=repo,
+                filename=filename,
+                cache_dir=str(Path.home() / ".cache" / "huggingface"),
+            )
+            pct = int((downloaded / total) * 100)
+            STATE.downloads[repo] = {
+                "repo": repo,
+                "status": "running",
+                "detail": f"Downloading {filename}",
+                "pct": pct,
+            }
+
         STATE.downloads[repo] = {
             "repo": repo,
             "status": "success",

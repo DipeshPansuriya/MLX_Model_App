@@ -376,7 +376,13 @@ function renderDownloads(downloads) {
       card.dataset.dl = d.repo;
       wrap.prepend(card);
     }
+    const pct = d.pct || 0;
     const tag = d.status === "success" ? "ok" : d.status === "failed" ? "bad" : "run";
+    const progressBar = d.status === "running"
+      ? `<div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>`
+      : d.status === "success"
+      ? `<div class="progress-done">✓ Complete</div>`
+      : "";
     card.innerHTML = `
       <div class="card-top">
         <div>
@@ -385,7 +391,8 @@ function renderDownloads(downloads) {
         </div>
         <span class="card-tag ${tag}">${esc(d.status)}</span>
       </div>
-      <div class="card-sub">${esc(d.detail || "")}</div>`;
+      <div class="card-sub">${esc(d.detail || "")}</div>
+      ${progressBar}`;
   });
 }
 
