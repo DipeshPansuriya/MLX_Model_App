@@ -3,11 +3,10 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.9] — Unreleased
+## [2.0.9] — 2026-11-26
 
-Security, robustness and build fixes, plus model search and copy. **Not
-released yet.** Checked by automated tests and temporary servers; the rebuilt app
-has not been installed or run on this release, and no older macOS was tested.
+Security, robustness and build fixes, plus model search and copy. Checked by
+automated tests and temporary servers; no older macOS was tested.
 
 **After updating:** if the app shows *server unprotected*, open API Server and
 press **Restart now**. A background server started by an earlier version keeps
@@ -52,6 +51,8 @@ running without the new request checks until it is restarted.
   not delete a model while it is served.
 - `set_approval_gate.sh` passes the GitHub token to `curl` on standard input.
 - The update panel only opens an `https` link and shows the published SHA-256.
+- The native launcher sizes `launch.log` from the open file before rotating it,
+  leaves a symlinked log alone and keeps the rotated log owner only.
 
 ### Added
 
@@ -163,6 +164,15 @@ running without the new request checks until it is restarted.
   `Qwen2.5-7B-Instruct-1M-4bit` and the test prompts, a read, sum and write task
   failed 5 of 5 runs through the model's own mistakes, also with a simulated
   `null` fix. It was not re-run with the final fix.
+
+### Checksums
+
+```
+pkg  sha256  8ace82169bf180402ecbecb0b97e1f8cae887078458cce2332dd3434b571c66b
+pkg  size    984877 bytes
+dmg  sha256  fd61995979d8c874b2f211d7c528a77ed033503c53a9703f469c42030c9a1ecf
+dmg  size    1018132 bytes
+```
 
 ---
 
