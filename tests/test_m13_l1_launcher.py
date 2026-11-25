@@ -7,6 +7,7 @@ bundle. HOME is temporary, so no real log is touched.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -154,6 +155,48 @@ def test_appends_and_rotates_a_large_log(bundle):
     bundle.run([good])
     assert (bundle.logs / "launch.log.1").stat().st_size == 2 * 1024 * 1024
     assert bundle.text().count("ran good app.py") == 2
+
+
+def test_rotated_log_is_owner_only(bundle):
+    bundle.logs.mkdir(parents=True)
+    bundle.log.write_text("x" * (2 * 1024 * 1024), encoding="utf-8")
+    bundle.log.chmod(0o644)
+    good = fake_python(bundle.base, "good", 20)
+    assert bundle.run([good]).returncode == 0
+    assert (bundle.logs / "launch.log.1").stat().st_mode & 0o777 == 0o600
+    assert bundle.log.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_symlinked_log_is_neither_followed_nor_rotated(bundle):
+    bundle.logs.mkdir(parents=True)
+    target = bundle.base / "elsewhere.txt"
+    target.write_text("x" * (2 * 1024 * 1024), encoding="utf-8")
+    target.chmod(0o644)
+    bundle.log.symlink_to(target)
+    good = fake_python(bundle.base, "good", 20)
+    assert bundle.run([good]).returncode == 0
+    assert bundle.log.is_symlink()
+    assert not (bundle.logs / "launch.log.1").exists()
+    assert target.stat().st_size == 2 * 1024 * 1024
+    assert target.stat().st_mode & 0o777 == 0o644
+
+
+def test_keeps_logging_when_rotation_fails(bundle):
+    blocker = bundle.logs / "launch.log.1"
+    blocker.mkdir(parents=True)
+    (blocker / "keep").write_text("keep", encoding="utf-8")
+    bundle.log.write_text("x" * (2 * 1024 * 1024), encoding="utf-8")
+    good = fake_python(bundle.base, "good", 20)
+    assert bundle.run([good]).returncode == 0
+    assert "ran good app.py" in bundle.text()
+    assert (blocker / "keep").read_text(encoding="utf-8") == "keep"
+
+
+def test_the_log_size_check_uses_the_open_descriptor():
+    """No stat-then-act on the log path (CodeQL cpp/toctou-race-condition)."""
+    text = SOURCE.read_text(encoding="utf-8")
+    assert not re.search(r"(?<![A-Za-z0-9_])l?stat\(", text)
+    assert "fstat(" in text
 
 
 def test_the_real_probe_accepts_a_real_interpreter(bundle):

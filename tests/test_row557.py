@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 import re
+import sys
+from types import ModuleType, SimpleNamespace
 
-import huggingface_hub
 import pytest
-from huggingface_hub.hf_api import ModelInfo
 from test_ui_behaviour import CSS, HTML, needs_node, run
+
+try:
+    import huggingface_hub
+    from huggingface_hub.hf_api import ModelInfo
+except ImportError:  # CI installs only pytest: stand in for what the search reads
+    huggingface_hub = ModuleType("huggingface_hub")
+
+    def ModelInfo(safetensors=None, **data):
+        info = SimpleNamespace(**safetensors) if safetensors else None
+        return SimpleNamespace(safetensors=info, **data)
+
 
 MODEL_SELECTS = ["chatModelSelect", "serverModelSelect"]
 
 
 def hit(repo, parameters=None, tags=(), pipeline_tag="text-generation"):
-    """A search hit as the installed hub library parses an expanded listing."""
+    """A search hit shaped like the hub library's parse of an expanded listing."""
     data = {"id": repo, "downloads": 7, "tags": list(tags), "pipeline_tag": pipeline_tag}
     if parameters:
         data["safetensors"] = {"parameters": parameters, "total": sum(parameters.values())}
@@ -30,7 +41,8 @@ def search(app_module, monkeypatch, *hits, ram_gb=32, old_library=False):
                 raise TypeError("unexpected keyword argument 'expand'")
             return list(hits)
 
-    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", huggingface_hub)
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api, raising=False)
     monkeypatch.setattr(app_module, "hardware", lambda: {"ram_bytes": ram_gb * 1024**3})
     return app_module.search_hf("q"), seen
 

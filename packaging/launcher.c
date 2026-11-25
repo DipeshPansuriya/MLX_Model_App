@@ -68,6 +68,13 @@ static void note(const char *format, ...) {
     fputc('\n', stderr);
 }
 
+/* Open a log for appending, owner only. A symlink is never followed. */
+static int open_log(const char *path) {
+    int fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0600);
+    if (fd >= 0) fchmod(fd, 0600);
+    return fd;
+}
+
 /* Point stdout and stderr at launch.log so a Finder launch can be diagnosed.
  * Best effort: on any failure the streams are left as they are. */
 static void redirect_to_log(void) {
@@ -88,14 +95,18 @@ static void redirect_to_log(void) {
     mkdir(app_dir, 0700);
     mkdir(log_dir, 0700);
 
+    int fd = open_log(log);
+    if (fd < 0) return;
+
+    /* Size the file that is actually open, not whatever the path names next.
+     * If rotation fails, keep appending to the descriptor already held. */
     struct stat st;
-    if (stat(log, &st) == 0 && st.st_size >= MAX_LOG_BYTES) {
-        rename(log, old);
+    if (fstat(fd, &st) == 0 && st.st_size >= MAX_LOG_BYTES && rename(log, old) == 0) {
+        close(fd);
+        fd = open_log(log);
+        if (fd < 0) return;
     }
 
-    int fd = open(log, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0600);
-    if (fd < 0) return;
-    fchmod(fd, 0600);
     dup2(fd, STDOUT_FILENO);
     dup2(fd, STDERR_FILENO);
     if (fd > STDERR_FILENO) close(fd);
