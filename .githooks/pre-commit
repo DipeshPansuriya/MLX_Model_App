@@ -38,8 +38,8 @@ MSG
 fi
 
 # Syntax gates, so a broken file never reaches a commit.
-if ! "$PY" -m py_compile app.py 2>/dev/null; then
-    echo "pre-commit: app.py does not compile" >&2
+if ! "$PY" -m py_compile app.py mlx_guard.py 2>/dev/null; then
+    echo "pre-commit: app.py or mlx_guard.py does not compile" >&2
     exit 1
 fi
 rm -rf "$ROOT/__pycache__" 2>/dev/null

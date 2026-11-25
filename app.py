@@ -14,10 +14,13 @@ No Flask/FastAPI dependency: only stdlib + mlx + huggingface_hub.
 from __future__ import annotations
 
 import contextlib
+import fnmatch
+import functools
 import json
 import os
 import platform
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -32,11 +35,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.7"
+APP_VERSION = "2.0.9"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
-CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _hf_cache_dir() -> Path:
+    """Where huggingface_hub, and so mlx_lm, keeps models (HF_HOME, HF_HUB_CACHE)."""
+    try:
+        from huggingface_hub import constants
+
+        return Path(constants.HF_HUB_CACHE)
+    except (ImportError, AttributeError):
+        # Not installed yet (first run): follow the library's own lookup order.
+        home = os.environ.get("HF_HOME") or os.path.join(
+            os.environ.get("XDG_CACHE_HOME") or "~/.cache", "huggingface"
+        )
+        hub = (
+            os.environ.get("HF_HUB_CACHE")
+            or os.environ.get("HUGGINGFACE_HUB_CACHE")
+            or os.path.join(home, "hub")
+        )
+        return Path(os.path.expandvars(os.path.expanduser(hub)))
+
+
+CACHE_DIR = _hf_cache_dir()
 APP_DIR = Path.home() / ".mlx_studio"
 LOG_DIR = APP_DIR / "logs"
 ACTIVITY_LOG = LOG_DIR / "activity.log"
@@ -44,14 +68,33 @@ APP_LOG = LOG_DIR / "app.log"
 LAUNCH_LOG = LOG_DIR / "launch.log"
 SERVER_LOG = LOG_DIR / "server.log"
 UI_DIR = Path(__file__).resolve().parent / "ui"
+# The API server starts through this wrapper, which checks every request.
+GUARD_SCRIPT = Path(__file__).resolve().parent / "mlx_guard.py"
 
 # Rotation keeps the folder small enough to attach to a GitHub issue.
 LOG_MAX_BYTES = 2 * 1024 * 1024
 LOG_BACKUPS = 3
+LOG_LOCK = threading.Lock()
 
 HOST = "127.0.0.1"
 PORT = 8765
 SERVER_PORT = 8080
+# mlx_lm cuts replies at 512 tokens when a client sends no max_tokens.
+SERVER_MAX_TOKENS = 8192
+# Versions verified for this release (mirrors requirements.txt).
+PINNED_PACKAGES = {"mlx": "0.32.4", "mlx-lm": "0.32.2", "huggingface-hub": "2.4.0"}
+
+# New on every launch. Only a page served by this process can read it, so an /api
+# request carrying it came from our own UI.
+API_TOKEN = secrets.token_urlsafe(32)
+TOKEN_HEADER = "X-MLX-Token"  # noqa: S105 - a header name, not a secret
+TOKEN_PLACEHOLDER = b"__MLX_TOKEN__"
+# A second launch is a different process and cannot know the token. Raising the
+# window changes no data, and the Host, Origin and JSON checks still apply.
+TOKEN_EXEMPT = frozenset({"/api/focus"})
+# It asks this first, to learn that we are here. The reply is only the version.
+OPEN_GETS = frozenset({"/api/ping"})
+BAD_TOKEN = "invalid session token; reload the window"  # noqa: S105 - a message
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -73,7 +116,8 @@ def _build_static_allowlist(root: Path) -> dict[str, Path]:
 
 
 STATIC_FILES = _build_static_allowlist(UI_DIR)
-# The logs record prompts, so keep the whole tree owner-only.
+# Error messages and server output in the logs can quote chat text, so keep the
+# whole tree owner-only.
 for _private in (APP_DIR, LOG_DIR):
     with contextlib.suppress(OSError):
         _private.chmod(0o700)
@@ -114,11 +158,12 @@ def _migrate_legacy_logs() -> None:
 def _append(path: Path, line: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        _rotate(path)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line if line.endswith("\n") else line + "\n")
-        with contextlib.suppress(OSError):
-            path.chmod(0o600)
+        with LOG_LOCK:
+            _rotate(path)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line if line.endswith("\n") else line + "\n")
+            with contextlib.suppress(OSError):
+                path.chmod(0o600)
     except OSError as exc:
         print(f"log write failed ({path.name}): {exc}")
 
@@ -241,8 +286,9 @@ def environment_report() -> dict:
 def build_diagnostic_bundle() -> tuple[bytes, str]:
     """Zip the log folder plus an environment report, ready to attach to an issue.
 
-    Prompts live in activity.log; the bundle is written by the user and never
-    uploaded anywhere automatically.
+    Chat text is not logged on purpose, but error messages and the background
+    server's output (server.log) can quote it. The user saves the bundle; it is
+    never uploaded anywhere automatically.
     """
     import io
 
@@ -322,7 +368,8 @@ def human_size(num: float) -> str:
     return f"{num:.1f} TB"
 
 
-def hardware() -> dict:
+@functools.lru_cache(maxsize=1)
+def _probe_hardware() -> dict:
     chip = platform.machine()
     ok, out = run_cmd(["sysctl", "-n", "machdep.cpu.brand_string"])
     if ok and out.strip():
@@ -334,44 +381,231 @@ def hardware() -> dict:
     return {"chip": chip, "ram_bytes": ram, "ram": f"{ram / 1024**3:.0f} GB" if ram else ""}
 
 
-def installed_models() -> list[dict]:
-    models: list[dict] = []
-    if not CACHE_DIR.exists():
-        return models
-    for entry in sorted(CACHE_DIR.iterdir()):
-        if not entry.name.startswith("models--"):
-            continue
-        parts = entry.name.split("--")
-        if len(parts) < 3:
-            continue
-        org = parts[1]
-        name = "--".join(parts[2:])
-        # Snapshot files are symlinks into ../blobs; follow them and de-duplicate
-        # by inode so shared blobs are not counted twice.
-        seen: set[tuple[int, int]] = set()
-        size = 0
-        for f in entry.rglob("*"):
+def hardware() -> dict:
+    """Chip and memory, probed once: they cannot change while the app runs."""
+    return dict(_probe_hardware())
+
+
+# Written into a model folder while this app downloads it; lists the expected files.
+DOWNLOAD_MARKER = ".mlx_studio_download.json"
+WEIGHT_SUFFIXES = (".safetensors", ".npz", ".gguf", ".bin")
+# The files mlx_lm reads; a model without the others (README and so on) still runs.
+RUNTIME_PATTERNS = (
+    "*.json",
+    "model*.safetensors",
+    "*.txt",
+    "*.jinja",
+    "*.tiktoken",
+    "tokenizer.model",
+)
+# Re-walk even an unchanged-looking model after this long (a growing partial file
+# changes no directory timestamp).
+MODEL_SCAN_TTL = 30.0
+_model_cache: dict[str, tuple[tuple, float, dict]] = {}
+_model_cache_lock = threading.Lock()
+
+
+def invalidate_models() -> None:
+    with _model_cache_lock:
+        _model_cache.clear()
+
+
+def _model_stamp(entry: Path) -> tuple:
+    """Directory timestamps that move when files are added, removed or renamed."""
+    paths = [entry, entry / "blobs", entry / "refs", entry / "snapshots"]
+    with contextlib.suppress(OSError):
+        paths += sorted((entry / "snapshots").iterdir())
+    stamp = []
+    for path in paths:
+        with contextlib.suppress(OSError):
+            stamp.append((path.name, path.stat().st_mtime_ns))
+    return tuple(stamp)
+
+
+def _snapshot_complete(snapshot: Path) -> bool:
+    """Weights present, including every shard that an index or file name announces."""
+    names = {p.relative_to(snapshot).as_posix() for p in snapshot.rglob("*") if p.is_file()}
+    if not any(name.endswith(WEIGHT_SUFFIXES) for name in names):
+        return False
+    for name in names:
+        if name.endswith(".safetensors.index.json"):
             try:
-                st = f.stat()  # follows symlinks
-            except OSError:
-                continue
-            if not f.is_file():
-                continue
-            key = (st.st_dev, st.st_ino)
-            if key in seen:
-                continue
-            seen.add(key)
-            size += st.st_size
-        models.append(
-            {
-                "repo": f"{org}/{name}",
-                "path": str(entry),
-                "size": size,
-                "size_h": human_size(size),
-            }
+                shards = set(
+                    json.loads((snapshot / name).read_text("utf-8"))["weight_map"].values()
+                )
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                return False
+            if not shards <= names:
+                return False
+        shard = re.fullmatch(r"(.*)-\d{5}-of-(\d{5})(\.\w+)", name)
+        if shard:
+            stem, total, suffix = shard.groups()
+            if any(
+                f"{stem}-{i:05d}-of-{total}{suffix}" not in names for i in range(1, int(total) + 1)
+            ):
+                return False
+    return True
+
+
+def _hub_reports_incomplete(repo: str) -> bool:
+    """Ask the hub library, offline, whether its cached file listing has gaps."""
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            repo,
+            cache_dir=str(CACHE_DIR),
+            local_files_only=True,
+            allow_patterns=list(RUNTIME_PATTERNS),
         )
+    except Exception as exc:
+        # Anything else (not installed, no refs) says nothing about completeness.
+        return type(exc).__name__ == "IncompleteSnapshotError"
+    return False
+
+
+def _model_complete(entry: Path, repo: str) -> bool:
+    snapshots = entry / "snapshots"
+    try:
+        commit = (entry / "refs" / "main").read_text("utf-8").strip()
+    except OSError:
+        commit = ""
+    marker = entry / DOWNLOAD_MARKER
+    if marker.is_file():
+        try:
+            wanted = json.loads(marker.read_text("utf-8"))
+            revision = wanted.get("revision") or commit
+            files = wanted["files"]
+            needed = [n for n in files if any(fnmatch.fnmatch(n, p) for p in RUNTIME_PATTERNS)]
+            if not any(n.endswith(WEIGHT_SUFFIXES) for n in needed):
+                needed = files  # a layout these patterns do not describe
+            if all((snapshots / revision / name).is_file() for name in needed):
+                return True
+            if not commit or commit == revision:
+                return False
+            # Another tool has since fetched a newer revision: judge that one.
+            newer = snapshots / commit
+            return (
+                ("config.json" not in files or (newer / "config.json").is_file())
+                and newer.is_dir()
+                and _snapshot_complete(newer)
+                and not _hub_reports_incomplete(repo)
+            )
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+    if any((entry / "blobs").glob("*.incomplete")):
+        return False
+    if commit and (snapshots / commit).is_dir():
+        candidates = [snapshots / commit]
+    else:
+        candidates = [p for p in snapshots.glob("*") if p.is_dir()]
+    return any(map(_snapshot_complete, candidates)) and not _hub_reports_incomplete(repo)
+
+
+def _scan_model(entry: Path) -> dict:
+    parts = entry.name.split("--")
+    repo = f"{parts[1]}/{'--'.join(parts[2:])}"
+    # Snapshot files are symlinks into ../blobs; follow them and de-duplicate
+    # by inode so shared blobs are not counted twice.
+    seen: set[tuple[int, int]] = set()
+    size = 0
+    for f in entry.rglob("*"):
+        try:
+            st = f.stat()  # follows symlinks
+        except OSError:
+            continue
+        if not f.is_file():
+            continue
+        key = (st.st_dev, st.st_ino)
+        if key in seen:
+            continue
+        seen.add(key)
+        size += st.st_size
+    return {
+        "repo": repo,
+        "path": str(entry),
+        "size": size,
+        "size_h": human_size(size),
+        "complete": _model_complete(entry, repo),
+    }
+
+
+def installed_models() -> list[dict]:
+    """Every model folder in the cache; ``complete`` is False for partial downloads."""
+    if not CACHE_DIR.exists():
+        return []
+    models: list[dict] = []
+    for entry in sorted(CACHE_DIR.iterdir()):
+        if not entry.name.startswith("models--") or len(entry.name.split("--")) < 3:
+            continue
+        stamp = _model_stamp(entry)
+        with _model_cache_lock:
+            cached = _model_cache.get(str(entry))
+        if cached and cached[0] == stamp and time.monotonic() - cached[1] < MODEL_SCAN_TTL:
+            model = cached[2]
+        else:
+            model = _scan_model(entry)
+            with _model_cache_lock:
+                _model_cache[str(entry)] = (stamp, time.monotonic(), model)
+        models.append(dict(model))
     models.sort(key=lambda m: m["repo"])
     return models
+
+
+# Bytes per stored value. In a quantised MLX model "U32" holds the packed weights
+# and the Hub counts the parameters inside them, not the 32-bit words.
+DTYPE_BYTES = {"F64": 8, "I64": 8, "F32": 4, "I32": 4, "BF16": 2, "F16": 2, "I16": 2}
+DTYPE_BYTES |= {"I8": 1, "U8": 1, "BOOL": 1}
+# MLX keeps a 16-bit scale and bias for each group of 64 quantised weights.
+QUANT_OVERHEAD_BITS = 0.5
+
+
+def _param_label(total: int) -> str:
+    if total >= 1_000_000_000:
+        return f"{total / 1e9:.1f}".removesuffix(".0") + "B"
+    return f"{round(total / 1e6)}M"
+
+
+def _estimated_size_gb(counts: dict, tags: list[str]) -> float | None:
+    """Weight size from the parameter counts; None when it cannot be worked out."""
+    bits = next((int(t[:-4]) for t in tags if re.fullmatch(r"\d{1,2}-bit", t)), None)
+    total = 0.0
+    for dtype, count in counts.items():
+        if dtype == "U32" and bits:
+            total += count * (bits + QUANT_OVERHEAD_BITS) / 8
+        elif dtype in DTYPE_BYTES:
+            total += count * DTYPE_BYTES[dtype]
+        else:
+            return None
+    return round(total / 1e9, 2) or None
+
+
+def _search_card(model, ram: int) -> dict:
+    """One search hit with the fields of a catalogue card; None means unknown."""
+    repo = model.id
+    task = getattr(model, "pipeline_tag", None)
+    card = {
+        "repo": repo,
+        "downloads": getattr(model, "downloads", 0) or 0,
+        "params": None,
+        "size_gb": None,
+        "size_estimated": False,
+        "category": None,
+        "use": f"Task: {task.replace('-', ' ')}" if task else None,
+    }
+    known = next((m for m in MODEL_CATALOG if m["repo"] == repo), None)
+    if known:
+        card.update({k: known[k] for k in ("params", "size_gb", "category", "use")})
+    else:
+        info = getattr(model, "safetensors", None)
+        counts = getattr(info, "parameters", None)
+        if counts:
+            card["params"] = _param_label(sum(counts.values()))
+            card["size_gb"] = _estimated_size_gb(counts, getattr(model, "tags", None) or [])
+            card["size_estimated"] = card["size_gb"] is not None
+    size = card["size_gb"]
+    card["fit"] = "unknown" if size is None else fit_rating(size, ram)
+    return card
 
 
 def search_hf(query: str) -> list[dict]:
@@ -379,8 +613,17 @@ def search_hf(query: str) -> list[dict]:
         from huggingface_hub import HfApi
 
         api = HfApi()
-        found = api.list_models(author=HF_ORG, search=query or None, limit=80)
-        return [{"repo": m.modelId, "downloads": getattr(m, "downloads", 0) or 0} for m in found]
+        wanted = {"author": HF_ORG, "search": query or None, "limit": 80}
+        try:
+            found = list(
+                api.list_models(
+                    **wanted, expand=["downloads", "safetensors", "tags", "pipeline_tag"]
+                )
+            )
+        except TypeError:  # an older huggingface_hub without "expand"
+            found = list(api.list_models(**wanted))
+        ram = hardware()["ram_bytes"]
+        return [_search_card(m, ram) for m in found]
     except Exception as exc:
         print(f"search failed: {exc}")
         return []
@@ -496,6 +739,7 @@ MODEL_CATALOG: list[dict] = [
         "params": "7B",
         "category": "Quality",
         "use": "Long documents, 1M context",
+        "tools": True,
     },
     {
         "repo": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
@@ -503,6 +747,7 @@ MODEL_CATALOG: list[dict] = [
         "params": "7B",
         "category": "Code",
         "use": "Code generation and refactors",
+        "tools": False,
     },
     {
         "repo": "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
@@ -510,6 +755,7 @@ MODEL_CATALOG: list[dict] = [
         "params": "7B",
         "category": "Reasoning",
         "use": "Step-by-step reasoning",
+        "tools": False,
     },
     {
         "repo": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
@@ -578,6 +824,11 @@ FIT_GOOD = 0.44
 FIT_TIGHT = 0.70
 
 
+def tool_support() -> dict[str, bool]:
+    """Catalogue models whose tool calling was checked. Missing means unknown."""
+    return {m["repo"]: m["tools"] for m in MODEL_CATALOG if "tools" in m}
+
+
 def fit_rating(size_gb: float, ram_bytes: int) -> str:
     """Rate a model against installed memory: great / good / tight / too-large."""
     if ram_bytes <= 0:
@@ -595,7 +846,7 @@ def fit_rating(size_gb: float, ram_bytes: int) -> str:
 def model_catalog() -> list[dict]:
     """The curated list annotated with a fit rating for this machine."""
     ram = hardware()["ram_bytes"]
-    installed = {m["repo"] for m in installed_models()}
+    installed = {m["repo"] for m in installed_models() if m["complete"]}
     out = []
     for entry in MODEL_CATALOG:
         item = dict(entry)
@@ -619,7 +870,12 @@ class State:
         self.loading_repo: str | None = None
         self.load_error: str | None = None
         self.generating = False
-        self.stop_flag = False
+        self.stop_event = threading.Event()  # replaced for every reply
+        self.deleting: set[str] = set()
+        self.download_cancels: dict[str, threading.Event] = {}
+        self.server_lock = threading.RLock()  # one stop or start at a time
+        self.server_pending: list[str] = []  # requested, not yet running
+        self.server_stops = 0  # a queued start older than the last Stop is dropped
         self.server_proc: subprocess.Popen | None = None
         self.server_repo: str | None = None
         self.server_lines: list[str] = []
@@ -628,6 +884,8 @@ class State:
         self.server_last_error: str | None = None
         self.server_down_notice: str | None = None
         self.server_pid: int | None = None
+        self.server_identity: str | None = None
+        self.server_unguarded = False  # adopted, and running without mlx_guard.py
         self.server_stopping = False
         self.window = None
         self.downloads: dict[str, dict] = {}
@@ -637,19 +895,59 @@ class State:
         self.setup_lines: list[str] = []
 
     # -- models ---------------------------------------------------------- #
-    def unload(self) -> str | None:
+    def _release_locked(self) -> str | None:
         repo = self.loaded_repo
         self.model = None
         self.tokenizer = None
         self.loaded_repo = None
         self.load_error = None
-        try:
-            import mlx.core as mx
-
-            mx.clear_cache()
-        except Exception as exc:
-            print(f"mlx cache release skipped: {exc}")
         return repo
+
+    # -- API server ------------------------------------------------------- #
+    def cancel_pending_starts(self) -> None:
+        with self.lock:
+            self.server_stops += 1
+
+    # -- packages --------------------------------------------------------- #
+    def reserve_install(self, kind: str) -> bool:
+        """Claim the single pip slot; False while an install is running."""
+        with self.lock:
+            if self.install["running"]:
+                return False
+            self.install = {"running": True, "kind": kind, "lines": []}
+            return True
+
+    # -- downloads -------------------------------------------------------- #
+    def reserve_download(self, repo: str) -> threading.Event | None:
+        """Claim the download slot for repo; None when it is already taken."""
+        with self.lock:
+            if repo in self.deleting or self.downloads.get(repo, {}).get("status") == "running":
+                return None
+            self.downloads[repo] = {
+                "repo": repo,
+                "status": "running",
+                "detail": "starting",
+                "pct": 0,
+            }
+            self.download_cancels[repo] = threading.Event()
+            return self.download_cancels[repo]
+
+    def in_use_locked(self, repo: str) -> str | None:
+        """Why repo cannot be deleted now, or None. Caller holds the lock."""
+        if self.loaded_repo == repo:
+            return "unload the model first"
+        if self.loading_repo == repo:
+            return "the model is loading"
+        serving = self.server_proc is not None or _pid_alive(self.server_pid)
+        if repo in self.server_pending or (
+            serving and (self.server_repo == repo or repo in _served_models())
+        ):
+            return "stop the API server first"
+        if self.downloads.get(repo, {}).get("status") == "running":
+            return "the model is downloading"
+        if repo in self.deleting:
+            return "the model is already being deleted"
+        return None
 
     def snapshot(self) -> dict:
         hw = hardware()
@@ -657,6 +955,13 @@ class State:
         mlx_v = pkg_version("mlx")
         mlx_lm_v = pkg_version("mlx-lm")
         hf_v = pkg_version("huggingface-hub")
+        with self.lock:
+            downloads = [dict(d) for d in self.downloads.values()]
+            loaded = {
+                "repo": self.loaded_repo,
+                "loading": self.loading_repo,
+                "error": self.load_error,
+            }
         return {
             "app": {
                 "name": APP_NAME,
@@ -675,30 +980,34 @@ class State:
                 "mlx_latest": self.versions.get("mlx_latest"),
                 "mlx_lm_latest": self.versions.get("mlx_lm_latest"),
                 "checked_at": self.versions.get("checked_at"),
-                "mlx_update": is_newer(self.versions.get("mlx_latest"), mlx_v),
-                "mlx_lm_update": is_newer(self.versions.get("mlx_lm_latest"), mlx_lm_v),
+                # An update means the app can apply one: its pinned version is newer.
+                "mlx_target": PINNED_PACKAGES["mlx"],
+                "mlx_lm_target": PINNED_PACKAGES["mlx-lm"],
+                "mlx_update": bool(mlx_v) and is_newer(PINNED_PACKAGES["mlx"], mlx_v),
+                "mlx_lm_update": bool(mlx_lm_v) and is_newer(PINNED_PACKAGES["mlx-lm"], mlx_lm_v),
+                "huggingface_hub_target": PINNED_PACKAGES["huggingface-hub"],
+                "huggingface_hub_update": bool(hf_v)
+                and is_newer(PINNED_PACKAGES["huggingface-hub"], hf_v),
                 "mlx_missing": not mlx_v,
                 "mlx_lm_missing": not mlx_lm_v,
             },
             "models": models,
-            "loaded": {
-                "repo": self.loaded_repo,
-                "loading": self.loading_repo,
-                "error": self.load_error,
-            },
+            "loaded": loaded,
             "server": {
                 "running": self.server_proc is not None or _pid_alive(self.server_pid),
                 "repo": self.server_repo,
                 "port": SERVER_PORT,
                 "endpoint": f"http://{HOST}:{SERVER_PORT}/v1",
+                "tool_support": tool_support(),
                 "lines": self.server_lines[-200:],
                 "background": self.server_background,
                 "started_at": self.server_started_at,
                 "last_error": self.server_last_error,
                 "down_notice": self.server_down_notice,
                 "pid": self.server_pid,
+                "unguarded": self.server_unguarded and _pid_alive(self.server_pid),
             },
-            "downloads": list(self.downloads.values()),
+            "downloads": downloads,
             "install": {
                 "running": self.install["running"],
                 "kind": self.install["kind"],
@@ -708,13 +1017,22 @@ class State:
         }
 
 
+def clear_mlx_cache() -> None:
+    try:
+        import mlx.core as mx
+
+        mx.clear_cache()
+    except Exception as exc:
+        print(f"mlx cache release skipped: {exc}")
+
+
 STATE = State()
 
 
 # --------------------------------------------------------------------------- #
 # Chat streaming
 # --------------------------------------------------------------------------- #
-def stream_chat(messages: list[dict]):
+def stream_chat(messages: list[dict], stop: threading.Event):
     """Yield ('token', text) / ('done', meta) / ('error', msg) tuples."""
     with STATE.lock:
         model = STATE.model
@@ -733,7 +1051,7 @@ def stream_chat(messages: list[dict]):
         last = None
         started = time.time()
         for resp in stream_generate(model, tokenizer, prompt, max_tokens=2048, sampler=sampler):
-            if STATE.stop_flag:
+            if stop.is_set():
                 break
             last = resp
             yield ("token", resp.text)
@@ -744,7 +1062,7 @@ def stream_chat(messages: list[dict]):
             "peak_gb": round(getattr(last, "peak_memory", 0.0) if last else 0.0, 2),
             "prompt_tokens": getattr(last, "prompt_tokens", 0) if last else 0,
             "elapsed": round(elapsed, 2),
-            "stopped": STATE.stop_flag,
+            "stopped": stop.is_set(),
             "repo": repo,
         }
         yield ("done", meta)
@@ -759,6 +1077,11 @@ def worker_load(repo: str) -> None:
     with STATE.lock:
         STATE.loading_repo = repo
         STATE.load_error = None
+        # One model slot: free the old one before the new one takes memory.
+        previous = STATE._release_locked()
+    if previous:
+        clear_mlx_cache()
+        log_activity("model", previous, "info", "unloaded from memory")
     log_activity("model", repo, "running", "load started")
     try:
         from mlx_lm import load
@@ -778,50 +1101,140 @@ def worker_load(repo: str) -> None:
         log_app("error", "model load failed", repo=repo, error=str(exc)[:500])
 
 
+class DownloadCancelled(Exception):
+    pass
+
+
+def _set_download(repo: str, status: str, detail: str, pct: int) -> None:
+    with STATE.lock:
+        STATE.downloads[repo] = {"repo": repo, "status": status, "detail": detail, "pct": pct}
+
+
+def _byte_progress(cancel: threading.Event, report):
+    """A stand-in for tqdm that reports bytes written and honours cancel."""
+
+    class Progress:
+        def __init__(self, *args, total=None, initial=0, **kwargs):
+            self.total = total
+            self.n = initial
+            report(self.n)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def update(self, n=1):
+            if cancel.is_set():
+                raise DownloadCancelled
+            self.n += n or 0
+            report(self.n)
+
+        def update_transfer(self, n=0):
+            # Network bytes; only written bytes count towards progress.
+            if cancel.is_set():
+                raise DownloadCancelled
+
+        def _ignore(self, *args, **kwargs):
+            pass
+
+        close = refresh = reset = set_description = set_description_str = _ignore
+        set_postfix_str = set_transfer_postfix_str = _ignore
+
+    return Progress
+
+
+def cancel_download(repo: str) -> bool:
+    with STATE.lock:
+        entry = STATE.downloads.get(repo)
+        if not entry or entry["status"] != "running":
+            return False
+        STATE.download_cancels[repo].set()
+        entry["detail"] = "Cancelling…"
+    return True
+
+
 def worker_download(repo: str) -> None:
-    STATE.downloads[repo] = {"repo": repo, "status": "running", "detail": "starting", "pct": 0}
+    with STATE.lock:
+        running = STATE.downloads.get(repo, {}).get("status") == "running"
+        cancel = STATE.download_cancels.get(repo) if running else None
+    if cancel is None:
+        cancel = STATE.reserve_download(repo)
+    if cancel is None:
+        return
     log_activity("download", repo, "running", "download started")
+    marker = CACHE_DIR / f"models--{repo.replace('/', '--')}" / DOWNLOAD_MARKER
+    pct = 0
     try:
         from huggingface_hub import HfApi, hf_hub_download
 
         api = HfApi()
-        repo_info = api.repo_info(repo_id=repo, repo_type="model")
-        files = [s.rfilename for s in repo_info.siblings if s.rfilename]
-        total = len(files)
+        repo_info = api.repo_info(repo_id=repo, repo_type="model", files_metadata=True)
+        files = [
+            (s.rfilename, getattr(s, "size", None) or 0) for s in repo_info.siblings if s.rfilename
+        ]
 
-        if total == 0:
+        if not files:
             raise Exception("No files found in repository")
 
-        for downloaded, filename in enumerate(files, start=1):
+        total = sum(size for _, size in files)
+        # Marks the folder as partial until every expected file is on disk.
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "revision": getattr(repo_info, "sha", None),
+                    "files": [name for name, _ in files],
+                }
+            ),
+            encoding="utf-8",
+        )
+        done = 0
+        for index, (filename, size) in enumerate(files):
+            if cancel.is_set():
+                raise DownloadCancelled
+            # Without sizes from the Hub, fall back to counting files.
+            pct = int(done * 100 / total) if total else int(index * 100 / len(files))
+            label = f"Downloading {filename}"
+            _set_download(repo, "running", label, pct)
+
+            def report(received, done=done, size=size, label=label):
+                nonlocal pct
+                if total and not cancel.is_set():
+                    pct = max(pct, min(99, int((done + min(received, size)) * 100 / total)))
+                    _set_download(repo, "running", label, pct)
+
             hf_hub_download(
                 repo_id=repo,
                 filename=filename,
                 cache_dir=str(CACHE_DIR),
+                tqdm_class=_byte_progress(cancel, report),
             )
-            pct = int((downloaded / total) * 100)
-            STATE.downloads[repo] = {
-                "repo": repo,
-                "status": "running",
-                "detail": f"Downloading {filename}",
-                "pct": pct,
-            }
+            done += size
 
-        STATE.downloads[repo] = {
-            "repo": repo,
-            "status": "success",
-            "detail": "complete",
-            "pct": 100,
-        }
+        marker.unlink(missing_ok=True)
+        _set_download(repo, "success", "complete", 100)
         log_activity("download", repo, "success", "download complete")
     except Exception as exc:
-        STATE.downloads[repo] = {
-            "repo": repo,
-            "status": "failed",
-            "detail": str(exc)[:200],
-            "pct": 0,
-        }
-        log_activity("download", repo, "failed", str(exc)[:300])
-        log_app("error", "download failed", repo=repo, error=str(exc)[:500])
+        if cancel.is_set():
+            _set_download(repo, "cancelled", "cancelled; Download resumes it", pct)
+            log_activity("download", repo, "info", "download cancelled")
+        else:
+            _set_download(repo, "failed", str(exc)[:200], 0)
+            log_activity("download", repo, "failed", str(exc)[:300])
+            log_app("error", "download failed", repo=repo, error=str(exc)[:500])
+    finally:
+        invalidate_models()
+
+
+def install_specs() -> list[str]:
+    """Pinned versions, except that a newer installed release is never downgraded."""
+    specs = []
+    for name, pin in PINNED_PACKAGES.items():
+        current = pkg_version(name)
+        specs.append(f"{name}=={current if is_newer(current, pin) and current else pin}")
+    return specs
 
 
 def worker_install(kind: str) -> None:
@@ -833,7 +1246,7 @@ def worker_install(kind: str) -> None:
         cmd += ["--force-reinstall"]
     else:
         cmd += ["--upgrade"]
-    cmd += ["mlx", "mlx-lm"]
+    cmd += install_specs()
 
     STATE.install["lines"].append("$ " + " ".join(cmd))
     ok = False
@@ -848,6 +1261,11 @@ def worker_install(kind: str) -> None:
         for line in proc.stdout:
             STATE.install["lines"].append(line.rstrip())
         ok = proc.wait() == 0
+        if not ok and any("externally-managed-environment" in x for x in STATE.install["lines"]):
+            STATE.install["lines"].append(
+                "This Python is managed by the system and refuses pip. Create a virtual "
+                "environment (python3 -m venv ~/mlx-venv) and run MLX Studio with it."
+            )
     except Exception as exc:
         STATE.install["lines"].append(f"error: {exc}")
 
@@ -897,11 +1315,14 @@ def latest_app_version() -> str | None:
             print(f"truststore unavailable, using default CA bundle: {exc}")
         with urllib.request.urlopen(APP_UPDATE_URL, timeout=10) as resp:
             data = json.loads(resp.read().decode())
+        url = str(data.get("url") or "")
+        parsed = urllib.parse.urlparse(url)
+        sha256 = str(data.get("sha256") or "").lower()
         STATE.app_release = {
             "version": data.get("version"),
-            "url": data.get("url"),
+            "url": url if parsed.scheme == "https" and parsed.netloc else None,
             "notes": data.get("notes") or "",
-            "sha256": data.get("sha256"),
+            "sha256": sha256 if re.fullmatch(r"[0-9a-f]{64}", sha256) else None,
         }
         return data.get("version")
     except Exception:
@@ -924,6 +1345,57 @@ def _server_pidfile() -> Path:
     return APP_DIR / "server.pid"
 
 
+def _served_file() -> Path:
+    """Models the running API server has accepted requests for (see mlx_guard)."""
+    return APP_DIR / "server.models"
+
+
+def _served_models() -> set[str]:
+    try:
+        return set(_served_file().read_text("utf-8").split())
+    except (OSError, ValueError):
+        return set()
+
+
+def _ps_field(pid: int, field: str) -> str:
+    """One ``ps`` column for a pid, in a fixed locale and zone. Empty if unknown."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", f"{field}="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _is_our_server(pid: int | None, repo: str | None, started: str | None, port=None) -> bool:
+    """True only when ``pid`` is still the API server we launched.
+
+    A pid is reused after a crash or reboot, so both the command line and, when
+    recorded, the process start time must match before it is adopted or signalled.
+    """
+    if not repo or not _pid_alive(pid):
+        return False
+    command = f"{_ps_field(pid, 'command')} "
+    # The second form is a background server started by a build without the guard.
+    launchers = (f"/{GUARD_SCRIPT.name}", " -m mlx_lm server")
+    if not any(f"{start} --model {repo} --host " in command for start in launchers):
+        return False
+    if f" --port {port or SERVER_PORT} " not in command:
+        return False
+    return not started or _ps_field(pid, "lstart") == started
+
+
+def _is_guarded(pid: int) -> bool:
+    """True only when the command line shows the server runs behind the guard."""
+    return f"/{GUARD_SCRIPT.name} --model " in _ps_field(pid, "command")
+
+
 def _write_server_pidfile(pid: int, repo: str, background: bool) -> None:
     payload = {
         "pid": pid,
@@ -931,7 +1403,9 @@ def _write_server_pidfile(pid: int, repo: str, background: bool) -> None:
         "background": background,
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "port": SERVER_PORT,
+        "started": _ps_field(pid, "lstart"),
     }
+    STATE.server_identity = payload["started"]
     with contextlib.suppress(OSError):
         _server_pidfile().write_text(json.dumps(payload), encoding="utf-8")
         _server_pidfile().chmod(0o600)
@@ -962,12 +1436,16 @@ def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
     still succeeds on a zombie, so poll the Popen handle when we have one and
     fall back to the pid probe only for a server adopted from a pidfile.
     """
+    checks = 0
     while True:
         if proc is not None:
             if proc.poll() is not None:
                 break
         elif not _pid_alive(pid):
             break
+        elif checks % 15 == 14 and not _is_our_server(pid, repo, STATE.server_identity):
+            break  # the pid now belongs to another process
+        checks += 1
         time.sleep(2)
     if STATE.server_stopping:
         return
@@ -985,6 +1463,7 @@ def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
         STATE.server_repo = None
         STATE.server_background = False
         STATE.server_started_at = None
+        STATE.server_unguarded = False
         STATE.server_last_error = (
             f"exited with status {code}" if code is not None else "process gone"
         )
@@ -997,27 +1476,64 @@ def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
     log_app("error", "api server died", repo=repo, pid=pid, exit_code=code)
 
 
-def worker_server_start(repo: str, background: bool = False) -> None:
+def worker_server_start(repo: str, background: bool = False, ticket: int | None = None) -> None:
+    proc = None
+    try:
+        with STATE.server_lock:
+            # Stop can win the lock while this start is still queued.
+            if ticket is None or ticket == STATE.server_stops:
+                proc = _launch_server(repo, background)
+            else:
+                log_activity("server", repo, "info", "start cancelled by Stop")
+    finally:
+        with STATE.lock:
+            if repo in STATE.server_pending:
+                STATE.server_pending.remove(repo)
+    if proc is None or background:
+        return
+
+    if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
+        STATE.server_lines.append("error: no stdout stream")
+        return
+    for line in proc.stdout:
+        STATE.server_lines.append(line.rstrip())
+        STATE.server_lines = STATE.server_lines[-400:]
+    proc.wait()
+    with contextlib.suppress(Exception):
+        STATE.server_last_error = f"exited with status {proc.returncode}"
+
+
+def _launch_server(repo: str, background: bool) -> subprocess.Popen | None:
+    """Replace any running API server. The caller holds ``STATE.server_lock``."""
     stop_server()
     STATE.server_lines = []
     STATE.server_down_notice = None
     STATE.server_last_error = None
     cmd = [
         sys.executable,
-        "-m",
-        "mlx_lm",
-        "server",
+        str(GUARD_SCRIPT),
         "--model",
         repo,
         "--host",
         HOST,
         "--port",
         str(SERVER_PORT),
+        "--max-tokens",
+        str(SERVER_MAX_TOKENS),
+        # mlx_lm defaults to "*", which lets any web page read replies.
+        "--allowed-origins",
+        f"http://{HOST}:{PORT},http://localhost:{PORT}",
     ]
+    # A request must never make the server download a model.
+    env = {**os.environ, "HF_HUB_OFFLINE": "1", "MLX_STUDIO_SERVED_FILE": str(_served_file())}
+    with contextlib.suppress(OSError):
+        _served_file().unlink(missing_ok=True)
     try:
         if background:
             # Detached: survives the app window closing, output goes to a file
             # so the log folder still explains what happened.
+            with LOG_LOCK:
+                _rotate(SERVER_LOG)
             handle = open(SERVER_LOG, "a", encoding="utf-8")  # noqa: SIM115 - kept open
             with contextlib.suppress(OSError):
                 SERVER_LOG.chmod(0o600)
@@ -1029,16 +1545,22 @@ def worker_server_start(repo: str, background: bool = False) -> None:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env=env,
             )
         else:
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
             )
     except Exception as exc:
         STATE.server_lines.append(f"failed to start: {exc}")
         STATE.server_last_error = str(exc)[:300]
         log_app("error", "api server failed to start", repo=repo, error=str(exc)[:500])
-        return
+        return None
 
     STATE.server_proc = proc
     STATE.server_pid = proc.pid
@@ -1062,22 +1584,15 @@ def worker_server_start(repo: str, background: bool = False) -> None:
         port=SERVER_PORT,
     )
     threading.Thread(target=_watch_server, args=(proc.pid, repo, proc), daemon=True).start()
-
-    if background:
-        return
-
-    if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
-        STATE.server_lines.append("error: no stdout stream")
-        return
-    for line in proc.stdout:
-        STATE.server_lines.append(line.rstrip())
-        STATE.server_lines = STATE.server_lines[-400:]
-    proc.wait()
-    with contextlib.suppress(Exception):
-        STATE.server_last_error = f"exited with status {proc.returncode}"
+    return proc
 
 
 def stop_server() -> None:
+    with STATE.server_lock:
+        _stop_server_locked()
+
+
+def _stop_server_locked() -> None:
     proc = STATE.server_proc
     pid = STATE.server_pid
     repo = STATE.server_repo
@@ -1089,24 +1604,28 @@ def stop_server() -> None:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        elif pid and _pid_alive(pid):
+        elif _is_our_server(pid, repo, STATE.server_identity):
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGTERM)
             for _ in range(50):
                 if not _pid_alive(pid):
                     break
                 time.sleep(0.1)
-            if _pid_alive(pid):
+            if _is_our_server(pid, repo, STATE.server_identity):
                 with contextlib.suppress(OSError):
                     os.kill(pid, signal.SIGKILL)
+        elif _pid_alive(pid):
+            log_app("warning", "pid is not our api server; not signalled", pid=pid, repo=repo)
     finally:
         with STATE.lock:
             STATE.server_proc = None
             STATE.server_pid = None
+            STATE.server_identity = None
             STATE.server_repo = None
             STATE.server_background = False
             STATE.server_started_at = None
             STATE.server_down_notice = None
+            STATE.server_unguarded = False
         _clear_server_pidfile(only_pid=pid)
         if repo:
             log_activity("server", repo, "info", "server stopped")
@@ -1125,15 +1644,35 @@ def restore_server_state() -> None:
         _clear_server_pidfile()
         return
     pid = data.get("pid")
-    if not isinstance(pid, int) or not _pid_alive(pid):
+    if not isinstance(pid, int) or not _is_our_server(
+        pid, data.get("repo"), data.get("started"), data.get("port")
+    ):
+        log_app("info", "dropped a stale api server pidfile", pid=pid)
         _clear_server_pidfile()
         return
     STATE.server_pid = pid
+    STATE.server_identity = data.get("started")
     STATE.server_repo = data.get("repo")
     STATE.server_background = bool(data.get("background"))
     STATE.server_started_at = data.get("started_at")
     STATE.server_stopping = False
-    log_app("info", "adopted running api server", pid=pid, repo=STATE.server_repo)
+    # A build without the guard may have left it. Restarting is the user's call.
+    STATE.server_unguarded = not _is_guarded(pid)
+    if STATE.server_unguarded:
+        log_app(
+            "warning",
+            "adopted an api server running without the request guard",
+            pid=pid,
+            repo=STATE.server_repo,
+        )
+        log_activity(
+            "server",
+            STATE.server_repo,
+            "info",
+            "running without the request guard; restart it on the API Server page",
+        )
+    else:
+        log_app("info", "adopted running api server", pid=pid, repo=STATE.server_repo)
     threading.Thread(
         target=_watch_server, args=(pid, STATE.server_repo or "?", None), daemon=True
     ).start()
@@ -1142,6 +1681,25 @@ def restore_server_state() -> None:
 # --------------------------------------------------------------------------- #
 # HTTP handler
 # --------------------------------------------------------------------------- #
+# POST routes that act on a model named by the "repo" field.
+REPO_ROUTES = frozenset(
+    {
+        "/api/load",
+        "/api/download",
+        "/api/download/cancel",
+        "/api/delete",
+        "/api/reveal",
+        "/api/server/start",
+    }
+)
+
+
+class BadBody(Exception):
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"{APP_NAME}/{APP_VERSION}"
     protocol_version = "HTTP/1.1"
@@ -1168,6 +1726,65 @@ class Handler(BaseHTTPRequestHandler):
             raise
 
     # -- plumbing -------------------------------------------------------- #
+    def end_headers(self) -> None:
+        # Here so the chat stream and the library's own error pages get it too.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        super().end_headers()
+
+    def _allowed_hosts(self) -> set[str]:
+        port = self.server.server_address[1]
+        return {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    def _foreign_request(self) -> str | None:
+        """Why a request did not come from this app's own origin, or None.
+
+        The Host check stops DNS rebinding; the Origin check stops other sites.
+        """
+        allowed = self._allowed_hosts()
+        hosts = self.headers.get_all("Host") or []
+        if len(hosts) != 1 or hosts[0].strip().lower() not in allowed:
+            return "forbidden host"
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in {f"http://{host}" for host in allowed}:
+            return "forbidden origin"
+        return None
+
+    def _post_refusal(self, path: str) -> tuple[int, str] | None:
+        reason = self._foreign_request()
+        if reason:
+            return 403, reason
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return 415, "Content-Type must be application/json"
+        if path not in TOKEN_EXEMPT and not self._has_token():
+            return 403, BAD_TOKEN
+        return None
+
+    def _has_token(self) -> bool:
+        sent = (self.headers.get(TOKEN_HEADER) or "").encode("utf-8")
+        return secrets.compare_digest(sent, API_TOKEN.encode())
+
+    def _reject(self, code: int, message: str) -> None:
+        """Refuse a request and close the connection.
+
+        The unread body must never be parsed as a second request, so it is
+        discarded (bounded in size and time) after the answer is sent.
+        """
+        self.close_connection = True
+        self._send(
+            code,
+            json.dumps({"error": message}).encode("utf-8"),
+            extra_headers={"Connection": "close"},
+        )
+        with contextlib.suppress(OSError, ValueError):
+            left = min(int(self.headers.get("Content-Length") or 0), 4 * self.MAX_BODY)
+            self.connection.settimeout(1)
+            while left > 0:
+                chunk = self.rfile.read(min(left, 65536))
+                if not chunk:
+                    break
+                left -= len(chunk)
+
     def _send(
         self,
         code: int,
@@ -1179,6 +1796,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # A framed copy of the UI would send the right Origin and token.
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -1190,17 +1810,24 @@ class Handler(BaseHTTPRequestHandler):
     MAX_BODY = 8 * 1024 * 1024  # 8 MiB: chat history is the largest legitimate body
 
     def _body(self) -> dict:
-        raw = self.headers.get("Content-Length") or "0"
+        """The JSON object sent with a POST; raises BadBody for anything else."""
+        if self.headers.get("Transfer-Encoding"):
+            raise BadBody(411, "Content-Length is required")
+        raw = (self.headers.get("Content-Length") or "0").strip()
+        if not raw.isdecimal():
+            raise BadBody(400, "invalid Content-Length")
+        length = int(raw)
+        if length > self.MAX_BODY:
+            raise BadBody(413, "request body too large")
+        if not length:
+            return {}
         try:
-            length = int(raw)
-        except (TypeError, ValueError):
-            return {}
-        if length <= 0 or length > self.MAX_BODY:
-            return {}
-        try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
-        except Exception:
-            return {}
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, RecursionError):
+            raise BadBody(400, "body is not valid JSON") from None
+        if not isinstance(body, dict):
+            raise BadBody(400, "body must be a JSON object")
+        return body
 
     # -- static ---------------------------------------------------------- #
     # The request path is never used to build a filesystem path. It is used as a
@@ -1220,13 +1847,25 @@ class Handler(BaseHTTPRequestHandler):
             ".png": "image/png",
             ".ico": "image/x-icon",
         }.get(target.suffix, "application/octet-stream")
-        self._send(200, target.read_bytes(), ctype)
+        body = target.read_bytes()
+        if rel == "index.html":
+            body = body.replace(TOKEN_PLACEHOLDER, API_TOKEN.encode())
+        self._send(200, body, ctype)
 
     # -- GET ------------------------------------------------------------- #
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
+
+        reason = self._foreign_request()
+        if reason:
+            self._reject(403, reason)
+            return
+        # Static files stay open: index.html is how the window gets the token.
+        if path.startswith("/api/") and path not in OPEN_GETS and not self._has_token():
+            self._reject(403, BAD_TOKEN)
+            return
 
         if path == "/api/state":
             self._json(STATE.snapshot())
@@ -1279,7 +1918,17 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST ------------------------------------------------------------ #
     def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
-        body = self._body()
+        refusal = self._post_refusal(path)
+        if refusal:
+            self._reject(*refusal)
+            return
+        try:
+            body = self._body()
+        except BadBody as exc:
+            self._reject(exc.code, str(exc))
+            return
+        repo = body.get("repo")
+        repo = repo if isinstance(repo, str) else ""
 
         if path == "/api/focus":
             # A second launch asks this instance to come forward instead of
@@ -1287,85 +1936,120 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": focus_window()})
             return
 
+        if path in REPO_ROUTES and not repo:
+            self._json({"error": "repo required (a string)"}, 400)
+            return
+
         if path == "/api/load":
-            repo = body.get("repo") or ""
-            if not repo:
-                self._json({"error": "repo required"}, 400)
-                return
             with STATE.lock:
-                if STATE.loaded_repo == repo:
-                    self._json({"ok": True, "already": True})
-                    return
-                if STATE.loading_repo:
-                    self._json({"error": "another model is loading"}, 409)
-                    return
-            threading.Thread(target=worker_load, args=(repo,), daemon=True).start()
-            self._json({"ok": True, "loading": repo})
+                already = STATE.loaded_repo == repo
+                if already:
+                    busy = None
+                elif STATE.loading_repo:
+                    busy = "another model is loading"
+                elif STATE.generating:
+                    busy = "wait for the reply to finish, or stop it"
+                elif repo in STATE.deleting:
+                    busy = "the model is being deleted"
+                else:
+                    busy = None
+                    STATE.loading_repo = repo  # reserved before the worker runs
+                    STATE.load_error = None
+            if already:
+                self._json({"ok": True, "already": True})
+            elif busy:
+                self._json({"error": busy}, 409)
+            else:
+                threading.Thread(target=worker_load, args=(repo,), daemon=True).start()
+                self._json({"ok": True, "loading": repo})
             return
 
         if path == "/api/unload":
-            repo = STATE.unload()
-            if repo:
-                log_activity("model", repo, "info", "unloaded from memory")
+            with STATE.lock:
+                generating = STATE.generating
+                previous = None if generating else STATE._release_locked()
+            if generating:
+                self._json({"error": "wait for the reply to finish, or stop it"}, 409)
+                return
+            if previous:
+                clear_mlx_cache()
+                log_activity("model", previous, "info", "unloaded from memory")
             self._json({"ok": True})
             return
 
         if path == "/api/chat":
-            messages = body.get("messages") or []
-            if not messages:
-                self._json({"error": "messages required"}, 400)
+            messages = body.get("messages")
+            if not (
+                isinstance(messages, list)
+                and messages
+                and all(
+                    isinstance(m, dict)
+                    and isinstance(m.get("role"), str)
+                    and isinstance(m.get("content"), str)
+                    for m in messages
+                )
+            ):
+                self._json({"error": "messages required: a list of {role, content}"}, 400)
                 return
             self._stream_chat(messages)
             return
 
         if path == "/api/chat/stop":
-            STATE.stop_flag = True
+            with STATE.lock:
+                STATE.stop_event.set()
             self._json({"ok": True})
             return
 
         if path == "/api/download":
-            repo = body.get("repo") or ""
-            if not repo:
-                self._json({"error": "repo required"}, 400)
-                return
-            if repo in STATE.downloads and STATE.downloads[repo]["status"] == "running":
+            if STATE.reserve_download(repo) is None:
                 self._json({"error": "already downloading"}, 409)
                 return
             threading.Thread(target=worker_download, args=(repo,), daemon=True).start()
             self._json({"ok": True})
             return
 
+        if path == "/api/download/cancel":
+            if cancel_download(repo):
+                self._json({"ok": True})
+            else:
+                self._json({"error": "not downloading"}, 404)
+            return
+
         if path == "/api/delete":
-            repo = body.get("repo") or ""
-            if not repo:
-                self._json({"error": "repo required"}, 400)
-                return
-            if STATE.loaded_repo == repo:
-                self._json({"error": "unload the model first"}, 409)
-                return
+            self._delete_model(repo)
+            return
+
+        if path == "/api/reveal":
             match = next((m for m in installed_models() if m["repo"] == repo), None)
             if not match:
                 self._json({"error": "not installed"}, 404)
                 return
-            shutil.rmtree(match["path"], ignore_errors=True)
-            log_activity("delete", repo, "success", "removed from disk")
-            self._json({"ok": True})
+            ok, out = run_cmd(["open", "-R", match["path"]], timeout=10)
+            if ok:
+                self._json({"ok": True})
+            else:
+                self._json({"error": f"could not open Finder: {out.strip()[:200]}"}, 500)
             return
 
         if path == "/api/server/start":
-            repo = body.get("repo") or ""
             background = bool(body.get("background"))
-            if not repo:
-                self._json({"error": "repo required"}, 400)
+            with STATE.lock:
+                deleting = repo in STATE.deleting
+                if not deleting:
+                    STATE.server_pending.append(repo)
+                    ticket = STATE.server_stops
+            if deleting:
+                self._json({"error": "the model is being deleted"}, 409)
                 return
             threading.Thread(
-                target=worker_server_start, args=(repo, background), daemon=True
+                target=worker_server_start, args=(repo, background, ticket), daemon=True
             ).start()
             self._json({"ok": True, "background": background})
             return
 
         if path == "/api/server/stop":
             # worker_server_start logs the stop once its output pump exits.
+            STATE.cancel_pending_starts()
             stop_server()
             self._json({"ok": True})
             return
@@ -1376,8 +2060,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/install":
-            kind = body.get("kind") or "install"
-            if STATE.install["running"]:
+            kind = body.get("kind")
+            kind = kind if isinstance(kind, str) and kind else "install"
+            if not STATE.reserve_install(kind):
                 self._json({"error": "install already running"}, 409)
                 return
             threading.Thread(target=worker_install, args=(kind,), daemon=True).start()
@@ -1399,32 +2084,65 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json({"error": "unknown endpoint"}, 404)
 
+    def _delete_model(self, repo: str) -> None:
+        with STATE.lock:
+            busy = STATE.in_use_locked(repo)
+            if not busy:
+                STATE.deleting.add(repo)  # blocks load, download and serve meanwhile
+        if busy:
+            self._json({"error": busy}, 409)
+            return
+        try:
+            match = next((m for m in installed_models() if m["repo"] == repo), None)
+            if not match:
+                self._json({"error": "not installed"}, 404)
+                return
+            try:
+                shutil.rmtree(match["path"])
+            except OSError as exc:
+                log_activity("delete", repo, "failed", str(exc)[:300])
+                log_app("error", "delete failed", repo=repo, error=str(exc)[:500])
+                self._json({"error": f"could not delete: {exc}"}, 500)
+                return
+            log_activity("delete", repo, "success", "removed from disk")
+            self._json({"ok": True})
+        finally:
+            invalidate_models()
+            with STATE.lock:
+                STATE.deleting.discard(repo)
+
     # -- SSE chat -------------------------------------------------------- #
     def _stream_chat(self, messages: list[dict]) -> None:
+        stop = threading.Event()
         with STATE.lock:
-            if STATE.model is None:
-                self._json({"error": "no model loaded"}, 409)
-                return
-            STATE.generating = True
-            STATE.stop_flag = False
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
+            if STATE.generating:
+                busy = "a reply is already being generated"
+            elif STATE.loading_repo:
+                busy = "a model is loading"
+            elif STATE.model is None:
+                busy = "no model loaded"
+            else:
+                busy = None
+                STATE.generating = True
+                STATE.stop_event = stop
+                repo = STATE.loaded_repo or "?"
+        if busy:
+            self._json({"error": busy}, 409)
+            return
 
         def emit(event: str, data) -> None:
             payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
             self.wfile.write(payload.encode("utf-8"))
             self.wfile.flush()
 
-        text_parts: list[str] = []
-        repo = STATE.loaded_repo or "?"
         try:
-            for kind, payload in stream_chat(messages):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for kind, payload in stream_chat(messages, stop):
                 if kind == "token":
-                    text_parts.append(payload)
                     emit("token", payload)
                 elif kind == "done":
                     emit("done", payload)
@@ -1440,8 +2158,8 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             log_activity("chat", repo, "failed", "client disconnected")
         finally:
-            STATE.generating = False
-            STATE.stop_flag = False
+            with STATE.lock:
+                STATE.generating = False
             try:
                 self.close_connection = True
             except Exception as exc:

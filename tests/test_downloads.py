@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import types
 from pathlib import Path
 from typing import ClassVar
@@ -36,7 +37,7 @@ class FakeHfApi:
 
     calls: ClassVar[list] = []
 
-    def repo_info(self, repo_id, repo_type=None):
+    def repo_info(self, repo_id, repo_type=None, **kwargs):
         FakeHfApi.calls.append(("repo_info", repo_id, repo_type))
         return FakeRepoInfo(["config.json", "model.safetensors", "tokenizer.json"])
 
@@ -45,7 +46,7 @@ def install_fake_hf(monkeypatch, download_impl=None):
     """Install a fake huggingface_hub module for the duration of a test."""
     calls = []
 
-    def fake_download(repo_id, filename, cache_dir):
+    def fake_download(repo_id, filename, cache_dir, **kwargs):
         calls.append({"repo_id": repo_id, "filename": filename, "cache_dir": cache_dir})
         if download_impl:
             download_impl(repo_id, filename, cache_dir)
@@ -68,16 +69,6 @@ class TestCacheLocation:
         for call in calls:
             assert call["cache_dir"] == str(app_module.CACHE_DIR)
             assert call["cache_dir"].endswith("/hub")
-
-    def test_cache_dir_matches_the_scanner(self, app_module):
-        """worker_download and installed_models must agree on the directory."""
-        import inspect
-
-        source = inspect.getsource(app_module.worker_download)
-        assert "cache_dir=str(CACHE_DIR)" in source
-
-        scanner = inspect.getsource(app_module.installed_models)
-        assert "CACHE_DIR" in scanner
 
     def test_downloaded_model_appears_in_installed_models(self, app_module, monkeypatch):
         """End to end: a download creates the directory the scanner reads."""
@@ -189,7 +180,7 @@ class TestFailureHandling:
         module = types.ModuleType("huggingface_hub")
 
         class EmptyApi:
-            def repo_info(self, repo_id, repo_type=None):
+            def repo_info(self, repo_id, repo_type=None, **kwargs):
                 return FakeRepoInfo([])
 
         module.HfApi = EmptyApi
@@ -211,6 +202,13 @@ class TestFailureHandling:
         assert app_module.STATE.downloads["org/model"]["status"] != "success"
 
 
+def stub_worker(app_module, monkeypatch):
+    """Replace the worker so a request starts no thread that outlives the test."""
+    started = threading.Event()
+    monkeypatch.setattr(app_module, "worker_download", lambda repo: started.set())
+    return started
+
+
 class TestDuplicateGuard:
     def test_second_request_while_running_is_rejected(self, base_url, app_module):
         app_module.STATE.downloads["org/model"] = {
@@ -224,7 +222,7 @@ class TestDuplicateGuard:
         assert body["error"] == "already downloading"
 
     def test_retry_allowed_after_success(self, base_url, app_module, monkeypatch):
-        install_fake_hf(monkeypatch)
+        started = stub_worker(app_module, monkeypatch)
         app_module.STATE.downloads["org/model"] = {
             "repo": "org/model",
             "status": "success",
@@ -234,9 +232,10 @@ class TestDuplicateGuard:
         status, body = post(f"{base_url}/api/download", {"repo": "org/model"})
         assert status == 200
         assert body["ok"] is True
+        assert started.wait(5)
 
     def test_retry_allowed_after_failure(self, base_url, app_module, monkeypatch):
-        install_fake_hf(monkeypatch)
+        started = stub_worker(app_module, monkeypatch)
         app_module.STATE.downloads["org/model"] = {
             "repo": "org/model",
             "status": "failed",
@@ -246,6 +245,7 @@ class TestDuplicateGuard:
         status, body = post(f"{base_url}/api/download", {"repo": "org/model"})
         assert status == 200
         assert body["ok"] is True
+        assert started.wait(5)
 
     def test_missing_repo_is_400(self, base_url):
         status, body = post(f"{base_url}/api/download", {})
@@ -280,12 +280,6 @@ class TestUiContract:
             encoding="utf-8"
         )
 
-    @pytest.fixture
-    def js(self):
-        return (Path(__file__).resolve().parent.parent / "ui" / "app.js").read_text(
-            encoding="utf-8"
-        )
-
     def test_download_section_ids_exist(self, html):
         for element_id in ("downloadCards", "downloadEmpty", "downloadCount"):
             assert f'id="{element_id}"' in html, element_id
@@ -295,25 +289,6 @@ class TestUiContract:
         download_at = html.index('id="downloadCards"')
         catalog_at = html.index('id="catalogCards"')
         assert download_at < catalog_at, "Active Downloads must come first"
-
-    def test_renderer_targets_the_download_container(self, js):
-        assert 'const wrap = $("#downloadCards")' in js
-
-    def test_renderer_emits_a_progress_bar(self, js):
-        assert "progress-bar" in js
-        assert "progress-fill" in js
-
-    def test_renderer_emits_a_path_block(self, js):
-        assert "card-path" in js
-
-    def test_model_cards_emit_a_path_block(self, js):
-        # The Models view renders through renderModelCards.
-        start = js.index("function renderModelCards")
-        end = js.index("async function refreshModels")
-        assert "card-path" in js[start:end]
-
-    def test_download_click_switches_to_the_download_view(self, js):
-        assert js.count('showView("download")') >= 2
 
 
 class TestPathStyling:

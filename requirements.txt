@@ -2,7 +2,8 @@
 # Runtime dependencies for MLX Studio.
 #
 # These are not installed by pip during normal use: the app's Setup tab installs
-# `mlx` and `mlx-lm`, and `pywebview` is optional (the app falls back to the
+# `mlx`, `mlx-lm` and `huggingface-hub` (2.4.0; older releases lack features the
+# downloader uses), and `pywebview` is optional (the app falls back to the
 # browser). This file exists so tooling has a manifest to read:
 #
 #   pip-audit -r requirements.txt      vulnerability scan

@@ -8,9 +8,11 @@ test a clean ``STATE``.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import sys
 import threading
+import urllib.request
 import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -27,6 +29,14 @@ def app_module(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("MLX_STUDIO_UPDATE_URL", raising=False)
+    # The model cache must never resolve into the developer's real home.
+    for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    cache = home / ".cache" / "huggingface" / "hub"
+    with contextlib.suppress(ImportError):
+        from huggingface_hub import constants
+
+        monkeypatch.setattr(constants, "HF_HUB_CACHE", str(cache))
 
     name = f"mlxapp_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(name, ROOT / "app.py")
@@ -34,6 +44,7 @@ def app_module(tmp_path, monkeypatch):
     sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
+        assert cache == module.CACHE_DIR
         yield module
     finally:
         sys.modules.pop(name, None)
@@ -55,6 +66,15 @@ def server(app_module):
 
 
 @pytest.fixture
-def base_url(server):
+def base_url(server, app_module, monkeypatch):
+    """Server address; urllib requests to it carry the launch token like the UI does."""
     host, port = server.server_address[:2]
+    original = urllib.request.Request
+
+    def with_token(url, *args, **kwargs):
+        request = original(url, *args, **kwargs)
+        request.add_header("X-MLX-Token", app_module.API_TOKEN)
+        return request
+
+    monkeypatch.setattr(urllib.request, "Request", with_token)
     return f"http://{host}:{port}"

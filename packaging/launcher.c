@@ -1,76 +1,162 @@
 /*
- * MLX Studio native launcher.
+ * MLX Studio native launcher (CFBundleExecutable).
  *
- * Replaces the bash stub (MLXStudio shell script) as CFBundleExecutable.
  * A shell script exec'ing python3 causes LaunchServices to register TWO app
  * identities: "MLX Studio" (the shell script) and "Python" (the interpreter).
  * That produces two Dock tiles and duplicate menu-bar entries.
  *
  * A native Mach-O binary as CFBundleExecutable gives LaunchServices ONE
- * identity: "MLX Studio". The binary execs python3 to run app.py, keeping the
- * same process identity so macOS shows a single Dock tile.
+ * identity: "MLX Studio". The binary picks a usable python3, sends all output
+ * to ~/.mlx_studio/logs/launch.log and execs app.py, keeping the same process
+ * identity so macOS shows a single Dock tile.
+ *
+ * Single-instance handling lives in app.py, not here.
+ *
+ * packaging/build_app.sh compiles this file; the binary is never committed.
  */
 
+#include <fcntl.h>
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <pwd.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/stat.h>
-#include <mach-o/dyld.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
 
-static const char *python_candidates[] = {
-    "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
-    "/opt/homebrew/bin/python3",
-    "/usr/local/bin/python3",
-    "/usr/bin/python3",
-    NULL
-};
+/* Overridable at compile time so the tests can use stub interpreters. */
+#ifndef PYTHON_CANDIDATES
+#define PYTHON_CANDIDATES                                                      \
+    "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",       \
+    "/opt/homebrew/bin/python3",                                               \
+    "/usr/local/bin/python3",                                                  \
+    "/usr/bin/python3"
+#endif
 
+#define MAX_LOG_BYTES (2 * 1024 * 1024)
+#define PROBE_TIMEOUT_SECONDS 20
+
+/* Exit status of the probe: PROBE_BASE + score, anything else is unusable. */
+#define PROBE_BASE 20
+#define BEST_SCORE 3
+
+static const char *PROBE =
+    "import sys\n"
+    "if sys.version_info < (3, 10): sys.exit(10)\n"
+    "from importlib.util import find_spec as found\n"
+    "sys.exit(20 + 2 * bool(found('mlx_lm')) + bool(found('webview')))\n";
+
+static const char *python_candidates[] = {PYTHON_CANDIDATES, NULL};
+
+__attribute__((format(printf, 1, 2)))
+static void note(const char *format, ...) {
+    char stamp[32] = "";
+    time_t now = time(NULL);
+    struct tm parts;
+    if (localtime_r(&now, &parts)) {
+        strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &parts);
+    }
+    fprintf(stderr, "%s launcher: ", stamp);
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    fputc('\n', stderr);
+}
+
+/* Open a log for appending, owner only. A symlink is never followed. */
+static int open_log(const char *path) {
+    int fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0600);
+    if (fd >= 0) fchmod(fd, 0600);
+    return fd;
+}
+
+/* Point stdout and stderr at launch.log so a Finder launch can be diagnosed.
+ * Best effort: on any failure the streams are left as they are. */
+static void redirect_to_log(void) {
+    const char *home = getenv("HOME");
+    if (!home || !*home) {
+        struct passwd *pw = getpwuid(getuid());
+        home = pw ? pw->pw_dir : NULL;
+    }
+    if (!home) return;
+
+    char app_dir[PATH_MAX], log_dir[PATH_MAX], log[PATH_MAX], old[PATH_MAX];
+    if (snprintf(app_dir, sizeof(app_dir), "%s/.mlx_studio", home) >= (int)sizeof(app_dir) ||
+        snprintf(log_dir, sizeof(log_dir), "%s/logs", app_dir) >= (int)sizeof(log_dir) ||
+        snprintf(log, sizeof(log), "%s/launch.log", log_dir) >= (int)sizeof(log) ||
+        snprintf(old, sizeof(old), "%s.1", log) >= (int)sizeof(old)) {
+        return;
+    }
+    mkdir(app_dir, 0700);
+    mkdir(log_dir, 0700);
+
+    int fd = open_log(log);
+    if (fd < 0) return;
+
+    /* Size the file that is actually open, not whatever the path names next.
+     * If rotation fails, keep appending to the descriptor already held. */
+    struct stat st;
+    if (fstat(fd, &st) == 0 && st.st_size >= MAX_LOG_BYTES && rename(log, old) == 0) {
+        close(fd);
+        fd = open_log(log);
+        if (fd < 0) return;
+    }
+
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    if (fd > STDERR_FILENO) close(fd);
+}
+
+/* Score an interpreter: -1 unusable, else 2 for mlx_lm plus 1 for webview. */
+static int probe(const char *python) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        alarm(PROBE_TIMEOUT_SECONDS); /* survives exec: a hung probe dies */
+        execl(python, python, "-c", PROBE, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) return -1;
+    int score = WEXITSTATUS(status) - PROBE_BASE;
+    return (score >= 0 && score <= BEST_SCORE) ? score : -1;
+}
+
+/* Prefer the interpreter that has mlx_lm (then a native window). Without one,
+ * any Python 3.10+ will do: the Setup tab can install the packages. */
 static const char *find_python(void) {
-    for (int i = 0; python_candidates[i] != NULL; i++) {
-        struct stat st;
-        if (stat(python_candidates[i], &st) == 0 && (st.st_mode & S_IXUSR)) {
-            return python_candidates[i];
+    const char *chosen = NULL;
+    int best = -1;
+    for (int i = 0; python_candidates[i] != NULL && best < BEST_SCORE; i++) {
+        const char *path = python_candidates[i];
+        if (access(path, X_OK) != 0) continue;
+        /* On a Mac without developer tools the system stub opens an install
+         * dialog, so leave it alone once something else works. */
+        if (chosen && strcmp(path, "/usr/bin/python3") == 0) continue;
+        int score = probe(path);
+        if (score < 0) {
+            note("skipping %s (older than 3.10 or not runnable)", path);
+            continue;
+        }
+        note("found %s (mlx_lm=%s, webview=%s)", path,
+             (score & 2) ? "yes" : "no", (score & 1) ? "yes" : "no");
+        if (score > best) {
+            best = score;
+            chosen = path;
         }
     }
-    return NULL;
-}
-
-static int already_running(void) {
-    /* Probe the loopback API. If something answers on port 8765, an instance
-     * is already running and we just need to focus its window. */
-    FILE *fp = popen("curl -s -m 2 -o /dev/null http://127.0.0.1:8765/api/ping",
-                     "r");
-    if (!fp) return 0;
-    char buf[64];
-    if (fgets(buf, sizeof(buf), fp) != NULL) {
-        pclose(fp);
-        return strstr(buf, "\"ok\": true") != NULL;
-    }
-    pclose(fp);
-    return 0;
-}
-
-static int request_focus(void) {
-    /* Ask the existing instance to raise its window via AppleScript.
-     * Falls back to simply activating the app by bundle name. */
-    /* Ask the existing instance to raise its window via AppleScript. */
-    int rc = system("osascript -e 'tell application \"System Events\" "
-                    "to tell process \"Python\" to set frontmost to true'");
-    return rc == 0;
+    return chosen;
 }
 
 int main(int argc, char *argv[]) {
     (void)argc;
-    (void)argv;
-
-    const char *python = find_python();
-    if (!python) {
-        fprintf(stderr,
-                "MLX Studio: No Python 3.10+ interpreter found.\n"
-                "Install Python 3.10+ (python.org or: brew install python).\n");
-        return 1;
-    }
+    redirect_to_log();
+    note("start");
 
     /* Resolve the Resources directory from the executable path.
      * _NSGetExecutablePath gives us the path to this binary:
@@ -78,12 +164,11 @@ int main(int argc, char *argv[]) {
      * Resources lives at:
      *   /Applications/MLX Studio.app/Contents/Resources
      */
-    char exe_path[4096];
+    char exe_path[PATH_MAX];
     uint32_t bufsize = (uint32_t)sizeof(exe_path);
     if (_NSGetExecutablePath(exe_path, &bufsize) != 0) {
         /* Fallback to argv[0] */
-        strncpy(exe_path, argv[0], sizeof(exe_path) - 1);
-        exe_path[sizeof(exe_path) - 1] = '\0';
+        snprintf(exe_path, sizeof(exe_path), "%s", argv[0]);
     }
 
     char *last_slash = strrchr(exe_path, '/');
@@ -91,34 +176,30 @@ int main(int argc, char *argv[]) {
     last_slash = strrchr(exe_path, '/');
     if (last_slash) *last_slash = '\0';      /* …/Contents */
 
-    char resources_path[4096];
+    char resources_path[PATH_MAX];
     snprintf(resources_path, sizeof(resources_path), "%s/Resources", exe_path);
 
-    char app_py_path[4096];
-    snprintf(app_py_path, sizeof(app_py_path), "%s/app.py", resources_path);
-
-    /* If an instance is already running, focus its window and exit. */
-    if (already_running()) {
-        if (!request_focus()) {
-            fprintf(stderr,
-                    "MLX Studio: Already running, but could not raise window.\n");
-        }
-        return 0;
-    }
-
     if (chdir(resources_path) != 0) {
-        fprintf(stderr,
-                "MLX Studio: Cannot access Resources directory: %s\n",
-                resources_path);
+        note("cannot access the Resources directory: %s", resources_path);
         return 1;
     }
 
     /* Verify app.py exists before exec'ing. */
-    if (access(app_py_path, R_OK) != 0) {
-        fprintf(stderr,
-                "MLX Studio: Cannot find %s\n", app_py_path);
+    if (access("app.py", R_OK) != 0) {
+        note("cannot find %s/app.py", resources_path);
         return 1;
     }
+
+    const char *python = find_python();
+    if (!python) {
+        note("no Python 3.10+ interpreter found. "
+             "Install it from python.org or with: brew install python");
+        return 1;
+    }
+    note("interpreter=%s app=%s/app.py", python, resources_path);
+
+    /* Unbuffered, so the log is complete even if the app dies. */
+    setenv("PYTHONUNBUFFERED", "1", 0);
 
     /* exec python3 to run app.py. This replaces the current process image,
      * keeping the same PID so LaunchServices continues to associate this
@@ -127,6 +208,6 @@ int main(int argc, char *argv[]) {
     execv(python, args);
 
     perror("execv");
-    fprintf(stderr, "MLX Studio: Failed to start %s\n", python);
+    note("failed to start %s", python);
     return 1;
 }

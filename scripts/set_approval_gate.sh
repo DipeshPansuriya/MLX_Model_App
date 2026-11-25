@@ -42,20 +42,17 @@ if [ -z "$TOKEN" ]; then
     exit 2
 fi
 
+# The token reaches curl on stdin (-H @-), never on the command line, where any
+# local process could read it with `ps`. printf is a shell builtin.
 gh_api() {
     local method="$1" path="$2" data="${3:-}"
+    local args=(-sS --max-time 40 -X "$method"
+        -H @-
+        -H "Accept: application/vnd.github+json")
     if [ -n "$data" ]; then
-        curl -sS --max-time 40 -X "$method" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            -d "$data" "$API$path"
-    else
-        curl -sS --max-time 40 -X "$method" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "$API$path"
+        args+=(-H "Content-Type: application/json" -d "$data")
     fi
+    printf 'Authorization: Bearer %s\n' "$TOKEN" | curl "${args[@]}" "$API$path"
 }
 
 current_gate() {
@@ -159,6 +156,7 @@ print(json.dumps({
                     {"context": "Documentation links"},
                     {"context": "Hook installer"},
                     {"context": "Automated review"},
+                    {"context": "Release consistency"},
                 ],
             },
         },
@@ -207,6 +205,7 @@ print(json.dumps({
                     {"context": "Documentation links"},
                     {"context": "Hook installer"},
                     {"context": "Automated review"},
+                    {"context": "Release consistency"},
                 ],
             },
         },

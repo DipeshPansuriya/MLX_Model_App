@@ -17,14 +17,21 @@ Exit codes
 Usage
   ./scripts/check_secrets.py                 scan the working tree (tracked files)
   ./scripts/check_secrets.py --staged        scan staged content only
-  ./scripts/check_secrets.py --range A..B    scan a commit range
+  ./scripts/check_secrets.py --range A..B    scan every blob a commit range adds
+  ./scripts/check_secrets.py --range SHA --remote origin
+                                             scan every commit of SHA that the
+                                             remote does not have yet
   ./scripts/check_secrets.py --all-history   scan every blob in history
   ./scripts/check_secrets.py --list-rules    print the rule table
+
+Findings report the rule and path:line only. The matched line is never printed,
+because this output ends up in CI logs and pull request comments.
 """
 
 from __future__ import annotations
 
 import argparse
+import codecs
 import re
 import subprocess
 import sys
@@ -68,20 +75,31 @@ RULES: list[tuple[str, str, str, str]] = [
     (
         "SEC-020",
         "Hardcoded password assignment",
-        r"(?i)\b(?:password|passwd|pwd)\s*[=:]\s*['\"][^'\"\s]{8,}['\"]",
+        r"(?i)\b(?:password|passwd|pwd)\s*[=:]\s*['\"](?P<secret>[^'\"\s]{8,})['\"]",
         "block",
     ),
     (
         "SEC-021",
         "Hardcoded secret assignment",
-        r"(?i)\b(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[=:]\s*['\"][^'\"\s]{12,}['\"]",
+        (
+            r"(?i)\b(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token|auth[_-]?token)"
+            r"\s*[=:]\s*['\"](?P<secret>[^'\"\s]{12,})['\"]"
+        ),
         "block",
     ),
-    ("SEC-022", "Bearer token literal", r"(?i)bearer\s+[A-Za-z0-9\-._~+/]{20,}=*", "warn"),
+    (
+        "SEC-022",
+        "Bearer token literal",
+        r"(?i)bearer\s+(?P<secret>[A-Za-z0-9\-._~+/]{20,}=*)",
+        "warn",
+    ),
     (
         "SEC-023",
         "Connection string with inline password",
-        r"(?i)(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:[^@\s]+@",
+        (
+            r"(?i)(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp)://"
+            r"[^:\s]+:(?P<secret>[^@\s]+)@"
+        ),
         "block",
     ),
     # A long random-looking value assigned to an uppercase name: the .env shape.
@@ -90,8 +108,8 @@ RULES: list[tuple[str, str, str, str]] = [
         "SEC-024",
         "Env-style secret assignment",
         (
-            r"(?m)^[A-Z][A-Z0-9_]{2,}\s*=\s*[\"']?(?=[A-Za-z0-9_\-]*[a-z])"
-            r"(?=[A-Za-z0-9_\-]*[A-Z])(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,}[\"']?\s*$"
+            r"(?m)^[A-Z][A-Z0-9_]{2,}\s*=\s*[\"']?(?P<secret>(?=[A-Za-z0-9_\-]*[a-z])"
+            r"(?=[A-Za-z0-9_\-]*[A-Z])(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{20,})[\"']?\s*$"
         ),
         "warn",
     ),
@@ -107,17 +125,22 @@ SKIP_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Lines matching these are treated as documentation/placeholders, not secrets.
-ALLOW_LINE_RE = re.compile(
-    r"(?i)(?:"
-    r"example|placeholder|dummy|redacted|your[_-]?token|your[_-]?key|"
-    r"<[A-Za-z0-9_\- ]+>|\$\{[A-Za-z0-9_]+\}|\$[A-Z][A-Z0-9_]*|"
-    r"os\.environ|getenv|process\.env|System\.getenv|"
-    r"xxxx+|\.\.\.|…|"
-    r"secret[_-]?scan|check_secrets|SEC-\d{3}|"
-    r"not a real|fake|sample|test[_-]?key"
-    r")"
+# Placeholder shapes. Only the secret value is judged (the named `secret` group,
+# else the whole token match), never a key name, user name or the rest of the line.
+# A value is a placeholder when it is wholly an <angle> name or a variable, or
+# when placeholder words, x-runs and ellipses cover at least half of it.
+PLACEHOLDER_PART_RE = re.compile(
+    r"(?i)example|placeholder|dummy|redacted|sample|fake|"
+    r"your[_-]?(?:api[_-]?)?(?:token|key|password|secret)|test[_-]?key|"
+    r"x{4,}|\.{3}|…"
 )
+ANGLE_RE = re.compile(r"<[A-Za-z0-9_\- ]+>")
+# A lower-case word phrase led by a placeholder word, no digits: example-only-value.
+PHRASE_RE = re.compile(r"(?:example|sample|dummy|fake|placeholder|redacted)(?:[-_.][a-z]+)*")
+
+# A variable reference is a placeholder only when it is the whole secret value: a
+# real password may hold a dollar sign. The bare form must be upper case.
+VARIABLE_RE = re.compile(r"\$\{[A-Za-z0-9_]+\}|\$[A-Z_][A-Z0-9_]*")
 
 # Inline suppression: append this comment to a line that legitimately matches.
 SUPPRESS_RE = re.compile(r"(?:secret-scan|gitleaks):\s*allow", re.IGNORECASE)
@@ -148,25 +171,44 @@ def staged_files() -> list[str]:
     return [p for p in out.split("\0") if p]
 
 
+def decode(data: bytes) -> str:
+    """Text of any file: an odd encoding must neither crash nor hide a token."""
+    utf16 = data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE))
+    return data.decode("utf-16" if utf16 else "utf-8", "replace")
+
+
 def staged_content(path: str) -> str | None:
-    try:
-        return git("show", f":{path}")
-    except RuntimeError:
-        return None
+    return blob_content(f":{path}")
 
 
-def range_files(rev_range: str) -> list[str]:
-    out = git("diff", "--name-only", "--diff-filter=ACMR", "-z", rev_range)
-    return [p for p in out.split("\0") if p]
+def outgoing_blobs(rev_range: str, remote: str | None = None) -> list[tuple[str, str]]:
+    """Every (blob_sha, path) that `rev_range` would publish.
 
-
-def range_content(rev_range: str, path: str) -> str | None:
-    """Content of `path` at the tip of the range, when it still exists."""
-    tip = rev_range.rsplit("..", maxsplit=1)[-1] or "HEAD"
-    try:
-        return git("show", f"{tip}:{path}")
-    except RuntimeError:
-        return None
+    A diff of the two ends misses a secret added in one commit and removed in a
+    later one, so walk the objects. A single revision (a new branch) means all of
+    its commits that no remote-tracking branch of `remote` already has.
+    """
+    revisions = [rev_range]
+    if ".." not in rev_range:
+        revisions += ["--not", f"--remotes={remote}" if remote else "--remotes"]
+    objects = git("rev-list", "--objects", *revisions)
+    if not objects:
+        return []
+    result = subprocess.run(
+        ["git", "cat-file", "--batch-check=%(objecttype) %(objectname) %(rest)"],
+        input=objects,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git cat-file failed: {result.stderr.strip()}")
+    blobs: list[tuple[str, str]] = []
+    for line in result.stdout.splitlines():
+        parts = line.split(" ", 2)
+        if len(parts) == 3 and parts[0] == "blob":
+            blobs.append((parts[1], parts[2]))
+    return blobs
 
 
 def all_history_blobs() -> list[tuple[str, str]]:
@@ -184,29 +226,35 @@ def blob_content(sha: str) -> str | None:
     result = subprocess.run(["git", "cat-file", "-p", sha], capture_output=True, check=False)
     if result.returncode != 0:
         return None
-    return result.stdout.decode("utf-8", "replace")
+    return decode(result.stdout)
 
 
 # ── scanning ─────────────────────────────────────────────────────────────────
 class Finding:
-    __slots__ = ("desc", "excerpt", "line", "path", "rule", "severity")
+    __slots__ = ("desc", "line", "path", "rule", "severity")
 
-    def __init__(self, rule, desc, severity, path, line, excerpt):
+    def __init__(self, rule, desc, severity, path, line):
         self.rule = rule
         self.desc = desc
         self.severity = severity
         self.path = path
         self.line = line
-        self.excerpt = excerpt
 
     def render(self) -> str:
         colour = "\033[31m" if self.severity == "block" else "\033[33m"
         reset = "\033[0m"
         return (
             f"  {colour}{self.severity.upper():5s}{reset} {self.rule}  "
-            f"{self.path}:{self.line}  {self.desc}\n"
-            f"        {self.excerpt}"
+            f"{self.path}:{self.line}  {self.desc}"
         )
+
+
+def is_placeholder(match: re.Match) -> bool:
+    value = match.groupdict().get("secret") or match.group()
+    if any(r.fullmatch(value) for r in (VARIABLE_RE, ANGLE_RE, PHRASE_RE)):
+        return True
+    covered = sum(len(m.group()) for m in PLACEHOLDER_PART_RE.finditer(value))
+    return covered * 2 >= len(value)
 
 
 def scan_text(path: str, text: str, findings: list[Finding]) -> None:
@@ -217,17 +265,16 @@ def scan_text(path: str, text: str, findings: list[Finding]) -> None:
             continue
         if SUPPRESS_RE.search(line):
             continue
+        found = None
         for rid, desc, pattern, severity in COMPILED:
-            match = pattern.search(line)
-            if not match:
-                continue
-            if ALLOW_LINE_RE.search(line):
-                continue
-            excerpt = line.strip()
-            if len(excerpt) > 120:
-                excerpt = excerpt[:117] + "..."
-            findings.append(Finding(rid, desc, severity, path, lineno, excerpt))
-            break  # one finding per line is enough
+            if all(is_placeholder(m) for m in pattern.finditer(line)):
+                continue  # no match, or placeholders only
+            if severity == "block":
+                found = Finding(rid, desc, severity, path, lineno)
+                break
+            found = found or Finding(rid, desc, severity, path, lineno)
+        if found:
+            findings.append(found)  # one per line; a block outranks a warning
 
 
 def scan_paths(paths: list[str], reader, findings: list[Finding]) -> None:
@@ -240,13 +287,22 @@ def scan_paths(paths: list[str], reader, findings: list[Finding]) -> None:
         scan_text(path, text, findings)
 
 
+def scan_blobs(blobs: list[tuple[str, str]], findings: list[Finding]) -> None:
+    for sha, path in blobs:
+        if SKIP_PATH_RE.search(path):
+            continue
+        text = blob_content(sha)
+        if text is not None:
+            scan_text(path, text, findings)
+
+
 def read_worktree(root: Path):
     def reader(path: str) -> str | None:
         full = root / path
         try:
             if not full.is_file() or full.stat().st_size > MAX_FILE_BYTES:
                 return None
-            return full.read_text(encoding="utf-8", errors="replace")
+            return decode(full.read_bytes())
         except OSError:
             return None
 
@@ -265,6 +321,7 @@ def main() -> int:
     group.add_argument("--range", metavar="A..B", help="scan a commit range")
     group.add_argument("--all-history", action="store_true", help="scan every blob in history")
     group.add_argument("--list-rules", action="store_true", help="print the rule table")
+    parser.add_argument("--remote", help="with --range SHA: the remote being pushed to")
     parser.add_argument("--quiet", action="store_true", help="only print on failure")
     args = parser.parse_args()
 
@@ -281,15 +338,10 @@ def main() -> int:
         scan_paths(staged_files(), staged_content, findings)
         scope = "staged content"
     elif args.range:
-        scan_paths(range_files(args.range), lambda p: range_content(args.range, p), findings)
+        scan_blobs(outgoing_blobs(args.range, args.remote), findings)
         scope = f"range {args.range}"
     elif args.all_history:
-        for sha, path in all_history_blobs():
-            if SKIP_PATH_RE.search(path):
-                continue
-            text = blob_content(sha)
-            if text is not None:
-                scan_text(path, text, findings)
+        scan_blobs(all_history_blobs(), findings)
         scope = "all history"
     else:
         scan_paths(tracked_files(), read_worktree(root), findings)

@@ -2,10 +2,10 @@
 type: Index
 title: "MLX Studio — documentation index"
 date: 2026-11-24
-updated: "2026-11-24 — initial documentation set for v2.0.0"
+updated: "2026-11-25 — 2.0.9 source: API, data, implementation and summary documents added"
 author: "Dipesh Pansuriya"
 project: mlx-studio
-version: "2.0.0"
+version: "2.0.9"
 related:
   - PRD.md
   - ARCHITECTURE.md
@@ -26,10 +26,10 @@ inference, a model manager backed by the Hugging Face cache, an
 OpenAI-compatible HTTP server, a persistent activity log, and version/update
 reporting for both the app and its runtime packages.
 
-This directory holds the product, architecture and operational documentation for
-release **2.0.0**. Every statement below is derived from the shipped source at
-tag [`v2.0.0`](https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.0);
-where a document describes intent rather than code, it says so explicitly.
+This directory holds the product, architecture and operational documentation. It is
+being kept current with the **2.0.9** source, which is not released. Dated records
+(audit, recorded test results, "Status at a glance" evidence) describe the release
+named in them. Where a document describes intent rather than code, it says so.
 
 ## Reading order
 
@@ -47,8 +47,13 @@ where a document describes intent rather than code, it says so explicitly.
 | 5d | [REPO-HARDENING-CHECKLIST.md](REPO-HARDENING-CHECKLIST.md) | Reusable 79-item checklist: 11 areas, verify commands, cost, scorecard |
 | 6 | [TESTING.md](TESTING.md) | What was verified, how, and what remains unverified |
 | 7 | [RUNBOOK.md](RUNBOOK.md) | Operator procedures: start, stop, recover, rotate a release |
-| 8 | [adr/README.md](adr/README.md) | The decisions behind the design, with alternatives rejected |
+| 8 | [adr/README.md](adr/README.md) | The decisions behind the design (up to [ADR-009](adr/ADR-009-api-server-guard.md)), with alternatives rejected |
 | 9 | [diagrams/README.md](diagrams/README.md) | Rendered views of the runtime, request paths and release flow |
+| 10 | [API.md](API.md) | Endpoints, request rules, chat stream |
+| 11 | [DATABASE.md](DATABASE.md) | Stored files (there is no database) |
+| 12 | [implementation/](implementation/Setup-Initialisation.md) | [Setup](implementation/Setup-Initialisation.md), [features](implementation/Feature-Development.md), [auth and security](implementation/Authentication-Security.md), [MCP](implementation/MCP-Connection.md), [integrations](implementation/Integrations.md), [testing and debugging](implementation/Testing-QA-Debugging.md) |
+| 13 | [AGENTS.md](AGENTS.md), [AI-PROMPTS.md](AI-PROMPTS.md) | Ownership and suggested prompts |
+| 14 | [Project_Summary.md](Project_Summary.md) | One-page summary and open risks |
 
 ## Document conventions
 
@@ -59,28 +64,28 @@ where a document describes intent rather than code, it says so explicitly.
 | **Open** | Not decided; the document names who must decide |
 | Front matter | `type`, `title`, `date`, `author`, `project`, `related` — machine-readable index metadata |
 | Section numbering | Stable within a document; cross-references use `FILE.md §N` |
-| Anchors | Source references use `path:line` against the tagged tree |
+| Anchors | Older `path:line` references point at the release named in that document |
 
 ## Status at a glance
 
 | Area | State | Evidence |
 |---|---|---|
-| Chat with streaming inference | Built | [TESTING.md](TESTING.md) §3 |
-| Model load / unload with cache release | Built | [TESTING.md](TESTING.md) §3.2 |
-| Model download and delete | Built | [TESTING.md](TESTING.md) §3.3 |
-| OpenAI-compatible server | Built | [TESTING.md](TESTING.md) §3.4 |
-| Activity log | Built | [TESTING.md](TESTING.md) §3.5 |
-| Version and update reporting | Built | [TESTING.md](TESTING.md) §3.6 |
+| Chat with streaming inference | Built | [TESTING.md](TESTING.md) §7 |
+| Model load / unload with cache release | Built | [TESTING.md](TESTING.md) §7 |
+| Model download and delete | Built | [TESTING.md](TESTING.md) §7 |
+| OpenAI-compatible server | Built | [TESTING.md](TESTING.md) §7 |
+| Activity log | Built | [TESTING.md](TESTING.md) §7 |
+| Version and update reporting | Built | [TESTING.md](TESTING.md) §7 |
 | `.app` + `.dmg` packaging | Built | [DEPLOYMENT.md](DEPLOYMENT.md) §3 |
 | GitHub release with asset | Built | [DEPLOYMENT.md](DEPLOYMENT.md) §5 |
 | Developer ID signing / notarisation | Open | [SECURITY.md](SECURITY.md) §5 |
 | Security audit | Built — 21 checks, 3 findings fixed | [SECURITY-AUDIT.md](SECURITY-AUDIT.md) |
 | Secret scanning on commit and push | Built — 19 rules, 3 enforcement points | [PUSH-POLICY.md](PUSH-POLICY.md) |
 | CI security workflow | Built — 3 jobs on push and PR | [PUSH-POLICY.md](PUSH-POLICY.md) §7 |
-| Branch protection on `main` | Built — ruleset, no bypass, 7 required checks | [BRANCH-POLICY.md](BRANCH-POLICY.md) §2 |
+| Branch protection on `main` | Built — ruleset, no bypass; 8 required checks in the script, the eighth not yet applied | [BRANCH-POLICY.md](BRANCH-POLICY.md) §2 |
 | CodeQL code scanning | Built — 3 languages, weekly, 3 alerts fixed | [BRANCH-POLICY.md](BRANCH-POLICY.md) §7.2 |
 | Automated PR review | Built — sticky report comment | [GITHUB-POLICY.md](GITHUB-POLICY.md) §3.1 |
-| Automated CI build on tag | Open | [DEPLOYMENT.md](DEPLOYMENT.md) §7 |
+| Automated CI build on tag | Workflow defined; run on GitHub UNVERIFIED | [DEPLOYMENT.md](DEPLOYMENT.md) §8 |
 | Multi-turn context trimming | Open | [PRD.md](PRD.md) §10 |
 
 ## Source layout
@@ -88,15 +93,17 @@ where a document describes intent rather than code, it says so explicitly.
 ```
 MLX_Model_App/
 ├── app.py                      # backend: HTTP + JSON/SSE API, native window host
+├── mlx_guard.py                # request guard for the API server
 ├── ui/                         # single-page interface (no build step)
 │   ├── index.html
 │   ├── style.css
 │   └── app.js
-├── packaging/                  # .app/.dmg builder, launcher, manifest generator
-├── scripts/                    # security_audit.sh, check_secrets.py, install_hooks.sh
+├── packaging/                  # .app/.dmg/.pkg builder, launcher, manifest generator
+├── scripts/                    # install.sh, security_audit.sh, check_secrets.py, check_docs.py
 ├── .githooks/                  # pre-commit, pre-push
 ├── .github/                    # workflows (security, quality, pr-review), CODEOWNERS
 ├── release/latest.json         # update manifest served to installed copies
+├── tests/                      # pytest suite and UI harness
 ├── docs/                       # this documentation set
 ├── screenshots/                # captured views referenced by DESIGN.md
 ├── Run_MLX_Manager.command     # Finder launcher

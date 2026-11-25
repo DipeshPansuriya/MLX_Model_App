@@ -1,11 +1,11 @@
 ---
 type: Testing
 title: "Testing — MLX Studio"
-status: "Verification performed for v2.0.0 (2026-11-24)"
-date: 2026-11-24
+status: "Matches the 2.0.9 source tree (not released)"
+date: 2026-11-25
 author: "Dipesh Pansuriya"
 project: mlx-studio
-version: "2.0.0"
+version: "2.0.9"
 related:
   - PRD.md
   - ARCHITECTURE.md
@@ -16,217 +16,123 @@ related:
 
 ## 1. Approach
 
-There is no unit-test suite. Verification for 2.0.0 was **black-box, end-to-end,
-against the running application**: a scripted browser session drove the real UI
-over the Chrome DevTools Protocol while the real backend served it, and the
-packaged DMG was downloaded, mounted and launched. This is deliberate — the risk
-in this product is integration with MLX and with the browser, not arithmetic in a
-helper function — but it is also a gap, recorded in §7.
-
-Three layers were exercised:
-
-| Layer | Method | Where |
-|---|---|---|
-| Backend HTTP | Direct `urllib` calls to every endpoint | §2 |
-| UI behaviour | CDP `Runtime.evaluate` against the live page | §3 |
-| Packaging | `hdiutil`, `codesign`, `open`, checksum | §4 |
-
-## 2. Backend verification
-
-### 2.1 Static and meta
-
-| Check | Expected | Result |
-|---|---|---|
-| `GET /` | 200, HTML | 200, 10024 bytes |
-| `GET /style.css` | 200, CSS | 200 |
-| `GET /app.js` | 200, JS | 200 |
-| `GET /api/ping` | `{"ok": true, "app": "2.0.0"}` | pass |
-| `GET /api/state` | full snapshot | app, hardware, versions, models, loaded, server present |
-| `GET /api/search?q=qwen2.5-7b` | results | 2+ repo ids returned |
-
-### 2.2 Model lifecycle
-
-| Check | Expected | Result |
-|---|---|---|
-| `POST /api/load` | `{"ok": true, "loading": repo}` | pass |
-| Poll until loaded | `loaded.repo` set, `loading` null | pass |
-| `POST /api/unload` | `{"ok": true}` | pass |
-| Delete while loaded | 409 | pass |
-| Size of a 4 GB model | `4.0 GB` | pass (was `8.0 GB` before the inode fix) |
-
-### 2.3 Chat SSE
-
-```
-POST /api/chat {"messages":[{"role":"user","content":"Reply with exactly: hello world"}]}
-```
-
-| Check | Expected | Result |
-|---|---|---|
-| Response is `text/event-stream` | yes | pass |
-| `token` events arrive incrementally | 3 events | pass |
-| Reassembled text | `"hello world"` | pass |
-| `done` event | metrics object | `{tokens: 3, tps: 43.5, peak_gb: 4.37, prompt_tokens: 25, elapsed: 0.42}` |
-| `POST /api/chat` with no model | 409 | pass |
-
-### 2.4 API server
-
-| Check | Expected | Result |
-|---|---|---|
-| `POST /api/server/start` | `{"ok": true}` | pass |
-| `GET http://127.0.0.1:8080/v1/models` | 200 with repo id | pass |
-| `state.server.running` | true, endpoint correct | pass |
-| Output captured | ≥ 4 lines | pass |
-| `POST /api/server/stop` | running false | pass |
-| Stop logged exactly once | one entry | pass (duplicate fixed) |
-
-## 3. UI verification
-
-Driven over CDP at 1360×900. Final run: **`RESULT: PASS`, zero JavaScript errors.**
-
-### 3.1 Shell and routing
-
-| Check | Result |
+| Layer | Method |
 |---|---|
-| Title `MLX Studio` | pass |
-| Sidebar version `v2.0.0` | pass |
-| Hardware line `Apple M6` / `32 GB unified` | pass |
-| Model count badge | pass |
-| Hash routing `#chat…#settings` | pass |
-| Nav click updates hash | pass |
-| Browser Back restores previous view | pass |
-| Unknown hash falls back to `#chat` | pass |
-| No horizontal overflow on any view | pass (overflowX = 0 on all six) |
+| Backend and HTTP contract | `pytest`; the real request handler on a free loopback port |
+| API server guard | `pytest`; policy functions and the real `mlx_lm` handler (skipped without `mlx_lm`) |
+| UI behaviour | `ui/app.js` run under Node against a stub DOM (`tests/ui_harness.js`) |
+| Packaging, installer, release | `pytest` on the scripts; macOS-only tests skip elsewhere |
+| Live window, real models | Manual (§6) |
 
-### 3.2 Layout measurements
+The app code is not tested against a real browser or native window in `pytest`.
 
-| View | Topbar height | Scroll height | Overflow |
-|---|---|---|---|
-| Chat | 65 px | 755 px | 0 |
-| Models | 63 px | 837 px | 0 |
-| Download | 63 px | 837 px | 0 |
-| Server | 65 px | 835 px | 0 |
-| Activity | 65 px | 835 px | 0 |
-| Setup | 63 px | 837 px | 0 |
-
-Composer 80 px at rest; input 47 px; Send button 62×34.
-
-### 3.3 Model state indication
-
-| Step | Expected | Result |
-|---|---|---|
-| Initial | `● Not loaded`, Load visible, Unload hidden | pass |
-| After Load | `● Loaded — Qwen2.5-7B-Instruct-1M-4bit` | pass |
-| Sidebar pill | green with model name | pass |
-| Buttons | Load hidden, Unload visible | pass |
-| Models card | `loaded` tag | pass |
-| After Unload | `● Not loaded`, Load visible | pass |
-
-### 3.4 Chat
-
-| Check | Result |
-|---|---|
-| Two messages rendered | pass |
-| Assistant text `"hello world"` | pass |
-| Metrics line `3 tokens · 52.6 tok/s · 4.37 GB peak` | pass |
-| Send re-enabled after completion | pass |
-| Stop hidden when idle | pass |
-
-### 3.5 Server, logs, settings
-
-| Check | Result |
-|---|---|
-| Server pill `Running — <model>` | pass |
-| Endpoint `http://127.0.0.1:8080/v1` | pass |
-| Server output ≥ 7 lines | pass |
-| Stop returns pill to `Stopped` | pass |
-| Log table populated (18–52 rows across runs) | pass |
-| Newest-first ordering | pass |
-| Status colouring | pass |
-| `setMlx 0.32.4` / `up to date` | pass |
-| `setMlxLm 0.32.2` / `up to date` | pass |
-| Hint "Everything is installed and up to date." | pass |
-
-### 3.6 App update panel
-
-With `MLX_STUDIO_UPDATE_URL` pointing at a 2.1.0 manifest:
-
-| Check | Result |
-|---|---|
-| App pill `update → 2.1.0` | pass |
-| Update panel visible | pass |
-| Version and notes rendered | pass |
-| Download DMG button present | pass |
-| Nav `!` badge visible | pass |
-| Without a channel: `local build`, no panel | pass |
-
-## 4. Packaging verification
-
-| Check | Result |
-|---|---|
-| `codesign --verify --deep --strict` | valid (ad-hoc) |
-| `hdiutil verify` | CRC32 valid |
-| Mounted layout | app, `Applications` symlink, `Read Me.txt` |
-| Copy out and `open` | launches |
-| `/api/ping` from bundle | `{"ok": true, "app": "2.0.0"}` |
-| Native window | 1360×900 |
-| Release asset HTTP status | 200 |
-| Asset size | 979129 bytes |
-| SHA-256 download vs manifest | identical |
-| Live manifest from GitHub raw | `latest 2.0.0`, `update false` |
-
-## 5. Defects found and fixed during verification
-
-| # | Defect | Symptom | Fix |
-|---|---|---|---|
-| 1 | Cross-thread Tk callbacks | `RuntimeError: main thread is not in main loop` | Worker updates queued and drained on the main thread |
-| 2 | PyPI check always failed | `CERTIFICATE_VERIFY_FAILED` | `truststore.inject_into_ssl()` before fetch |
-| 3 | Model size double-counted | 4 GB model reported `8.0 GB` | Follow symlinks, de-duplicate by `(st_dev, st_ino)` |
-| 4 | Server stop logged twice | duplicate activity rows | Log only in the pump that observes exit |
-| 5 | Deprecated CLI form | `--interactive` rejected by `mlx_lm` | Use `mlx_lm chat` |
-
-## 6. Regression procedure
+## 2. Run
 
 ```bash
-# 1. syntax
-python3 -m py_compile app.py
+python3 -m pip install pytest ruff
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider
+ruff check --no-cache . && ruff format --check --no-cache .
 node --check ui/app.js
-
-# 2. backend
-python3 - <<'PY'
-import importlib.util, json, urllib.request
-spec = importlib.util.spec_from_file_location("app", "app.py")
-app = importlib.util.module_from_spec(spec); spec.loader.exec_module(app)
-httpd = app.serve()
-with urllib.request.urlopen(f"http://{app.HOST}:{app.PORT}/api/ping") as r:
-    print(json.loads(r.read()))
-httpd.shutdown()
-PY
-
-# 3. UI over CDP (headless Chrome with --remote-debugging-port=9222)
-python3 /tmp/cdp_test.py        # expects RESULT: PASS
-
-# 4. packaging
-cd packaging && ./build_app.sh
-codesign --verify --deep --strict "../dist/MLX Studio.app"
-hdiutil verify "../dist/MLX.Studio-<version>.dmg"
+python3 scripts/check_docs.py
+python3 scripts/check_secrets.py
+./scripts/security_audit.sh --quick
 ```
 
-## 7. Gaps
+`security_audit.sh` also reads the real `~/.mlx_studio` permissions. Without
+`--quick` it runs `pip-audit` if installed.
 
-| Gap | Risk | Note |
-|---|---|---|
-| No unit tests | Helper regressions (version compare, size formatting) are caught only by end-to-end runs | `vt`, `is_newer`, `human_size`, `installed_models` are pure and easy to test |
-| No automated UI test in the repo | The CDP script lives outside the repository | Would need a checked-in harness |
-| No CI | Regressions are caught only when someone runs the procedure | PRD OD-2 |
-| Single hardware profile | Only M6 / 32 GB verified | Other chips and RAM sizes untested |
-| No load or soak test | Long sessions and repeated load/unload cycles unmeasured | Memory growth after many cycles unknown |
-| No accessibility audit | §9 of DESIGN.md lists known gaps | No screen-reader pass performed |
+## 3. Isolation
 
-## 8. Sources read for this file
+The `app_module` fixture imports a fresh `app.py` with a temporary `HOME` and
+cleared Hugging Face cache variables, and asserts that the cache path is inside
+it. Tests marked `integration` touch macOS tooling or the filesystem outside the
+temporary folder.
 
-| Source | Used for |
+The build, release and scanner tests replace `pip_audit` with a stub, so the
+security audit test does not call the real one. If `HTTP_PROXY` or `HTTPS_PROXY`
+is set, also set `NO_PROXY=127.0.0.1,localhost`; without it some loopback tests
+in `test_row553.py` fail.
+
+## 4. Suite
+
+28 test files on 2026-11-26. The latest reported full run had 1059 tests, all
+passed.
+
+| File in `tests/` | Covers |
 |---|---|
-| Backend test run, 2026-11-24 | §2 tables |
-| CDP UI run, 2026-11-24 | §3 tables and measurements |
-| Packaging run, 2026-11-24 | §4 table |
-| `CHANGELOG.md` | §5 defect list |
+| `test_api.py` | Every endpoint, status codes, JSON shape |
+| `test_app_robustness.py` | Concurrency, in-use guards, cache handling, request validation |
+| `test_security.py` | Local API origin rules; only the app's own server is signalled |
+| `test_row536_secrets_release.py` | Secret scanner allow-list; release checksum rules and `--backfill` |
+| `test_guard.py`, `test_m6_guard_lists.py` | API server guard; every file list includes it |
+| `test_guard_null_args.py` | `null` tool argument rule: policy, real `mlx_lm` handler with and without streaming, concurrent requests |
+| `test_row573_ui_low.py` | Button focus, stale Installed, downloads toggle name, Background box, favicon |
+| `test_row553.py` | Download completeness, served-model delete guard, start cancel, install slot, UI fixes (32 tests) |
+| `test_row555_scanner_audit.py` | Secret scanner, security audit and release checksum behaviour |
+| `test_row557.py` | Search cards, collapsed downloads, model search field (32 tests) |
+| `test_row562_scanner_markers.py` | Placeholder rules judge only the secret value (28 tests) |
+| `test_server.py` | Pidfile, watchdog, adoption, stop |
+| `test_downloads.py` | Progress, cache location, model discovery |
+| `test_helpers.py` | Version compare, size formatting, fit rating, pid probes |
+| `test_logs.py` | Rotation, permissions, migration, reader |
+| `test_single_instance.py` | One running window |
+| `test_ui_behaviour.py`, `test_ui_features.py` | Front-end behaviour, copy name, type-to-filter dropdowns |
+| `test_ui_buttons.py` | Front-end button behaviour |
+| `test_packaging.py` | Build script, installer, pkg structure |
+| `test_c1_h4_build.py`, `test_m13_l1_launcher.py` | Minimum macOS, clean-clone build, native launcher |
+| `test_c2_l3_installer.py`, `test_c3_h5_release.py` | Checksum verification, release manifest |
+| `test_h8_m14_secrets.py`, `test_l8_token.py` | Secret scanner, token handling |
+| `test_m15_ci.py` | CI build and release gates |
+
+The IDs in file names (C1, H4, M6 and so on) are findings from the 2.0.9 review.
+
+## 5. CI
+
+| Job | Runs |
+|---|---|
+| `tests` | Suite on Ubuntu, without MLX |
+| `macos-build` | Build, then the suite on macOS |
+
+Other jobs are listed in [DEPLOYMENT.md](DEPLOYMENT.md) §8.
+
+## 6. Manual checks before a release
+
+| Check | Pass means |
+|---|---|
+| Install the built `.pkg`, launch | `curl -s http://127.0.0.1:8765/api/ping` shows the new version; one app entry in the Dock |
+| Load a model, chat, stop, unload | Tokens stream; stop works |
+| Download and cancel a model | Progress shows; cancel leaves it not installed |
+| Start the API server, send a request | Reply from `/v1/chat/completions` |
+| Send a `text/plain` POST to port 8080 | 415 |
+| Name a model that is not downloaded | 400, nothing downloaded |
+| Tool call from your client on each model | A structured tool call comes back |
+| Keyboard and VoiceOver pass | No unreachable control |
+
+## 7. Recorded results
+
+| Date | Result | Limit |
+|---|---|---|
+| 2026-11-26 | 1059 passed, 0 failed, 0 skipped; `ruff check` and format check passed | Reported by the guard fix run (temporary `HOME`, offline); a security check repeated the suite, exit 0 |
+| 2026-11-26 | 909 passed | Reported by the UI change run; test files changed afterwards, so current totals are UNVERIFIED |
+| 2026-11-25 | 714 passed, 0 failed, 0 skipped; ruff and `node --check` passed | Reported by the fix run on this tree; temporary `HOME`, offline |
+| 2026-11-25 | 545 passed; ruff and `node --check` passed | Earlier tree |
+| 2026-11-25 | Guard end to end with tiny random-weight models | No real model loaded |
+| 2026-11-24 | Black-box run of the packaged 2.0.0 app | Historical; does not cover later changes |
+
+The suite was not re-run for this document.
+
+## 8. Gaps
+
+| Gap | Risk |
+|---|---|
+| No automated test of the native window | Layout, focus and dialogs break unnoticed |
+| No test with real model weights | `mlx_lm` behaviour differences missed |
+| One hardware profile used for manual checks | Other chips, memory sizes and older macOS untested |
+| No load or soak test | Memory growth over long sessions unknown |
+| Guard tests skip without `mlx_lm` (Ubuntu) | The real-handler part runs only where MLX is installed |
+
+## 9. Sources read for this file
+
+`pytest.ini`, `tests/conftest.py`, test file docstrings,
+`.github/workflows/quality.yml`, `scripts/security_audit.sh`, test run records
+of 2026-11-24 and 2026-11-25.

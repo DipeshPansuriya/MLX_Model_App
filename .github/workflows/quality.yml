@@ -3,6 +3,7 @@ name: Quality
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -50,9 +51,8 @@ jobs:
 
       - name: Python compiles
         run: |
-          python3 -m py_compile app.py
+          python3 -m py_compile app.py mlx_guard.py
           python3 -m py_compile scripts/check_secrets.py
-          python3 -m py_compile packaging/launcher.py
           python3 -m py_compile packaging/release_manifest.py
 
       - name: JavaScript parses
@@ -98,3 +98,69 @@ jobs:
       - name: Report counts
         if: always()
         run: python3 -m pytest --collect-only -q | tail -3
+
+  macos-build:
+    name: macOS build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python3 -m pip install --upgrade pip pytest
+
+      # Compiles the launcher and fails if its minos differs from Info.plist.
+      - name: Build app, dmg and pkg
+        run: ./packaging/build_app.sh
+
+      - name: Built pkg matches the source
+        run: python3 packaging/release_manifest.py --inspect --dist dist
+
+      # The macOS-only launcher and build tests skip themselves on Linux.
+      - name: Run the suite on macOS
+        run: python3 -m pytest -q
+
+  release:
+    name: Release consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0          # tags are needed for the tag checks
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Version, manifest and tags agree
+        run: python3 packaging/release_manifest.py --check
+
+      - name: Pushed tag matches APP_VERSION
+        if: github.ref_type == 'tag'
+        run: python3 packaging/release_manifest.py --check --tag "$GITHUB_REF_NAME"
+
+      # A change under release/ may only land when the published assets it
+      # describes exist and match, so publish the assets first.
+      - name: Published assets match the manifest
+        if: github.ref_type != 'tag'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet "$BASE" HEAD -- release/; then
+            echo "release/ unchanged"
+            exit 0
+          fi
+          version="$(python3 -c 'import json; print(json.load(open("release/latest.json"))["version"])')"
+          assets="$(mktemp -d)"
+          for ext in dmg pkg; do
+            name="MLX.Studio-$version.$ext"
+            curl -fsSL --retry 3 -o "$assets/$name" \
+              "https://github.com/$GITHUB_REPOSITORY/releases/download/v$version/$name"
+          done
+          python3 packaging/release_manifest.py --verify --dist "$assets"

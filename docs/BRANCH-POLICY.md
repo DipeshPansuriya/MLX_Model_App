@@ -25,14 +25,14 @@ described as done unless a bypass was attempted and failed.
 
 | Area | In force | Planned | Cost |
 |---|---|---|---|
-| Branch protection | 6 rules, 7 required checks, no bypass | approval gate (needs a 2nd account) | free |
+| Branch protection | 6 rules, 8 required checks in the script (7 before 2026-11-25; the eighth not applied), no bypass | approval gate (needs a 2nd account) | free |
 | Tag protection | delete and move blocked on `refs/tags/v*` | — | free |
 | Repository settings | squash/merge only, branch deleted on merge | — | free |
 | Actions hardening | SHA pinning required, read-only token | — | free |
 | Secret scanning | push protection + 19 local rules | 2 features plan-limited | free |
 | Code scanning | **CodeQL default setup, 3 languages, weekly** | — | free for public |
 | Dependency updates | Dependabot actions + pip, weekly | — | free |
-| CI gates | 7 required checks + automated review | — | free |
+| CI gates | 8 required checks listed, including automated review | — | free |
 | Release integrity | signature, manifest schema, bundle freshness | `2.0.1` rebuild | free |
 
 **Nothing in force is paid.** Every control runs on the GitHub free tier for a
@@ -76,6 +76,11 @@ actors `[]`, `current_user_can_bypass: never`.
 | `Documentation links` | `quality.yml` | every relative link resolves |
 | `Hook installer` | `security.yml` | hooks install and are executable |
 | `Automated review` | `pr-review.yml` | the report comment was produced |
+| `Release consistency` | `quality.yml` | version, manifest, checksum list and tags agree |
+
+`Release consistency` is in `scripts/set_approval_gate.sh` since 2026-11-25 but
+was not applied to GitHub; the live ruleset is UNVERIFIED. See
+[DEPLOYMENT.md](DEPLOYMENT.md) section 5, step 5.
 
 Verified: a direct push to `main` is rejected with
 `GH013: Repository rule violations`.
@@ -241,8 +246,8 @@ check, a SHA-256 checksum and a bundle-freshness comparison (§8).
 | Version in one place | `APP_VERSION` in `app.py`, read by the builder and the manifest |
 | Signature | `codesign --verify --deep --strict`, ad-hoc |
 | Manifest schema | version, https url, 64-hex sha256, positive size |
-| Checksum | SHA-256 of the DMG, published in `release/latest.json` |
-| Bundle freshness | `cmp` of bundled `app.py` and `ui/app.js` against source |
+| Checksum | SHA-256 of the pkg in `release/latest.json`; published assets listed in `release/SHA256SUMS` (not created yet) |
+| Bundle freshness | `cmp` of every bundled file in `BUNDLED` (`app.py`, `mlx_guard.py`, `ui/index.html`, `ui/style.css`, `ui/app.js`) against source |
 | Asset re-verification | download and compare to the manifest |
 
 `SA-15` (bundle freshness) exists because the released `2.0.0` DMG was built
@@ -317,5 +322,5 @@ validity checks.
 | `GET /code-scanning/default-setup`, `/code-scanning/alerts` | §7.2 |
 | `security_and_analysis`, `/secret-scanning/alerts` | §7.1 |
 | `/dependabot/alerts`, `pip-audit` run | §7.3 |
-| `scripts/security_audit.sh` SA-01…SA-15 | §8, §10 |
+| `scripts/security_audit.sh` SA-01…SA-16 | §8, §10 |
 | Bypass attempts, 2026-11-24 | §10 |

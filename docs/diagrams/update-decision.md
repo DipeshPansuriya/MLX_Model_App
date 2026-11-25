@@ -40,7 +40,7 @@ flowchart TD
     D2 -->|no| R3["pill: up to date (green)"]
 
     CMP --> D3{"manifest.version<br/>&gt; APP_VERSION?"}
-    D3 -->|yes| R4["app pill: update → x.y.z<br/>panel: notes + Download DMG<br/>nav ! badge"]
+    D3 -->|yes| R4["app pill: update → x.y.z<br/>panel: notes + Download installer<br/>nav ! badge"]
     D3 -->|no| R5["app pill: local build or up to date"]
 
     R1 --> BADGE

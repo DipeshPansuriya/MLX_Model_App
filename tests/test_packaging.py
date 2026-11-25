@@ -11,7 +11,6 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "packaging" / "build_app.sh"
 INSTALLER = ROOT / "scripts" / "install.sh"
-LAUNCHER = ROOT / "packaging" / "launcher.py"
 
 
 class TestBuildScript:
@@ -90,28 +89,6 @@ class TestInstaller:
                 lines.append(line)
         code = "\n".join(lines)
         assert not re.search(r"curl[^|]*\|\s*(ba)?sh", code)
-
-
-class TestLauncher:
-    def test_compiles(self):
-        assert (
-            subprocess.run(["python3", "-m", "py_compile", str(LAUNCHER)], check=False).returncode
-            == 0
-        )
-
-    def test_checks_ping_before_spawning(self):
-        text = LAUNCHER.read_text(encoding="utf-8")
-        assert "already_running()" in text
-        assert "ask_focus()" in text
-
-    def test_has_an_applescript_fallback(self):
-        text = LAUNCHER.read_text(encoding="utf-8")
-        assert "raise_by_applescript" in text
-        assert "osascript" in text
-
-    def test_fallback_runs_when_focus_fails(self):
-        text = LAUNCHER.read_text(encoding="utf-8")
-        assert "if not focused:" in text
 
 
 @pytest.mark.integration

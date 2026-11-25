@@ -53,7 +53,7 @@ flowchart TB
         end
 
         subgraph CHILD["child process"]
-            SRV["python -m mlx_lm server<br/>127.0.0.1:8080/v1"]
+            SRV["python mlx_guard.py<br/>guarded mlx_lm server<br/>127.0.0.1:8080/v1"]
         end
 
         subgraph EXT["remote, on explicit action"]
@@ -81,7 +81,7 @@ flowchart TB
     ROUTER -->|"append"| LOG
     STATE -->|"render"| PAGE
 
-    CLIENT["Claude Code · DeepSeek<br/>curl · any OpenAI client"]
+    CLIENT["DeepSeek Harness<br/>curl · any OpenAI client"]
     CLIENT -.->|"HTTP"| SRV
 ```
 
@@ -98,14 +98,14 @@ flowchart TB
 
 | Fact | Value | Source |
 |---|---|---|
-| UI/API port | `127.0.0.1:8765` | `app.py:43` |
-| OpenAI server port | `127.0.0.1:8080` | `app.py:44` |
-| Server is a child process | `Popen([... "mlx_lm", "server" ...])` | `app.py:466` |
-| Inference is in-process | `stream_generate(model, ...)` | `app.py:315` |
-| One model slot | `State.model` | `app.py:223` |
-| Logs are files | `~/.mlx_studio/logs/` | `app.py:39` |
-| Weights are a file tree | `~/.cache/huggingface/hub` | `app.py:37` |
-| Remote calls are explicit | download, install, version check | `app.py:378`, `383`, `410` |
+| UI/API port | `127.0.0.1:8765` | `app.py`, `PORT` |
+| OpenAI server port | `127.0.0.1:8080` | `app.py`, `SERVER_PORT` |
+| Server is a child process | started through `mlx_guard.py` | `app.py`, `GUARD_SCRIPT` |
+| Inference is in-process | `stream_generate` | `app.py` |
+| One model slot | `State.loaded_repo` | `app.py`, class `State` |
+| Logs are files | `~/.mlx_studio/logs/` | `app.py`, `LOG_DIR` |
+| Weights are a file tree | Hugging Face cache | `app.py`, `CACHE_DIR` |
+| Remote calls | search, download, install, version check | `search_hf`, `worker_download`, `worker_install`, `worker_check_versions` |
 
 ## What is deliberately absent
 

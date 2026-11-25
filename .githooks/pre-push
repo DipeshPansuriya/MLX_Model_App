@@ -3,7 +3,7 @@
 # pre-push — blocks a push that would publish credentials.
 #
 # Two scans:
-#   1. every commit about to leave the machine (range scan)
+#   1. every blob of every commit about to leave the machine (range scan)
 #   2. the full tree at HEAD, to catch anything already committed locally
 #
 # Installed by scripts/install_hooks.sh into .git/hooks/pre-push.
@@ -27,6 +27,7 @@ if [ -z "$PY" ]; then
 fi
 
 ZERO="0000000000000000000000000000000000000000"
+REMOTE="${1:-}"
 failed=0
 
 # stdin lines: <local ref> <local sha> <remote ref> <remote sha>
@@ -34,17 +35,19 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     [ -z "${local_sha:-}" ] && continue
     [ "$local_sha" = "$ZERO" ] && continue   # branch deletion
 
-    if [ "$remote_sha" = "$ZERO" ]; then
-        # New remote branch: scan everything reachable from local_sha.
+    if [ "$remote_sha" = "$ZERO" ] \
+        || ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+        # New remote branch, or a remote tip this clone has never fetched: scan
+        # every commit the remote is not known to have.
         range="$local_sha"
-        label="new branch $remote_ref"
+        label="new commits for $remote_ref"
     else
         range="$remote_sha..$local_sha"
         label="$remote_ref"
     fi
 
     echo "pre-push: scanning $label ($range)…"
-    if ! "$PY" "$SCANNER" --range "$range" --quiet; then
+    if ! "$PY" "$SCANNER" --range "$range" ${REMOTE:+--remote "$REMOTE"} --quiet; then
         failed=1
     fi
 done

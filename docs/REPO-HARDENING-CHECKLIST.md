@@ -435,5 +435,5 @@ no ruleset can be bypassed. Do 3 and 4 first, then 8 and 10 give them teeth.
 | `GET /community/profile` | §2 |
 | `security_and_analysis` on the repository | §6 |
 | `.github/workflows/*.yml`, `.github/dependabot.yml` | §7, §8, §10 |
-| `scripts/security_audit.sh` SA-01…SA-15 | §9, §11 |
+| `scripts/security_audit.sh` SA-01…SA-16 | §9, §11 |
 | Bypass attempts, 2026-11-24 | §11 results |

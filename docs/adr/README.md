@@ -27,6 +27,7 @@ change of mind is a new record that supersedes the old one.
 | [ADR-006](ADR-006-manifest-updates.md) | Manifest-based app updates, PyPI for packages | Accepted | — |
 | [ADR-007](ADR-007-adhoc-signing.md) | Ad-hoc code signature for distribution | Accepted, revisit | — |
 | [ADR-008](ADR-008-single-model-slot.md) | One resident model at a time | Accepted | — |
+| [ADR-009](ADR-009-api-server-guard.md) | Request guard on the API server | Accepted | — |
 
 ## Decision map
 
@@ -40,6 +41,7 @@ change of mind is a new record that supersedes the old one.
 | How updates are discovered | ADR-006 |
 | How the bundle is trusted | ADR-007 |
 | How many models are resident | ADR-008 |
+| What the API server accepts | ADR-009 |
 
 ## Status words
 
