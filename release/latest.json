@@ -1,8 +1,8 @@
 {
-  "version": "2.0.4",
-  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.4/MLX.Studio-2.0.4.pkg",
-  "notes": "Adds a 161-test pytest suite and a Tests CI job, ships a .pkg installer that installs to /Applications with no quarantine prompt, and adds an AppleScript focus fallback so a second launch always raises the existing window. Includes the log folder with diagnostics export, the model fit catalogue, the background API server with a down notification, and the 2.0.1 security fixes.",
-  "published": "2026-11-24T21:28:30Z",
-  "sha256": "505db9cdcc42569d506bdaef57d07c61fcc7fd72dadc43fc3430415bb1cdaa78",
-  "size": 963170
+  "version": "2.0.5",
+  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.5/MLX.Studio-2.0.5.pkg",
+  "notes": "Native launcher eliminates duplicate windows and Dock tiles. Second launch raises existing window via /api/focus with AppleScript fallback. Packaged as .pkg (primary) and .dmg (secondary). Includes 161-test suite, log folder diagnostics, model fit catalogue, background API server.",
+  "published": "2026-11-25T04:28:46Z",
+  "sha256": "8e3a67f46f7afecd0ba620618f03fdf4c5da304b19cd06087f9826f21df5c0ae",
+  "size": 964416
 }
