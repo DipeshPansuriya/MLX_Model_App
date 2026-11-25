@@ -265,6 +265,7 @@ function renderModelCards(models, loaded) {
           ${isLoaded ? '<span class="card-tag ok">loaded</span>' : ""}
         </div>
         <div class="card-sub">${esc(m.size_h)}</div>
+        <div class="card-path" title="${esc(m.path)}">📁 ${esc(m.path)}</div>
         <div class="card-actions">
           <button class="btn btn-mini" data-act="load" data-repo="${esc(m.repo)}">${isLoaded ? "Unload" : "Load"}</button>
           <button class="btn btn-mini" data-act="reveal" data-path="${esc(m.path)}">Reveal</button>
@@ -343,6 +344,8 @@ function renderCatalog() {
       btn.disabled = true;
       btn.textContent = "Downloading…";
       try {
+        // Switch to Download view so user can see progress
+        showView("download");
         await api("/api/download", { method: "POST", body: JSON.stringify({ repo: btn.dataset.catDownload }) });
         toast("Download started");
       } catch (err) {
@@ -365,9 +368,21 @@ function renderCatalog() {
 
 /* ───────────── downloads ───────────── */
 function renderDownloads(downloads) {
-  if (!downloads || !downloads.length) return;
-  const wrap = $("#searchResults");
+  const wrap = $("#downloadCards");
   if (!wrap) return;
+  const downloadCount = document.getElementById("downloadCount");
+  if (downloadCount) {
+    downloadCount.textContent = `${downloads.length} download${
+      downloads.length !== 1 ? "s" : ""
+    }`;
+  }
+  if (!downloads || !downloads.length) {
+    document.getElementById("downloadEmpty").hidden = false;
+    document.getElementById("downloadCards").hidden = true;
+    return;
+  }
+  document.getElementById("downloadEmpty").hidden = true;
+  document.getElementById("downloadCards").hidden = false;
   downloads.forEach((d) => {
     let card = wrap.querySelector(`[data-dl="${CSS.escape(d.repo)}"]`);
     if (!card) {
@@ -376,7 +391,18 @@ function renderDownloads(downloads) {
       card.dataset.dl = d.repo;
       wrap.prepend(card);
     }
+    const pct = d.pct || 0;
     const tag = d.status === "success" ? "ok" : d.status === "failed" ? "bad" : "run";
+    const progressBar = d.status === "running"
+      ? `<div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>`
+      : d.status === "success"
+      ? `<div class="progress-done">✓ Complete</div>`
+      : "";
+    // Show the on-disk path once the download has finished.
+    const installed = (state.snapshot?.models || []).find((m) => m.repo === d.repo);
+    const pathLine = d.status === "success" && installed
+      ? `<div class="card-path" title="${esc(installed.path)}">📁 ${esc(installed.path)}</div>`
+      : "";
     card.innerHTML = `
       <div class="card-top">
         <div>
@@ -385,7 +411,9 @@ function renderDownloads(downloads) {
         </div>
         <span class="card-tag ${tag}">${esc(d.status)}</span>
       </div>
-      <div class="card-sub">${esc(d.detail || "")}</div>`;
+      <div class="card-sub">${esc(d.detail || "")}</div>
+      ${progressBar}
+      ${pathLine}`;
   });
 }
 
@@ -419,6 +447,8 @@ async function doSearch(q) {
         btn.disabled = true;
         btn.textContent = "Downloading…";
         try {
+          // Switch to Download view so user can see progress
+          showView("download");
           await api("/api/download", { method: "POST", body: JSON.stringify({ repo: btn.dataset.download }) });
           toast("Download started");
         } catch (err) {
