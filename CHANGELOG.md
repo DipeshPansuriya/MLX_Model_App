@@ -3,6 +3,30 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.7] — 2026-11-25
+
+Download and model-path fixes.
+
+### Fixed
+
+- **Active Downloads were off-screen.** The section sat below the 25-card
+  catalogue, at 1772px inside a 750px scroll container, so a started download
+  looked like it did nothing. It now sits above the catalogue at 174px.
+- **No model path in the UI.** Every card in the Models view and every completed
+  download card now shows the full on-disk path in a selectable `.card-path`
+  block.
+- **Downloads never appeared in the Models list.** `worker_download` wrote to
+  `~/.cache/huggingface` while `installed_models()` scans
+  `~/.cache/huggingface/hub`, so a downloaded model was invisible. It now passes
+  `CACHE_DIR`.
+
+### Added
+
+- **28 download regression tests** in `tests/test_downloads.py` covering cache
+  location, progress reporting, failure handling, the duplicate guard, the state
+  payload, and the UI contract (section order, progress bar, path block). The
+  suite is now 189 tests.
+
 ## [2.0.6] — 2026-11-25
 
 Download progress indicator — adds a progress bar and per-file percentage
@@ -255,7 +279,9 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
+[2.0.7]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.7
 [2.0.6]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.6
+[2.0.7]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.7
 [2.0.6]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.6
 [2.0.5]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.5
 [2.0.4]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.4
