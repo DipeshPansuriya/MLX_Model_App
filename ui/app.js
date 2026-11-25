@@ -343,6 +343,8 @@ function renderCatalog() {
       btn.disabled = true;
       btn.textContent = "Downloading…";
       try {
+        // Switch to Download view so user can see progress
+        showView("download");
         await api("/api/download", { method: "POST", body: JSON.stringify({ repo: btn.dataset.catDownload }) });
         toast("Download started");
       } catch (err) {
@@ -365,9 +367,21 @@ function renderCatalog() {
 
 /* ───────────── downloads ───────────── */
 function renderDownloads(downloads) {
-  if (!downloads || !downloads.length) return;
-  const wrap = $("#searchResults");
+  const wrap = $("#downloadCards");
   if (!wrap) return;
+  const downloadCount = document.getElementById("downloadCount");
+  if (downloadCount) {
+    downloadCount.textContent = `${downloads.length} download${
+      downloads.length !== 1 ? "s" : ""
+    }`;
+  }
+  if (!downloads || !downloads.length) {
+    document.getElementById("downloadEmpty").hidden = false;
+    document.getElementById("downloadCards").hidden = true;
+    return;
+  }
+  document.getElementById("downloadEmpty").hidden = true;
+  document.getElementById("downloadCards").hidden = false;
   downloads.forEach((d) => {
     let card = wrap.querySelector(`[data-dl="${CSS.escape(d.repo)}"]`);
     if (!card) {
@@ -426,6 +440,8 @@ async function doSearch(q) {
         btn.disabled = true;
         btn.textContent = "Downloading…";
         try {
+          // Switch to Download view so user can see progress
+          showView("download");
           await api("/api/download", { method: "POST", body: JSON.stringify({ repo: btn.dataset.download }) });
           toast("Download started");
         } catch (err) {
