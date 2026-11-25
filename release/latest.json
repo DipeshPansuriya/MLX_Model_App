@@ -1,8 +1,8 @@
 {
-  "version": "2.0.7",
-  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.7/MLX.Studio-2.0.7.pkg",
-  "notes": "Download and model-path fixes: Active Downloads moved above the catalogue, every model card shows its on-disk path, downloads land in the hub cache so they appear in the Models list, and 28 new regression tests cover all three.",
-  "published": "2026-11-25T07:06:33Z",
-  "sha256": "d77d46c85399a90e448c6f3886db8fb06ae85c395bb97a1f8c155a35d51dfb69",
-  "size": 965083
+  "version": "2.0.9",
+  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.9/MLX.Studio-2.0.9.pkg",
+  "notes": "Security, robustness and build fixes, plus model search and copy. After updating: if the app shows server unprotected, open API Server and press Restart now.",
+  "published": "2026-11-25T22:58:10Z",
+  "sha256": "8ace82169bf180402ecbecb0b97e1f8cae887078458cce2332dd3434b571c66b",
+  "size": 984877
 }
