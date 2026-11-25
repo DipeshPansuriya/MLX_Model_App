@@ -3,6 +3,34 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.5] — 2026-11-25
+
+Single-instance native launcher — fixes the multi-window bug.
+
+### Fixed
+
+- **Duplicate windows on relaunch.** Every double-click of a running app
+  started a second process that died on `OSError: [Errno 48] Address already
+  in use`, leaving the user with nothing. A second launch now raises the
+  existing window instead. Verified: repeated opens leave exactly one
+  `app.py` process and one onscreen window.
+
+- **Duplicate Dock tiles.** The `.app` bundle's `CFBundleExecutable` was a
+  bash script that exec'd `python3`, so LaunchServices registered TWO app
+  identities ("MLX Studio" + "Python") and produced two Dock tiles. The
+  executable is now a native Mach-O binary (`packaging/launcher.c` compiled by
+  `packaging/build_app.sh`), so LaunchServices registers ONE identity and one
+  Dock tile.
+
+### Changed
+
+- **`packaging/launcher.py` → `packaging/launcher.c`.** The launcher is now a
+  native Mach-O executable built by `clang` in `packaging/build_app.sh`. It
+  finds Python 3.10+, checks `/api/ping` for an existing instance, and if one
+  answers, posts `/api/focus` to raise its window before exiting. If that
+  fails (older instance without `/api/focus`), it falls back to an AppleScript
+  frontmost call.
+
 ## [2.0.4] — 2026-11-25
 
 Test suite, `.pkg` installer and the single-instance fallback. From this release
@@ -205,6 +233,7 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
+[2.0.5]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.5
 [2.0.4]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.4
 [2.0.3]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.3
 [2.0.2]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.2

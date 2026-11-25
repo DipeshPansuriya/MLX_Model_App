@@ -68,23 +68,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# ── executable stub ──────────────────────────────────────────────────────────
-cat > "$APP/Contents/MacOS/MLXStudio" <<'STUB'
-#!/bin/bash
-DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
-PY=""
-for c in /Library/Frameworks/Python.framework/Versions/Current/bin/python3 \
-         /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-    if [ -x "$c" ] && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
-        PY="$c"; break
-    fi
-done
-if [ -z "$PY" ]; then
-    osascript -e 'display alert "Python 3.10+ required" message "Install Python from python.org or run: brew install python" as critical'
-    exit 1
-fi
-exec "$PY" "$DIR/launcher.py"
-STUB
+# ── executable: native Mach-O stub ───────────────────────────────────────────
+# The executable must be a native Mach-O binary so LaunchServices registers ONE
+# app identity ("MLX Studio") and produces a single Dock tile. A shell script
+# stub exec'ing python3 registers TWO identities ("MLX Studio" + "Python")
+# and produces duplicate Dock tiles.
+cp "$HERE/MLXStudio" "$APP/Contents/MacOS/MLXStudio"
 chmod +x "$APP/Contents/MacOS/MLXStudio"
 
 # ── codesign (ad-hoc by default) ─────────────────────────────────────────────
