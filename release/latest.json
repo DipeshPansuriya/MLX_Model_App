@@ -1,8 +1,8 @@
 {
-  "version": "2.0.6",
-  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.6/MLX.Studio-2.0.6.pkg",
-  "notes": "Download progress bar \u2014 users can now see which models are downloading in real time.",
-  "published": "2026-11-25T10:44:00Z",
-  "sha256": "b376244eeff097137845a3f6f3bb3198e62f359170b66ec29a73760e42dd2734",
-  "size": 964935
+  "version": "2.0.7",
+  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.7/MLX.Studio-2.0.7.pkg",
+  "notes": "Download and model-path fixes: Active Downloads moved above the catalogue, every model card shows its on-disk path, downloads land in the hub cache so they appear in the Models list, and 28 new regression tests cover all three.",
+  "published": "2026-11-25T07:06:33Z",
+  "sha256": "d77d46c85399a90e448c6f3886db8fb06ae85c395bb97a1f8c155a35d51dfb69",
+  "size": 965083
 }

@@ -1,11 +1,11 @@
 ---
 type: PRD
 title: "Product requirements — MLX Studio"
-status: "Released 2.0.4 (2026-11-25); requirements derived from the shipped code, not from a prior specification"
+status: "Released 2.0.7 (2026-11-25); requirements derived from the shipped code, not from a prior specification"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
-version: "2.0.4"
+version: "2.0.7"
 related:
   - README.md
   - ARCHITECTURE.md
