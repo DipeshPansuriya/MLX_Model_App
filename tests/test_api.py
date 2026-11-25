@@ -290,7 +290,7 @@ class TestBodyHandling:
                 status = resp.status
         except urllib.error.HTTPError as exc:
             status = exc.code
-        assert status == 400
+        assert status == 413
 
     def test_malformed_json_body_is_treated_as_empty(self, base_url):
         req = urllib.request.Request(

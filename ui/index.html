@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="mlx-token" content="__MLX_TOKEN__" />
 <title>MLX Studio</title>
+<link rel="icon" href="data:," />
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -20,23 +22,23 @@
     </div>
 
     <nav class="nav">
-      <button class="nav-item active" data-view="chat">
-        <span class="nav-ico">💬</span><span>Chat</span>
+      <button class="nav-item active" data-view="chat" aria-current="page">
+        <span class="nav-ico" aria-hidden="true">💬</span><span>Chat</span>
       </button>
       <button class="nav-item" data-view="models">
-        <span class="nav-ico">🗂</span><span>Models</span><span class="nav-count" id="navModelCount">0</span>
+        <span class="nav-ico" aria-hidden="true">🗂</span><span>Models</span><span class="nav-count" id="navModelCount">0</span>
       </button>
       <button class="nav-item" data-view="download">
-        <span class="nav-ico">⬇</span><span>Download</span>
+        <span class="nav-ico" aria-hidden="true">⬇</span><span>Download</span>
       </button>
       <button class="nav-item" data-view="server">
-        <span class="nav-ico">🔌</span><span>API Server</span><span class="dot" id="navServerDot"></span>
+        <span class="nav-ico" aria-hidden="true">🔌</span><span>API Server</span><span class="dot" id="navServerDot" aria-hidden="true"></span><span class="sr-only" id="navServerText">server stopped</span>
       </button>
       <button class="nav-item" data-view="logs">
-        <span class="nav-ico">📜</span><span>Activity</span>
+        <span class="nav-ico" aria-hidden="true">📜</span><span>Activity</span>
       </button>
       <button class="nav-item" data-view="settings">
-        <span class="nav-ico">⚙</span><span>Setup</span><span class="badge-warn hidden" id="navUpdateDot">!</span>
+        <span class="nav-ico" aria-hidden="true">⚙</span><span>Setup</span><span class="badge-warn hidden" id="navUpdateDot">!</span>
       </button>
     </nav>
 
@@ -56,11 +58,21 @@
     <section class="view active" id="view-chat">
       <header class="topbar">
         <div class="topbar-left">
-          <label class="field-label">Model</label>
-          <select id="chatModelSelect" class="select"></select>
+          <label class="field-label" for="chatModelSelectSearch">Model</label>
+          <div class="picker">
+            <select id="chatModelSelect" class="select" aria-label="Model" hidden></select>
+            <div class="search-field">
+              <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
+              <input type="text" class="input picker-input" id="chatModelSelectSearch" role="combobox" placeholder="Search models…" aria-label="Search models" aria-describedby="chatModelSelectChosen" aria-autocomplete="list" aria-expanded="false" aria-controls="chatModelSelectList" autocomplete="off" spellcheck="false" />
+              <button type="button" class="search-clear" id="chatModelSelectClear" aria-label="Clear model search" title="Clear search" tabindex="-1" hidden>×</button>
+            </div>
+            <div class="picker-chosen" id="chatModelSelectChosen">Selected: none</div>
+            <ul class="picker-list" id="chatModelSelectList" role="listbox" aria-label="Installed models" hidden></ul>
+            <div class="sr-only" id="chatModelSelectStatus" role="status"></div>
+          </div>
           <button class="btn btn-primary" id="loadBtn">Load</button>
           <button class="btn btn-ghost" id="unloadBtn" hidden>Unload</button>
-          <span class="state" id="loadState"><span class="dot dot-warn"></span>Not loaded</span>
+          <span class="state" id="loadState" role="status"><span class="dot dot-warn"></span>Not loaded</span>
         </div>
         <div class="topbar-right">
           <button class="btn btn-ghost" id="newChatBtn">＋ New chat</button>
@@ -75,9 +87,10 @@
         </div>
         <div id="messages"></div>
       </div>
+      <div class="sr-only" id="chatAnnounce" role="status" aria-live="polite"></div>
 
       <div class="composer">
-        <textarea id="input" rows="1" placeholder="Send a message…  (Enter to send, Shift+Enter for newline)"></textarea>
+        <textarea id="input" aria-label="Message" rows="1" placeholder="Send a message…  (Enter to send, Shift+Enter for newline)"></textarea>
         <div class="composer-side">
           <button class="btn btn-primary" id="sendBtn">Send</button>
           <button class="btn btn-ghost" id="stopBtn" hidden>Stop</button>
@@ -113,20 +126,21 @@
           <h1 class="title">Download models</h1>
         </div>
         <div class="topbar-right">
-          <input class="input" id="searchInput" placeholder="Search mlx-community…" />
+          <input class="input" id="searchInput" aria-label="Search mlx-community" placeholder="Search mlx-community…" />
           <button class="btn btn-primary" id="searchBtn">Search</button>
           <button class="btn btn-ghost" id="showAllBtn">Show all</button>
         </div>
       </header>
       <div class="scroll">
-        <div class="catalog-head">
+        <div class="catalog-head" id="downloadSection">
           <div>
             <h2>Active Downloads</h2>
             <span class="muted" id="downloadCount">0 downloads</span>
           </div>
+          <button class="btn btn-mini btn-toggle" type="button" id="toggleDownloads" aria-expanded="false" aria-controls="downloadCards downloadEmpty" aria-label="Active downloads" title="Collapse or expand"><span id="toggleDownloadsIcon" aria-hidden="true">▶</span></button>
         </div>
-        <div class="cards" id="downloadCards"></div>
-        <div class="empty" id="downloadEmpty" hidden>
+        <div class="cards collapsed" id="downloadCards"></div>
+        <div class="empty collapsed" id="downloadEmpty" hidden>
           <div class="empty-mark">⬇</div>
           <h2>No downloads</h2>
           <p>Downloads will appear here.</p>
@@ -137,7 +151,7 @@
             <h2>Best for your Mac</h2>
             <span class="muted" id="catalogHardware">—</span>
           </div>
-          <select id="catalogFilter" class="select">
+          <select id="catalogFilter" class="select" aria-label="Filter models">
             <option value="all">All models</option>
             <option value="great">Great fit</option>
             <option value="good">Good fit</option>
@@ -174,10 +188,20 @@
       <header class="topbar">
         <div class="topbar-left">
           <h1 class="title">API Server</h1>
-          <span class="state" id="serverState"><span class="dot dot-warn"></span>Stopped</span>
+          <span class="state" id="serverState" role="status"><span class="dot dot-warn"></span>Stopped</span>
         </div>
         <div class="topbar-right">
-          <select id="serverModelSelect" class="select"></select>
+          <div class="picker">
+            <select id="serverModelSelect" class="select" aria-label="Model to serve" hidden></select>
+            <div class="search-field">
+              <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
+              <input type="text" class="input picker-input" id="serverModelSelectSearch" role="combobox" placeholder="Search models…" aria-label="Search models to serve" aria-describedby="serverModelSelectChosen" aria-autocomplete="list" aria-expanded="false" aria-controls="serverModelSelectList" autocomplete="off" spellcheck="false" />
+              <button type="button" class="search-clear" id="serverModelSelectClear" aria-label="Clear model search" title="Clear search" tabindex="-1" hidden>×</button>
+            </div>
+            <div class="picker-chosen" id="serverModelSelectChosen">Selected: none</div>
+            <ul class="picker-list" id="serverModelSelectList" role="listbox" aria-label="Installed models" hidden></ul>
+            <div class="sr-only" id="serverModelSelectStatus" role="status"></div>
+          </div>
           <label class="check" title="Keep the server running after the window closes">
             <input type="checkbox" id="serverBackground" />
             <span>Background</span>
@@ -187,7 +211,16 @@
         </div>
       </header>
       <div class="scroll">
-        <div class="notice" id="serverNotice" hidden>
+        <div class="notice" id="serverUnguarded" role="alert" hidden>
+          <div class="notice-body">
+            <div class="notice-title">Restart the API server to apply the 2.0.9 protection</div>
+            <div class="notice-text">This server was started without the request guard (for example by an older version of MLX Studio), so web pages open in your browser may be able to use it. Restarting loads the same model again.</div>
+          </div>
+          <div class="notice-actions">
+            <button class="btn btn-mini btn-primary" id="serverUnguardedRestart">Restart now</button>
+          </div>
+        </div>
+        <div class="notice" id="serverNotice" role="alert" hidden>
           <div class="notice-body">
             <div class="notice-title">API server stopped</div>
             <div class="notice-text" id="serverNoticeText">—</div>
@@ -197,13 +230,19 @@
             <button class="btn btn-mini btn-ghost" id="serverNoticeDismiss">Dismiss</button>
           </div>
         </div>
+        <div class="notice" id="serverToolsWarn" hidden>
+          <div class="notice-body">
+            <div class="notice-title">No tool calling with this model</div>
+            <div class="notice-text" id="serverToolsWarnText"></div>
+          </div>
+        </div>
         <div class="panel">
           <div class="panel-head">
             <span>Endpoint</span>
             <button class="btn btn-mini" id="copyEndpoint">Copy</button>
           </div>
           <div class="endpoint" id="endpointText">http://127.0.0.1:8080/v1</div>
-          <p class="hint">Point Claude Code, DeepSeek, or any OpenAI-compatible client here.</p>
+          <p class="hint">Point DeepSeek Harness or any OpenAI-compatible client here.</p>
           <pre class="code" id="curlExample"></pre>
         </div>
         <div class="panel">
@@ -221,7 +260,7 @@
       <header class="topbar">
         <div class="topbar-left">
           <h1 class="title">Activity</h1>
-          <select id="logFilter" class="select">
+          <select id="logFilter" class="select" aria-label="Filter activity by action">
             <option value="all">All actions</option>
             <option value="chat">Chat</option>
             <option value="model">Model load</option>
@@ -254,7 +293,8 @@
           <p class="hint">
             Everything the app records lives here. <strong>Export diagnostics</strong>
             zips this folder with an environment report, so you can attach one file
-            to a GitHub issue. Prompts are included — review before sharing.
+            to a GitHub issue. It includes model names, file paths, error messages
+            and server output. Review before sharing.
           </p>
           <div class="card-actions" style="margin-top:12px">
             <button class="btn btn-ghost" id="copyLogDir">Copy folder path</button>
@@ -271,7 +311,7 @@
         <div class="panel">
           <div class="panel-head">
             <span>Application log</span>
-            <select id="appLogLevel" class="select">
+            <select id="appLogLevel" class="select" aria-label="Application log level">
               <option value="all">All levels</option>
               <option value="error">Errors</option>
               <option value="warning">Warnings</option>
@@ -340,9 +380,10 @@
           <div class="kv">
             <div class="kv-row"><span>New version</span><span class="mono" id="appUpdateVersion">—</span></div>
             <div class="kv-row"><span>Release notes</span><span class="mono" id="appUpdateNotes">—</span></div>
+            <div class="kv-row"><span>SHA-256</span><span class="mono sha" id="appUpdateSha">—</span></div>
           </div>
           <div class="card-actions" style="margin-top:12px">
-            <button class="btn btn-primary" id="appUpdateDownload">Download DMG</button>
+            <button class="btn btn-primary" id="appUpdateDownload">Download installer</button>
             <button class="btn btn-ghost" id="appUpdateCopy">Copy link</button>
           </div>
         </div>
@@ -378,6 +419,7 @@
 
   </main>
 </div>
+<div id="toast" role="status" aria-live="polite"></div>
 <script src="/app.js"></script>
 </body>
 </html>

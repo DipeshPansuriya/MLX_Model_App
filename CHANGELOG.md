@@ -3,9 +3,187 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.7] — 2026-11-25
+## [2.0.9] — Unreleased
 
-Download and model-path fixes.
+Security, robustness and build fixes, plus model search and copy. **Not
+released yet.** Checked by automated tests and temporary servers; the rebuilt app
+has not been installed or run on this release, and no older macOS was tested.
+
+**After updating:** if the app shows *server unprotected*, open API Server and
+press **Restart now**. A background server started by an earlier version keeps
+running without the new request checks until it is restarted.
+
+### Security
+
+- **App API (port 8765) refuses other origins.** Every request needs a loopback
+  `Host` for that port and, when sent, a matching `Origin`. Every POST needs
+  `Content-Type: application/json`. Every `/api/*` request, GET and POST, needs a
+  per-launch `X-MLX-Token` (`403` without it), except `GET /api/ping` and
+  `POST /api/focus`. Exactly one `Host` header is accepted, every reply carries
+  `X-Content-Type-Options: nosniff`, and framing the UI is denied. The token is
+  not user authentication: a local program can fetch `/` and read it.
+- **API server (port 8080) now starts through a request guard**
+  (`mlx_guard.py`). It refuses requests from web pages and unknown host names,
+  accepts only JSON POSTs, serves only models already in the cache, never
+  downloads a model on request, and refuses `draft_model` and `adapters`.
+- Images sent to port 8080 must be `data:` URLs. `http(s)` and other URLs get
+  `400`, so a request cannot make the server fetch them. The guard does not start
+  if the `mlx_lm` image helpers it relies on are missing or moved.
+- An adopted background server that runs without the guard is flagged
+  **server unprotected**, with a warning in the logs and a **Restart now**
+  button. The app does not restart it by itself.
+- The API server's allowed origins are the app's two origins instead of `*`.
+- A saved server process id is only adopted or stopped when its command line and
+  start time still match, so an unrelated process is not killed.
+- The one-line installer verifies the DMG against `release/SHA256SUMS`, refuses
+  to install without a matching entry, and keeps the old app until the new copy
+  passes the signature check.
+- The secret scanner prints only the rule and `path:line`, and the pre-push hook
+  scans every outgoing file version.
+- The secret scanner's placeholder allow-list judges only the secret value, never
+  a key name, user name or the rest of the line, and every match on a line is
+  checked. `$VAR` or `${VAR}` excuses only when it is the whole value. A
+  blocking finding outranks an earlier warning on the same line, and non-UTF-8
+  files are scanned. Use `secret-scan: allow` for other cases.
+- The security audit fails when the secret scan cannot run, tests only the
+  "others write" bit on tracked files, and compares every bundled file with the
+  source.
+- The API server guard records the name of each accepted model, so the app does
+  not delete a model while it is served.
+- `set_approval_gate.sh` passes the GitHub token to `curl` on standard input.
+- The update panel only opens an `https` link and shows the published SHA-256.
+
+### Added
+
+- **Copy model name** button on model cards (copies the full repo id, the value
+  API clients send as `model`).
+- **Search field** for installed models on Chat and API Server: Up and Down to
+  move, Enter to choose, Escape to close. The clear button empties the search and
+  keeps the choice, which is shown under the field.
+- Download **Cancel** and **Resume download**; progress is counted in bytes and
+  names the current file.
+- **Reveal** opens the model folder in Finder.
+- API Server view warns when the chosen model is marked as unable to call tools.
+- API routes `/api/download/cancel` and `/api/reveal`.
+- Model cards show catalogue details (parameters, category, use) when known.
+
+### Changed
+
+- The API server allows **8192 reply tokens** by default (mlx_lm's own default
+  is 512).
+- Naming a model on port 8080 that is not downloaded now fails with `400`.
+  Before, it was downloaded.
+- Loading a model unloads the current one first, also when the new load fails.
+- Load, Unload and a second chat are refused (`409`) while a reply is running.
+- Delete is refused while a model is loaded, loading, served, starting or
+  downloading.
+- Incomplete downloads show as **incomplete** and cannot be picked for chat or
+  the API server until finished.
+- The model cache follows `HF_HOME` / `HF_HUB_CACHE`.
+- Setup installs the pinned `mlx`, `mlx-lm` and `huggingface-hub` 2.4.0 versions
+  (a newer installed version is kept), shows an update pill for the hub library,
+  and explains the refusal from a system-managed Python.
+- Hugging Face search results use the same cards as **Best for your Mac**, with
+  fit, size and Load for installed models. Sizes marked (estimate) are worked out
+  from the model's parameter count; missing details show as unknown.
+- Active Downloads starts collapsed and shows count and progress in its header.
+- Bad API requests answer `400`, `411`, `413` or `415` and close the connection.
+- A window left open from an earlier launch must be reloaded.
+- The build compiles `packaging/launcher.c` for macOS 12.0 and fails if the
+  binary says otherwise. The launcher picks a Python 3.10+ (preferring one with
+  `mlx_lm`) and writes `launch.log`. `packaging/launcher.py` is removed.
+- `release_manifest.py` generates `release/latest.json` and `release/SHA256SUMS`
+  from the built files and verifies them; the `--dmg`, `--url` and `--out`
+  options are gone.
+- `release_manifest.py --check` fails unless `release/SHA256SUMS` holds exactly
+  one valid line for the manifest version's dmg. One exception: the pinned 2.0.7
+  manifest, which was never published, passes while `APP_VERSION` is newer.
+- New `--backfill` adds a published release to that file and needs
+  `--dmg-sha256` (the digest GitHub shows). Changing a recorded checksum needs
+  `--replace`.
+- `set_approval_gate.sh` lists `Release consistency` as a required check (not
+  yet applied to GitHub).
+- The update panel button reads **Download installer**.
+- CI adds a macOS build job and a release consistency job.
+
+### Fixed
+
+- The 2.0.8 local build's launcher required macOS 27.2.
+- Concurrent requests could start two downloads, two loads or two API servers.
+- A failed delete reported success.
+- A partial or failed download was listed as installed.
+- A failed chat reply stayed in the history and could break later turns.
+- Model cards could lose their real disk size and show empty details.
+- A finished download now shows **Installed** on its catalogue card.
+- Tool calls no longer fail when the model sends `null` for an optional
+  argument. The API server leaves such an argument out: only a top-level argument
+  that the request's tool schema declares, does not require and gives one
+  non-null type. A call is never left without arguments.
+- A catalogue card follows the live model list, so it no longer keeps a stale
+  **Installed** mark.
+- A model card button keeps keyboard focus while its download starts, also when
+  **Download** becomes **Load**.
+- The downloads toggle has the fixed name **Active downloads** and announces
+  open or closed.
+- The **Background** box shows the running server's mode, and a later click is no
+  longer undone by the refresh.
+- The page no longer requests a missing favicon.
+- A download is judged complete by the files `mlx_lm` reads, not by extras such
+  as the README.
+- A reply can no longer appear in a chat other than the one it started in; New
+  chat during a reply also stops it.
+- Stop now cancels an API server start that has not launched yet.
+- Two quick install requests could both start.
+- The 2-second refresh rebuilt cards and dropdowns, losing focus and selection.
+- `server.log` is rotated before a background start; log rotation is locked.
+- Accessibility: download progress bars expose their values, keyboard focus is
+  kept on model cards, names for controls, status announcements, current-view marker,
+  and higher text and button contrast. Not tested with VoiceOver; contrast was
+  not measured in a running window.
+
+### Known limits
+
+- Other programs on the same Mac can still use port 8080 and switch between
+  downloaded models.
+- The session token on port 8765 does not stop other local programs or macOS
+  users, because the open page `/` contains it.
+- Cancelling in the middle of a Xet-backed file was not tested.
+- The one-line installer needs a line for the version in `release/SHA256SUMS` on
+  `main`. 2.0.8 is not backfilled: the file starts with the built and verified
+  2.0.9. Until 2.0.9 is promoted the default install fails, and 2.0.8 or older is
+  refused ([DEPLOYMENT.md](docs/DEPLOYMENT.md) section 5).
+- Known issue (low): the page's Content-Security-Policy only sets
+  `frame-ancestors`. It has no `default-src` or `script-src`, so it would not stop
+  an inline script if some text were left unescaped. The security check found no
+  such place in the new cards, search fields or download cards.
+- A `null` argument is still passed on when it is the call's only content (for
+  example `{"cd": null}`), when the schema does not clearly refuse it, or when the
+  model writes the text `"null"`. A client may then reject the call.
+- Small models can still get multi-step tool tasks wrong. With
+  `Qwen2.5-7B-Instruct-1M-4bit` and the test prompts, a read, sum and write task
+  failed 5 of 5 runs through the model's own mistakes, also with a simulated
+  `null` fix. It was not re-run with the final fix.
+
+---
+
+## [2.0.8] — 2026-11-25
+
+Published on GitHub as release `v2.0.8` with a dmg and a pkg (checked on
+2026-11-26).
+
+- The tag `v2.0.8` holds the 2.0.7 source (`APP_VERSION` is `2.0.7`).
+- Which source built the published 2.0.8 files is UNVERIFIED.
+- A local 2.0.8 build was never committed to this repository; its changes
+  (download-state locking, the collapsible downloads section, model card details
+  and the download percentage label) are part of 2.0.9. No local build file that
+  was compared equals the published 2.0.8 files.
+
+---
+
+## [2.0.7] — 2026-11-25, no GitHub release
+
+Download and model-path fixes. There is no `v2.0.7` tag or release on GitHub
+(checked on 2026-11-26). The `v2.0.8` tag holds this source.
 
 ### Fixed
 
@@ -26,17 +204,6 @@ Download and model-path fixes.
   location, progress reporting, failure handling, the duplicate guard, the state
   payload, and the UI contract (section order, progress bar, path block). The
   suite is now 189 tests.
-
-## [2.0.6] — 2026-11-25
-
-Download progress indicator — adds a progress bar and per-file percentage
-to the Download view so users can see which model files are downloading.
-
-### Fixed
-
-- **Download progress bar.** `worker_download` now reports per-file progress
-  as it streams each file from Hugging Face, and the Download view renders a
-  progress bar with percentage instead of only showing a static status tag.
 
 ## [2.0.6] — 2026-11-25
 
@@ -279,9 +446,7 @@ interface hosted in a native macOS window.
 - Initial Tkinter prototype: install MLX, download/delete models, launch
   `mlx_lm chat` in Terminal, run the API server, basic activity log.
 
-[2.0.7]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.7
-[2.0.6]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.6
-[2.0.7]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.7
+[2.0.8]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.8
 [2.0.6]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.6
 [2.0.5]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.5
 [2.0.4]: https://github.com/DipeshPansuriya/MLX_Model_App/releases/tag/v2.0.4

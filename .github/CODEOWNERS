@@ -24,6 +24,7 @@
 
 # Runtime and interface.
 /app.py                             @DipeshPansuriya
+/mlx_guard.py                       @DipeshPansuriya
 /ui/                                @DipeshPansuriya
 
 # Policy documents.

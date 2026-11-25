@@ -1,7 +1,7 @@
 ---
 type: PRD
 title: "Product requirements — MLX Studio"
-status: "Released 2.0.7 (2026-11-25); requirements derived from the shipped code, not from a prior specification"
+status: "2.0.7 source (2026-11-25), held by tag v2.0.8; requirements derived from the shipped code, not from a prior specification"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -51,7 +51,7 @@ ending with `3 tokens · 52.6 tok/s · 4.37 GB peak`. They open API Server, pres
 tab lists every one of those steps with timestamps. They press **Unload** and the
 pill returns to `No model loaded`.
 
-Verified end to end on 2026-11-24; see [TESTING.md](TESTING.md) §3.
+Verified end to end on 2026-11-24; see [TESTING.md](TESTING.md) §7.
 
 ## 3. Users and roles
 
@@ -151,7 +151,7 @@ person, one Mac, one process.
 
 | ID | Requirement | Acceptance |
 |---|---|---|
-| F27 | Show installed runtime versions | MLX, MLX-LM, huggingface-hub with a pill per row |
+| F27 | Show installed runtime versions | MLX, MLX-LM, huggingface-hub with a pill per row, including an update pill for the hub; Install / Update pins `huggingface-hub` 2.4.0 |
 | F28 | Compare against PyPI | `up to date`, `update → x.y.z`, or `missing` |
 | F29 | Badge when anything is outdated | `!` on the Setup nav item |
 | F30 | Install or update packages | pip runs, output streams into the panel, versions refresh after |
@@ -214,7 +214,7 @@ person, one Mac, one process.
 |---|---|---|
 | One model resident | Switching models costs a reload | Unload is explicit and fast; cache is cleared |
 | No context trimming | Very long chats grow the prompt until the model's window is reached | New chat; OD-3 |
-| Chat history is in-memory | Closing the app loses the transcript | Activity log records prompts and outcomes |
+| Chat history is in-memory | Closing the app loses the transcript | Activity log records actions and outcomes, not prompt text |
 | Port 8765 and 8080 are fixed | A second instance or another server conflicts | Documented in [RUNBOOK.md](RUNBOOK.md) §5 |
 | `mlx_lm server` is a child process | Orphaned on hard kill of the parent | Terminated on window close; a background server is intentional and adopted from the pidfile; [RUNBOOK.md](RUNBOOK.md) §4.4, §4.8 |
 | A background server outlives the app | A user may forget it is running | Visible as a `background` pill, pid in `~/.mlx_studio/server.pid`, stop from the Server view |

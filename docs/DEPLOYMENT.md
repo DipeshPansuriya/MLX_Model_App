@@ -1,11 +1,11 @@
 ---
 type: Deployment
 title: "Deployment — MLX Studio"
-status: "Built at tag v2.0.0 (2026-11-24)"
-date: 2026-11-24
+status: "Matches the 2.0.9 source tree (not released)"
+date: 2026-11-25
 author: "Dipesh Pansuriya"
 project: mlx-studio
-version: "2.0.0"
+version: "2.0.9"
 related:
   - ARCHITECTURE.md
   - SECURITY.md
@@ -15,191 +15,243 @@ related:
 
 # Deployment — MLX Studio
 
-## 1. Two ways to run it
+MLX Studio is a desktop app. Deployment means building the `.pkg` and `.dmg`,
+publishing them as GitHub release assets and updating the two files in
+`release/`.
 
-| Mode | Command | Audience |
+## 1. Ways to run it
+
+| Mode | How | Audience |
 |---|---|---|
-| **Packaged app** | Double-click `MLX Studio.app`, or open the DMG and drag it to Applications | End users |
-| **From source** | `./run.sh` or `Run_MLX_Manager.command` | Development |
-
-Both execute the same `app.py`. The bundle is a wrapper: `Info.plist`, an icon, a
-shell stub and the Python sources under `Contents/Resources`.
+| Packaged app | Install with the one-line installer, `.pkg` or DMG ([README](../README.md)) | Users |
+| From source | `./run.sh` or `Run_MLX_Manager.command` | Development |
 
 ## 2. What the bundle contains
 
 ```
 MLX Studio.app/
 └── Contents/
-    ├── Info.plist                 # identity, version, icon, minimum OS
-    ├── MacOS/
-    │   └── MLXStudio              # bash stub: find Python, exec launcher.py
+    ├── Info.plist
+    ├── MacOS/MLXStudio          # compiled arm64 launcher (packaging/launcher.c)
     ├── Resources/
-    │   ├── app.py                 # backend
-    │   ├── launcher.py            # interpreter discovery, log redirect
-    │   ├── AppIcon.icns           # compiled icon
-    │   └── ui/
-    │       ├── index.html
-    │       ├── style.css
-    │       └── app.js
-    └── _CodeSignature/            # ad-hoc signature
+    │   ├── app.py               # backend
+    │   ├── mlx_guard.py         # API server request guard
+    │   ├── AppIcon.icns
+    │   └── ui/                  # index.html, style.css, app.js
+    └── _CodeSignature/          # ad-hoc signature
 ```
 
 | `Info.plist` key | Value |
 |---|---|
-| `CFBundleName` / `CFBundleDisplayName` | `MLX Studio` |
 | `CFBundleIdentifier` | `com.mlxstudio.app` |
 | `CFBundleExecutable` | `MLXStudio` |
-| `CFBundleShortVersionString` / `CFBundleVersion` | read from `APP_VERSION` |
-| `CFBundleIconFile` | `AppIcon` |
+| `CFBundleShortVersionString` / `CFBundleVersion` | read from `APP_VERSION` in `app.py` |
 | `LSMinimumSystemVersion` | `12.0` |
-| `LSApplicationCategoryType` | `public.app-category.developer-tools` |
-| `NSHighResolutionCapable` | `true` |
-| `MLXStudioBuildDate` | UTC build timestamp |
 
-The version is never duplicated by hand: `build_app.sh` greps `APP_VERSION` from
-`app.py` and writes it into the plist.
+Running on macOS 12 or any older macOS is UNVERIFIED, as is the minimum macOS
+that MLX itself needs.
 
 ## 3. Build
 
+Needs `clang` (Xcode command line tools), on a Mac.
+
 ```bash
-cd packaging
-./build_app.sh              # app + dmg
-./build_app.sh --app-only   # app only
-./build_app.sh --no-sign    # skip ad-hoc signing
+./packaging/build_app.sh              # app, dmg, pkg, dist/SHA256SUMS
+./packaging/build_app.sh --app-only   # app only
+./packaging/build_app.sh --no-sign    # skip ad-hoc signing
 ```
 
-Steps performed:
-
-1. Read `APP_VERSION` from `app.py`; abort if absent.
-2. Create `dist/MLX Studio.app/Contents/{MacOS,Resources,Frameworks}`.
-3. Copy `app.py`, `ui/`, `launcher.py`, `AppIcon.icns`.
-4. Generate `Info.plist`.
-5. Write the `MLXStudio` stub, `chmod +x`.
-6. `codesign --force --deep --sign -` (ad-hoc).
-7. Stage a DMG folder: the app, an `Applications` symlink, `Read Me.txt`.
-8. `hdiutil create -format UDZO -fs HFS+`.
-9. Print the DMG path, size and SHA-256.
-
-Output:
-
-```
-dist/MLX Studio.app
-dist/MLX.Studio-2.0.0.dmg      # URL-safe asset name
-```
-
-The asset name uses dots rather than spaces so release download URLs need no
-escaping.
+| Step | Detail |
+|---|---|
+| 1 | Read `APP_VERSION`; abort if absent. Remove the old app and build record |
+| 2 | Copy `app.py`, `mlx_guard.py`, the three UI files and the icon; write `Info.plist` |
+| 3 | Compile the launcher for arm64; fail if its `minos` differs from `LSMinimumSystemVersion` |
+| 4 | Ad-hoc `codesign` (the script does not stop if this fails) |
+| 5 | `dist/MLX.Studio-<version>.dmg` with an `Applications` shortcut and `Read Me.txt` |
+| 6 | `dist/MLX.Studio-<version>.pkg` with `pkgbuild` (unsigned), installs into `/Applications` |
+| 7 | `dist/SHA256SUMS`, the build record for both files |
 
 ## 4. Interpreter discovery
 
-The bundle does not embed Python. Two layers resolve an interpreter:
-
-**Stub** (`Contents/MacOS/MLXStudio`) tries, in order:
+The bundle does not embed Python. The launcher tries, in order:
 
 1. `/Library/Frameworks/Python.framework/Versions/Current/bin/python3`
 2. `/opt/homebrew/bin/python3`
 3. `/usr/local/bin/python3`
-4. `/usr/bin/python3`
+4. `/usr/bin/python3` (skipped once another interpreter works)
 
-Each must satisfy `sys.version_info >= (3, 10)`. If none does, an `osascript`
-alert names the requirement and the fix.
-
-**Launcher** (`launcher.py`) repeats the search, then `Popen`s `app.py` with
-`start_new_session=True` and redirects stdout/stderr to
-`~/.mlx_studio/logs/launch.log`. The log is the first place to look when a
-double-click produces nothing.
+It needs Python 3.10 or newer and prefers one that has `mlx_lm`, then
+`pywebview`. It then replaces itself with `python3 app.py`. Output goes to
+`~/.mlx_studio/logs/launch.log`, the first place to look when a double-click
+does nothing.
 
 ## 5. Release
 
-```bash
-# 1. bump APP_VERSION in app.py and update CHANGELOG.md
-# 2. build
-cd packaging && ./build_app.sh
-# 3. manifest
-./release_manifest.py \
-  --dmg "../dist/MLX.Studio-2.1.0.dmg" \
-  --url "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.1.0/MLX.Studio-2.1.0.dmg" \
-  --notes "…" \
-  --out ../release/latest.json
-# 4. commit, tag, push
-git commit -am "release: 2.1.0"
-git tag -a v2.1.0 -m "MLX Studio 2.1.0"
-git push origin main --tags
-# 5. create the GitHub release and upload the DMG
-```
+### 5.1 What GitHub has (read on 2026-11-26, recorded by the DevOps check)
 
-`release_manifest.py` reads the version from `app.py` unless `--version` is given,
-computes the DMG's SHA-256 and size, and writes the manifest.
-
-The manifest is committed at `release/latest.json` and served from
-`raw.githubusercontent.com`, which is what installed copies poll.
-
-## 6. Update channels
-
-| Channel | Mechanism | Cadence |
-|---|---|---|
-| Runtime packages | `importlib.metadata` vs. PyPI JSON API | On demand and at launch |
-| Application | `release/latest.json` via `MLX_STUDIO_UPDATE_URL` | On demand and at launch |
-
-The app compares versions numerically (`vt()` splits on `.`, `-`, `+` and coerces
-digit runs to integers) so `0.32.10 > 0.32.9`. A manifest older than or equal to
-the running build produces no update panel.
-
-Without `MLX_STUDIO_UPDATE_URL` the app reports `local build` and never claims an
-update — the safe default for a source checkout.
-
-## 7. CI (not built)
-
-There is no automated build. The intended workflow, if added:
-
-```yaml
-on:
-  push:
-    tags: ["v*"]
-jobs:
-  release:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - run: cd packaging && ./build_app.sh
-      - run: cd packaging && ./release_manifest.py --dmg "../dist/MLX.Studio-${VERSION}.dmg" --url "…" --out ../release/latest.json
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.dmg
-```
-
-Marked **Open** in [PRD.md](PRD.md) §9 (OD-2).
-
-## 8. Verification performed for 2.0.0
-
-| Check | Result |
+| Item | State |
 |---|---|
-| `codesign --verify --deep --strict` | valid (ad-hoc) |
-| `hdiutil verify` on the DMG | CRC32 valid |
-| Mount and inspect layout | app, `Applications` symlink, `Read Me.txt` present |
-| Copy out and launch | `/api/ping` → `{"ok": true, "app": "2.0.0"}` |
-| Native window present | 1360×900 window owned by the Python process |
-| Release asset download | HTTP 200, 979129 bytes |
-| SHA-256 of download vs manifest | identical (`e4236659…`) |
-| Live manifest fetch from `raw.githubusercontent.com` | `latest: 2.0.0`, `update: false` |
+| Latest release | `v2.0.8`, published, dmg and pkg |
+| `v2.0.8` tag | Holds the 2.0.7 source. Which source built its files is UNVERIFIED |
+| `v2.0.7` | No tag, no release; both asset URLs return 404 |
+| `release/latest.json` on `main` | Says 2.0.7; its checksum matches no published asset |
 
-## 9. Rollback
+The one-line installer on `main` today is very likely broken: it resolves 2.0.8
+and compares the dmg with the 2.0.7 manifest checksum (read from code and
+published metadata; not run live).
+
+### 5.2 Checksum list: no backfill (decided 2026-11-26)
+
+The owner chose option A: `release/SHA256SUMS` starts with the built and
+verified 2.0.9. No earlier release is added.
+
+| Effect | Detail |
+|---|---|
+| No download of unknown files | Nothing published before 2.0.9 is vouched for |
+| Default install | Stays failing until 2.0.9 is promoted |
+| `--version` 2.0.8 or older | Refused: no checksum line |
+
+The release tool still has `--backfill`; this release does not use it.
+
+### 5.3 Release order (option A)
+
+Run from the project root, in this order. Steps marked **Yes** publish, download
+or change GitHub and need the owner's approval first. These steps have not been
+run, and whether `gh` is available is UNVERIFIED.
+
+| Step | Action | Approval |
+|---|---|---|
+| 1 | All changes finished, full suite green. Re-check GitHub (read only): latest is `v2.0.8`, no `v2.0.9` | No |
+| 2 | Branch `release/2.0.9`; commit the source **without** `release/latest.json`, then park that edit: `git stash push -m "2.0.8 manifest, not in 2.0.9 source" -- release/latest.json` | No |
+| 3 | Push the branch and open the pull request | Yes |
+| 4 | `Release consistency` is green and prints the "2.0.7 was never published" note. Then `./scripts/set_approval_gate.sh --check`, then `--disable` if approvals are 0, or `--reviewer <same user>` if the approval gate is on | Yes |
+| 5 | Merge only with every check green. No install test here: the new installer refuses until step 10 is merged | Yes |
+| 6 | Build and generate in a clean worktree of the merged commit (block below) | No |
+| 7 | `git tag -a v2.0.9 <merged-sha> -m "release: 2.0.9" && git push origin v2.0.9`; wait for the tag run to pass | Yes |
+| 8 | Publish as a **pre-release** from the same worktree. Do not rebuild (command below) | Yes |
+| 9 | Branch `release/2.0.9-manifest` with `release/latest.json`, `release/SHA256SUMS` and `CHANGELOG.md`; open the pull request | Yes |
+| 10 | CI downloads and verifies the published assets. Merge when green | Yes |
+| 11 | Wait about 5 minutes (raw file cache), then run the staging test with `--version 2.0.9` added | Yes |
+| 12 | Promote: `gh release edit v2.0.9 --prerelease=false --latest`, then run the staging test unchanged | Yes |
+
+Step 6 (the CHANGELOG entry carries no checksum block before this):
+
+```bash
+git fetch origin && W="$(mktemp -d)/rel" && git worktree add "$W" <merged-sha> && cd "$W"
+./packaging/build_app.sh
+python3 packaging/release_manifest.py --dist dist --notes "<notes>"
+# paste the printed checksum block into the CHANGELOG 2.0.9 entry
+python3 packaging/release_manifest.py --verify --release --dist dist
+./scripts/security_audit.sh --release    # reads the real ~/.mlx_studio
+```
+
+If a rebuild changes a checksum already recorded for 2.0.9, the tool refuses.
+`--replace` overrides this. It cannot know whether a version was published, so
+never use it after `gh release create`.
+
+Step 8:
+
+```bash
+gh release create v2.0.9 --verify-tag --prerelease --title "MLX Studio 2.0.9" --notes "<notes>" \
+  dist/MLX.Studio-2.0.9.dmg dist/MLX.Studio-2.0.9.pkg
+```
+
+Staging test (steps 11 and 12):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DipeshPansuriya/MLX_Model_App/main/scripts/install.sh \
+  | bash -s -- --dir "$(mktemp -d)" --no-launch
+```
+
+| Written by step 6 | Content |
+|---|---|
+| `release/latest.json` | `version`, `url` and `sha256` and `size` of the **pkg**, `notes`, `published` |
+| `release/SHA256SUMS` | Checksum of every asset it lists: new lines added, earlier ones kept |
+
+Never edit either by hand. Until step 10 is merged, the installer refuses 2.0.9,
+because `main` has no checksum for it. CI cannot stop someone marking a release
+as latest before that; the pre-release flag in step 8 covers it.
+
+**Working tree on 2026-11-26:** 2.0.9 is not released. `release/latest.json` has
+an uncommitted 2.0.8 edit that matches the published `v2.0.8` pkg (checksum and
+size); the committed file says 2.0.7. `release/SHA256SUMS` does not exist.
+`release_manifest.py --check` therefore fails on the working tree (tag `v2.0.8`
+holds 2.0.7 source, and there is no checksum list). With the committed manifest it
+passes with the 2.0.7 note.
+
+## 6. Installer
+
+`scripts/install.sh` (options: see the [README](../README.md)) installs from the
+DMG:
+
+1. Apple Silicon and `curl` required; resolves the latest release tag if no
+   version is given.
+2. Downloads `MLX.Studio-<version>.dmg`, then `release/SHA256SUMS` from `main`.
+3. Refuses to install without exactly one checksum line for that dmg, or on a
+   mismatch. A pre-release is not picked up unless `--version` names it
+   (GitHub's "latest release" behaviour; UNVERIFIED live).
+4. Copies the app next to the target and verifies its signature.
+5. Swaps it in; the previous app is restored if the swap fails.
+
+Trust limits are listed in [SECURITY.md](SECURITY.md) §5.
+
+## 7. Update channels
+
+| Channel | Mechanism |
+|---|---|
+| MLX packages | Installed versions compared with PyPI; install uses the pins in `app.py` (`mlx` 0.32.4, `mlx-lm` 0.32.2) and does not downgrade a newer one |
+| Application | A manifest at `MLX_STUDIO_UPDATE_URL`, for example the raw URL of `release/latest.json` |
+
+Without `MLX_STUDIO_UPDATE_URL` the app does not look for app updates. The app
+shows a link; it does not install the update itself.
+
+## 8. CI
+
+`.github/workflows/quality.yml` runs on pushes, pull requests and `v*` tags.
+Running these jobs on GitHub with the 2.0.9 changes is UNVERIFIED.
+
+| Job | Checks |
+|---|---|
+| `lint`, `syntax`, `docs` | Lint, syntax of Python, JavaScript and shell, documentation links |
+| `tests` | `pytest` on Ubuntu without MLX |
+| `macos-build` | Build, built pkg matches the source, tests on macOS |
+| `release` (check name `Release consistency`) | Version, manifest, `SHA256SUMS` and tags agree, including one valid line for the manifest version's dmg (except the never-published 2.0.7 manifest); a pushed tag matches `APP_VERSION`; a change under `release/` must match the published assets |
+
+CI does not publish a release.
+
+## 9. After an update
+
+Quit the app and open the new one. A background server from an older build is
+adopted as it is and stays without the new guard. If the app shows **server
+unprotected**, open API Server and press **Restart now** (same model, same mode).
+
+## 10. Rollback
 
 | Situation | Action |
 |---|---|
-| New version misbehaves | Reinstall the previous DMG from Releases; the app is self-contained |
-| Manifest points at a bad build | Revert `release/latest.json`, push; installed copies see the older version next check |
-| Bad tag published | Delete the release and tag, re-tag the corrected commit |
+| Before the step 5 merge | Close the pull request; `git stash pop` only if the 2.0.8 edit is wanted back |
+| The source merge is bad | `git revert <merge-sha>` through a pull request. This restores the old installer, which is very likely broken (5.1), so prefer a forward fix |
+| `Release consistency` blocks wrongly | Delete the two `Release consistency` lines in `scripts/set_approval_gate.sh` and rerun step 4 (needs approval) |
+| 2.0.9 bad before promotion | Leave it as a pre-release; `git revert <release-pr-sha>` through a pull request |
+| 2.0.9 bad after promotion | `gh release edit v2.0.9 --prerelease` (latest returns to 2.0.8, which the new installer refuses: no checksum line), then the same revert |
+| A user needs an earlier version | Reinstall its release asset, or `scripts/install.sh --version <v>` if its checksum is in `release/SHA256SUMS` |
+| Never | Move or reuse a tag; publish a new version number instead |
 
-Model weights and the activity log are untouched by app rollback: they live in
-`~/.cache/huggingface` and `~/.mlx_studio`.
+Model weights stay in the Hugging Face cache and logs in `~/.mlx_studio`.
 
-## 10. Sources read for this file
+## 11. Verification
 
-| Source | Used for |
+| Check | Result |
 |---|---|
-| `packaging/build_app.sh` | Build steps, plist keys, DMG layout, asset naming |
-| `packaging/launcher.py` | Interpreter order, log path |
-| `packaging/release_manifest.py` | Manifest fields and checksum |
-| `release/latest.json` | Published manifest values |
-| Release verification run, 2026-11-24 | §8 table |
+| 2.0.9 rehearsal in a scratch clone: build, generate, `--verify --release`, audit `--quick --release`; `minos 12.0` | Passed on 2026-11-25, before the guard was added |
+| Installer with a real dmg, stubbed download, temporary target, run twice | Exit 0 |
+| `release_manifest.py --check` on the working tree, 2026-11-25 | Failed; current state in section 5.3 |
+| Section 5 steps; `--backfill` against real assets (not used for 2.0.9) | UNVERIFIED |
+| Release build including the guard, launch of the built app, real release assets | UNVERIFIED |
+
+## 12. Sources read for this file
+
+`packaging/build_app.sh`, `packaging/launcher.c`,
+`packaging/release_manifest.py`, `scripts/install.sh`, `app.py`,
+`.github/workflows/quality.yml`, `scripts/set_approval_gate.sh`,
+`release/latest.json`.

@@ -4,6 +4,8 @@
 #
 #   ./scripts/security_audit.sh            full audit
 #   ./scripts/security_audit.sh --quick    skip the dependency scan
+#   ./scripts/security_audit.sh --release  also require dist/ to match the release
+#                                          manifest (run before publishing)
 #
 # Exit code 0 when every check passes, 1 when any check fails.
 # Findings are printed as PASS / FAIL / WARN / INFO with a stable check id.
@@ -15,7 +17,14 @@ ROOT="$(cd "$HERE/.." && pwd)"
 cd "$ROOT" || exit 1
 
 QUICK=0
-[ "${1:-}" = "--quick" ] && QUICK=1
+RELEASE=0
+for arg in "$@"; do
+    case "$arg" in
+        --quick)   QUICK=1 ;;
+        --release) RELEASE=1 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 PASS=0; FAIL=0; WARN=0
 FAILED_IDS=()
@@ -55,11 +64,16 @@ PY
     printf '%s' "$out"
 }
 
+# Python files that ship inside the app; every source check covers all of them.
+SOURCES=(app.py mlx_guard.py)
+
 # ── SA-01 static patterns ────────────────────────────────────────────────────
 section "SA-01  Dangerous code patterns"
 PATTERNS='shell=True|os\.system|os\.popen|\beval\(|\bexec\(|pickle\.load|__import__\(|verify=False|ssl\._create_unverified|trust_remote_code\s*=\s*True'
-if grep -nE "$PATTERNS" app.py packaging/*.py 2>/dev/null | grep -v '^\s*#' | grep -q .; then
-    bad SA-01 "dangerous pattern found: $(grep -nE "$PATTERNS" app.py packaging/*.py | head -3 | tr '\n' ' ')"
+# Captured first: under `pipefail` a missing file would hide a match in another.
+HITS="$(grep -nE "$PATTERNS" "${SOURCES[@]}" packaging/*.py 2>/dev/null | grep -v '^\s*#')"
+if [ -n "$HITS" ]; then
+    bad SA-01 "dangerous pattern found: $(printf '%s\n' "$HITS" | head -3 | tr '\n' ' ')"
 else
     ok SA-01 "no shell=True, eval, exec, pickle, or disabled TLS verification"
 fi
@@ -71,7 +85,7 @@ if grep -qE '^HOST = "127\.0\.0\.1"' app.py; then
 else
     bad SA-02 "HOST is not loopback"
 fi
-if grep -qE '0\.0\.0\.0' app.py packaging/*.py 2>/dev/null; then
+if grep -qE '0\.0\.0\.0' "${SOURCES[@]}" packaging/*.py 2>/dev/null; then
     bad SA-02 "0.0.0.0 appears in source"
 else
     ok SA-02 "no 0.0.0.0 bind anywhere"
@@ -127,10 +141,16 @@ fi
 section "SA-07  Secret leakage"
 # Delegate to the single rule set so the audit and the git hooks cannot drift.
 if [ -f "$ROOT/scripts/check_secrets.py" ]; then
-    if python3 "$ROOT/scripts/check_secrets.py" --quiet >/tmp/sa07.log 2>&1; then
+    SCAN_OUT="$(python3 "$ROOT/scripts/check_secrets.py" --quiet 2>&1)"
+    SCAN_RC=$?
+    # A crash also exits 1, so only reported findings count as credentials.
+    BLOCKING="$(printf '%s\n' "$SCAN_OUT" | grep -cE 'BLOCK.*SEC-[0-9]{3}' || true)"
+    if [ "$SCAN_RC" -eq 0 ]; then
         ok SA-07 "no credentials in tracked files (check_secrets.py)"
+    elif [ "$SCAN_RC" -eq 1 ] && [ "$BLOCKING" -gt 0 ]; then
+        bad SA-07 "credentials found: $BLOCKING blocking finding(s); run ./scripts/check_secrets.py"
     else
-        bad SA-07 "credentials found: $(grep -c 'BLOCK' /tmp/sa07.log) blocking finding(s); run ./scripts/check_secrets.py"
+        bad SA-07 "scanner failed (exit $SCAN_RC), nothing verified; run ./scripts/check_secrets.py"
     fi
 else
     warn SA-07 "scripts/check_secrets.py missing; cannot scan"
@@ -154,7 +174,8 @@ WW=""
 while IFS= read -r f; do
     [ -f "$f" ] || continue
     perm=$(file_mode "$f")
-    case "$perm" in *w*w*) WW="$WW $f" ;; esac
+    # Ninth character of "-rwxrwxrwx" is the write bit for others.
+    case "$perm" in ????????w*) WW="$WW $f" ;; esac
 done < <(git ls-files)
 if [ -n "$WW" ]; then
     bad SA-09 "world-writable tracked file:$WW"
@@ -244,9 +265,16 @@ PY
     else bad SA-12 "manifest is missing a field or has a malformed sha256/url"
     fi
 
-    # A local rebuild legitimately differs from the published asset, so a
-    # mismatch is a warning: it means the manifest must be regenerated before
-    # the next release, not that the repository is broken.
+    # A local rebuild legitimately differs from the published asset, so day to
+    # day a mismatch is a warning. With --release it fails.
+    if [ "$RELEASE" -eq 1 ]; then
+        if python3 packaging/release_manifest.py --verify --release --dist dist; then
+            ok SA-12 "release gate: dist/ matches the manifest, checksums and source"
+        else
+            bad SA-12 "release gate failed: see the release check messages above"
+        fi
+    fi
+
     DMG=$(python3 - "$MANIFEST" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1])).get("url", "").rsplit("/", 1)[-1])
@@ -267,31 +295,48 @@ PY
     else
         info SA-12 "DMG not built locally; cannot compare"
     fi
+elif [ "$RELEASE" -eq 1 ]; then
+    bad SA-12 "release gate failed: no release/latest.json"
 else
     warn SA-12 "no release/latest.json"
 fi
 
 # ── SA-15 shipped bundle matches source ────────────────────────────────────
 # A bundle built before a security fix ships the vulnerable code while the
-# source looks clean. Compare the bundled app.py with the working tree.
+# source looks clean. Compare the bundled sources with the working tree.
 section "SA-15  Bundle freshness"
-BUNDLED="$ROOT/dist/MLX Studio.app/Contents/Resources/app.py"
-if [ -f "$BUNDLED" ]; then
-    if cmp -s "$BUNDLED" "$ROOT/app.py"; then
-        ok SA-15 "bundled app.py matches the working tree"
-    else
-        bad SA-15 "bundled app.py differs from source: rebuild before releasing"
-    fi
-    BUNDLED_UI="$ROOT/dist/MLX Studio.app/Contents/Resources/ui/app.js"
-    if [ -f "$BUNDLED_UI" ]; then
-        if cmp -s "$BUNDLED_UI" "$ROOT/ui/app.js"; then
-            ok SA-15 "bundled ui/app.js matches the working tree"
-        else
-            bad SA-15 "bundled ui/app.js differs from source: rebuild before releasing"
-        fi
-    fi
-else
+BUNDLE="$ROOT/dist/MLX Studio.app"
+RELEASE_TOOL="$ROOT/packaging/release_manifest.py"
+if [ ! -d "$BUNDLE" ]; then
     info SA-15 "no built bundle; run packaging/build_app.sh"
+else
+    SHIPPED_FILES=()
+    if [ -f "$RELEASE_TOOL" ]; then
+        # One list: the release gate checks the same files inside the pkg.
+        LIST="$(python3 - "$RELEASE_TOOL" 2>/dev/null <<'PY'
+import runpy, sys
+print("\n".join(runpy.run_path(sys.argv[1])["BUNDLED"]))
+PY
+)" || LIST=""
+        while IFS= read -r src; do
+            [ -n "$src" ] && SHIPPED_FILES+=("$src")
+        done <<< "$LIST"
+    else
+        if [ "$RELEASE" -eq 1 ]; then report=bad; else report=warn; fi
+        "$report" SA-15 "no release_manifest.py, so no shipped file list: only Python sources compared"
+        SHIPPED_FILES=("${SOURCES[@]}")
+    fi
+    if [ "${#SHIPPED_FILES[@]}" -eq 0 ]; then
+        bad SA-15 "cannot read the shipped file list from packaging/release_manifest.py"
+    else
+        for src in "${SHIPPED_FILES[@]}"; do
+            if cmp -s "$BUNDLE/Contents/Resources/$src" "$ROOT/$src"; then
+                ok SA-15 "bundled $src matches the working tree"
+            else
+                bad SA-15 "bundled $src is missing or differs from source: rebuild before releasing"
+            fi
+        done
+    fi
 fi
 
 # ── SA-13 dependency vulnerabilities ───────────────────────────────────────
@@ -316,10 +361,10 @@ for n in names:
 open(sys.argv[1], "w").write("\n".join(out) + "\n")
 PY
     fi
-    if python3 -m pip_audit --progress-spinner off -r "$REQS" >/tmp/sa13.log 2>&1; then
+    if PIP_OUT="$(python3 -m pip_audit --progress-spinner off -r "$REQS" 2>&1)"; then
         ok SA-13 "pip-audit: no known vulnerabilities in runtime dependencies"
     else
-        bad SA-13 "pip-audit reported findings: $(tail -3 /tmp/sa13.log | tr '\n' ' ')"
+        bad SA-13 "pip-audit reported findings: $(printf '%s\n' "$PIP_OUT" | tail -3 | tr '\n' ' ')"
     fi
     rm -f "$REQS"
 else
@@ -328,11 +373,13 @@ fi
 
 # ── SA-14 syntax ────────────────────────────────────────────────────────────
 section "SA-14  Syntax gates"
-if python3 -m py_compile app.py 2>/dev/null; then
-    ok SA-14 "app.py compiles"
-else
-    bad SA-14 "app.py does not compile"
-fi
+for src in "${SOURCES[@]}"; do
+    if python3 -m py_compile "$src" 2>/dev/null; then
+        ok SA-14 "$src compiles"
+    else
+        bad SA-14 "$src does not compile"
+    fi
+done
 if command -v node >/dev/null 2>&1; then
     if node --check ui/app.js 2>/dev/null; then
         ok SA-14 "ui/app.js parses"

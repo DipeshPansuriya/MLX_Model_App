@@ -1,7 +1,7 @@
 # Contributing
 
 Thanks for looking at MLX Studio. This repository is gated: `main` is protected,
-every change arrives through a pull request, and seven status checks must pass.
+every change arrives through a pull request, and its status checks must pass.
 
 ## Quick start
 
@@ -19,7 +19,7 @@ ruff check .                    # lint
 ruff format --check .           # formatting
 python3 scripts/check_secrets.py
 python3 scripts/check_docs.py
-python3 -m py_compile app.py
+python3 -m py_compile app.py mlx_guard.py
 node --check ui/app.js
 ./scripts/security_audit.sh --quick
 ```
@@ -44,7 +44,9 @@ All of these also run in CI. A pull request that fails any of them cannot merge.
 2. A body stating **what** changed and **how it was verified** — commands and
    their output, not adjectives.
 3. Green checks: `Secret scan`, `Security audit`, `Lint and format`,
-   `Syntax gates`, `Documentation links`, `Hook installer`, `Automated review`.
+   `Syntax gates`, `Documentation links`, `Hook installer`, `Automated review`,
+   `Release consistency` (listed in `scripts/set_approval_gate.sh`; not yet applied
+   to the live ruleset on 2026-11-25).
 4. No unresolved review threads.
 
 The automated review comment is a report, not an approval. It lists lint,

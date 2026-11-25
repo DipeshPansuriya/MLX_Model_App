@@ -20,7 +20,7 @@ related:
 
 `main` is protected. Nobody — including the repository owner — can commit to it
 directly, force-push it, delete it, or merge into it without a pull request and
-seven green status checks.
+green status checks (listed in section 2.2).
 
 Enforcement is a **repository ruleset**, not classic branch protection, because
 rulesets support required status checks and bypass control in one object and are
@@ -67,6 +67,11 @@ visible at `/rules/`.
 | `Documentation links` | `quality.yml` | `docs` |
 | `Hook installer` | `security.yml` | `hooks` |
 | `Automated review` | `pr-review.yml` | `review` |
+| `Release consistency` | `quality.yml` | `release` |
+
+`Release consistency` was added to `scripts/set_approval_gate.sh` on 2026-11-25.
+The script was not run, so the live ruleset is not yet updated (current live list
+UNVERIFIED). Apply it as in [DEPLOYMENT.md](DEPLOYMENT.md) section 5, step 5.
 
 `strict_required_status_checks_policy` is `true`, so a PR must be rebased or
 merged with `main` before it can land — a green run on a stale base does not count.

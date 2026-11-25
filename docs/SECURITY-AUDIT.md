@@ -15,6 +15,10 @@ related:
 
 # Security audit — MLX Studio 2.0.0
 
+> Dated record of 2026-11-24. Findings describe the code at that time: prompt text is no longer
+> logged, and section references to [SECURITY.md](SECURITY.md) may have moved. Current controls are
+> in that file. The re-run commands below use the current release tool.
+
 ## 1. Scope and method
 
 An audit of the shipped 2.0.0 code plus the packaging and release path, performed
@@ -270,9 +274,8 @@ cd packaging && ./build_app.sh && cd ..
 ./scripts/security_audit.sh --quick
 
 # 3. refresh the manifest checksum for a release
-cd packaging && ./release_manifest.py --dmg "../dist/MLX.Studio-<v>.dmg" \
-  --url "https://github.com/…/releases/download/v<v>/MLX.Studio-<v>.dmg" \
-  --notes "…" --out ../release/latest.json
+python3 packaging/release_manifest.py --dist dist --notes "…"
+# full order: DEPLOYMENT.md section 5
 ```
 
 Run the full audit before every tag; see [RUNBOOK.md](RUNBOOK.md) §7.

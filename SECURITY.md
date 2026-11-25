@@ -60,9 +60,15 @@ These are known and documented, not vulnerabilities:
 | Risk | Record |
 |---|---|
 | Ad-hoc signature, Gatekeeper warning on first launch | [ADR-007](docs/adr/ADR-007-adhoc-signing.md) |
-| No authentication on the loopback API | [docs/SECURITY.md](docs/SECURITY.md) §5 |
-| Prompts recorded in the activity log | [docs/SECURITY.md](docs/SECURITY.md) §4.6 |
+| No user authentication on the loopback ports: `/api/*` on 8765 needs a session token (except ping and focus), but any local process can read it from the app page; 8080 has no authentication | [docs/SECURITY.md](docs/SECURITY.md) §3, §5 |
+| The background API server's `server.log` can contain request content (the app's own chat log does not record prompts) | [docs/SECURITY.md](docs/SECURITY.md) §4.6 |
 | Zero required PR approvals (single maintainer) | [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md) §5 |
+
+## Known issues
+
+| Issue | Severity | Record |
+|---|---|---|
+| The page's Content-Security-Policy only sets `frame-ancestors`, so it adds no second line of defence against script injection. No live injection was found in the parts checked | Low (hardening) | [docs/SECURITY.md](docs/SECURITY.md) §5 |
 
 ## More detail
 

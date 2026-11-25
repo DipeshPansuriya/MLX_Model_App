@@ -67,9 +67,20 @@ DMG="MLX.Studio-$VERSION.dmg"
 URL="https://github.com/$REPO/releases/download/v$VERSION/$DMG"
 TMP="$(mktemp -d)"
 MOUNT=""
+STAGE=""
+TARGET="$DEST/$APP_NAME.app"
 
 cleanup() {
     [ -n "$MOUNT" ] && hdiutil detach "$MOUNT" >/dev/null 2>&1 || true
+    if [ -n "$STAGE" ]; then
+        # Interrupted or failed between the two moves: put the old app back, and
+        # keep the staging folder if even that does not work.
+        if [ -e "$STAGE/previous.app" ] && [ ! -e "$TARGET" ]; then
+            mv "$STAGE/previous.app" "$TARGET" \
+                || { echo "error: previous app kept at $STAGE/previous.app" >&2; STAGE=""; }
+        fi
+        [ -n "$STAGE" ] && rm -rf "$STAGE"
+    fi
     rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -80,11 +91,17 @@ curl -fsSL --retry 3 -o "$TMP/$DMG" "$URL" || die "download failed: $URL"
 # curl does not set this, but a proxy or a copied file might have.
 xattr -dr com.apple.quarantine "$TMP/$DMG" 2>/dev/null || true
 
+# release/SHA256SUMS lists every published asset of every version, so the line is
+# chosen by the exact file name. No line, no install.
 say "▸ verifying checksum"
-EXPECTED="$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/release/latest.json" \
-    | sed -n 's/.*"sha256": *"\([0-9a-f]\{64\}\)".*/\1/p' | head -1)"
+SUMS_URL="https://raw.githubusercontent.com/$REPO/main/release/SHA256SUMS"
+curl -fsSL --retry 3 -o "$TMP/SHA256SUMS" "$SUMS_URL" \
+    || die "could not fetch the checksum list: $SUMS_URL"
+EXPECTED="$(awk -v name="$DMG" '$2 == name {print $1}' "$TMP/SHA256SUMS")"
+[[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]] \
+    || die "no single published checksum for $DMG; refusing to install"
 ACTUAL="$(shasum -a 256 "$TMP/$DMG" | awk '{print $1}')"
-if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$ACTUAL" ]; then
+if [ "$EXPECTED" != "$ACTUAL" ]; then
     die "checksum mismatch
   expected $EXPECTED
   actual   $ACTUAL"
@@ -92,21 +109,31 @@ fi
 say "  sha256 $ACTUAL"
 
 say "▸ mounting"
-MOUNT="$(hdiutil attach -nobrowse -readonly "$TMP/$DMG" \
-    | sed -n 's|.*\(/Volumes/.*\)|\1|p' | tail -1)"
-[ -n "$MOUNT" ] || die "could not mount the dmg"
+mkdir "$TMP/mnt"
+hdiutil attach -nobrowse -readonly -mountpoint "$TMP/mnt" "$TMP/$DMG" >/dev/null \
+    || die "could not mount the dmg"
+MOUNT="$TMP/mnt"
 
 [ -d "$MOUNT/$APP_NAME.app" ] || die "$APP_NAME.app not found in the dmg"
 
+# Copy and verify next to the target first; the installed app is only replaced
+# once the new copy has proven good.
 say "▸ installing to $DEST"
 mkdir -p "$DEST"
-rm -rf "$DEST/$APP_NAME.app"
-cp -R "$MOUNT/$APP_NAME.app" "$DEST/"
-xattr -dr com.apple.quarantine "$DEST/$APP_NAME.app" 2>/dev/null || true
+STAGE="$(mktemp -d "$DEST/.mlx-install.XXXXXX")" || die "cannot write to $DEST"
+NEW="$STAGE/$APP_NAME.app"
+cp -R "$MOUNT/$APP_NAME.app" "$NEW" || die "copy failed; nothing was changed"
+xattr -dr com.apple.quarantine "$NEW" 2>/dev/null || true
 
+# The signature is ad-hoc: it detects a damaged bundle, not who published it.
 say "▸ verifying signature"
-codesign --verify --deep --strict "$DEST/$APP_NAME.app" \
-    || die "signature check failed on the installed copy"
+codesign --verify --deep --strict "$NEW" \
+    || die "signature check failed; nothing was changed"
+
+if [ -e "$TARGET" ]; then
+    mv "$TARGET" "$STAGE/previous.app" || die "cannot replace $TARGET; nothing was changed"
+fi
+mv "$NEW" "$TARGET" || die "could not move the new app into place"
 
 INSTALLED="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
     "$DEST/$APP_NAME.app/Contents/Info.plist" 2>/dev/null || echo "$VERSION")"

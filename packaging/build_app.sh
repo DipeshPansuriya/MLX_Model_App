@@ -15,6 +15,8 @@ ROOT="$(cd "$HERE/.." && pwd)"
 DIST="$ROOT/dist"
 APP_NAME="MLX Studio"
 BUNDLE_ID="com.mlxstudio.app"
+# One value for the plist and the compiler, checked against the binary below.
+MIN_MACOS="12.0"
 VERSION="$(grep -m1 '^APP_VERSION' "$ROOT/app.py" | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -34,14 +36,15 @@ fi
 
 echo "▸ MLX Studio $VERSION"
 APP="$DIST/$APP_NAME.app"
-rm -rf "$APP"
+# A record of an earlier build must not survive this one.
+rm -rf "$APP" "$DIST/SHA256SUMS"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
 # ── resources: app sources + UI ──────────────────────────────────────────────
 cp "$ROOT/app.py" "$APP/Contents/Resources/app.py"
+cp "$ROOT/mlx_guard.py" "$APP/Contents/Resources/mlx_guard.py"
 mkdir -p "$APP/Contents/Resources/ui"
 cp "$ROOT/ui/index.html" "$ROOT/ui/style.css" "$ROOT/ui/app.js" "$APP/Contents/Resources/ui/"
-cp "$HERE/launcher.py" "$APP/Contents/Resources/launcher.py"
 cp "$HERE/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # ── Info.plist ───────────────────────────────────────────────────────────────
@@ -59,7 +62,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleSignature</key><string>????</string>
-    <key>LSMinimumSystemVersion</key><string>12.0</string>
+    <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSRequiresAquaSystemAppearance</key><false/>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
@@ -73,8 +76,19 @@ PLIST
 # app identity ("MLX Studio") and produces a single Dock tile. A shell script
 # stub exec'ing python3 registers TWO identities ("MLX Studio" + "Python")
 # and produces duplicate Dock tiles.
-cp "$HERE/MLXStudio" "$APP/Contents/MacOS/MLXStudio"
-chmod +x "$APP/Contents/MacOS/MLXStudio"
+command -v clang >/dev/null || { echo "clang not found: run xcode-select --install"; exit 1; }
+BIN="$APP/Contents/MacOS/MLXStudio"
+echo "▸ compiling launcher (macOS $MIN_MACOS+, arm64)"
+clang -arch arm64 -mmacosx-version-min="$MIN_MACOS" -O2 -Wall -Wextra \
+    -o "$BIN" "$HERE/launcher.c"
+
+# The binary must run on every macOS the plist promises.
+PLIST_MIN="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
+BIN_MIN="$(otool -l "$BIN" | awk '$1 == "minos" {print $2; exit}')"
+if [ "$BIN_MIN" != "$PLIST_MIN" ]; then
+    echo "error: launcher has minos ${BIN_MIN:-unknown}, Info.plist promises $PLIST_MIN" >&2
+    exit 1
+fi
 
 # ── codesign (ad-hoc by default) ─────────────────────────────────────────────
 if [ "$DO_SIGN" -eq 1 ]; then
@@ -180,7 +194,7 @@ Model weights stay in ~/.cache/huggingface/hub/ and logs in ~/.mlx_studio/.
 REQUIREMENTS
 ------------
 
-  • macOS 12 or newer on Apple Silicon
+  • macOS ${MIN_MACOS%.0} or newer on Apple Silicon
   • Python 3.10+  (python.org build or: brew install python)
   • MLX packages — install them from the app's Setup tab
 
@@ -232,4 +246,9 @@ rm -rf "$PKG_ROOT"
 PKG_SIZE="$(du -h "$PKG" | cut -f1)"
 echo "▸ $PKG ($PKG_SIZE)"
 shasum -a 256 "$PKG" | awk '{print "  sha256 " $1}'
+
+# ── build record ─────────────────────────────────────────────────────────────
+# release_manifest.py refuses to publish files that differ from this record.
+(cd "$DIST" && shasum -a 256 "$(basename "$DMG")" "$(basename "$PKG")" > SHA256SUMS)
+echo "▸ $DIST/SHA256SUMS"
 echo "done"

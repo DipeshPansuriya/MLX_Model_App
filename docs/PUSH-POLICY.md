@@ -106,10 +106,16 @@ The marker suppresses every rule on that line. Use it only for values that are
 provably not credentials — documentation placeholders, test fixtures with obvious
 fake values, or a regex inside the scanner itself.
 
-Lines are also auto-allowed when they contain an obvious placeholder marker:
-`example`, `placeholder`, `dummy`, `redacted`, `your_token`, `<...>`, `${VAR}`,
-`os.environ`, `getenv`, `process.env`, `xxxx`, `...`, `fake`, `sample`,
-`test_key`, or a `SEC-NNN` reference.
+A match is also auto-allowed when the **secret value itself** is a placeholder.
+Only the value is judged (the token, or the part assigned), never a key name,
+user name or the rest of the line. It must be wholly an `<angle-name>`, a
+`${VAR}` or upper-case `$VAR` reference, or a lower-case phrase led by a
+placeholder word (`example-only-value`); or placeholder words (`example`,
+`placeholder`, `dummy`, `redacted`, `sample`, `fake`, `test_key`,
+`your_token` / `your_key` / `your_api_key` / `your_password` / `your_secret`),
+`xxxx` runs and ellipses must cover at least half of it. Every match on a line
+is checked; otherwise use `secret-scan: allow`. A real value that is at least
+half placeholder text is still excused.
 
 ## 5. What is never scanned
 

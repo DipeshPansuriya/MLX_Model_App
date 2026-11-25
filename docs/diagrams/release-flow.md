@@ -15,60 +15,49 @@ next one.
 
 ```mermaid
 flowchart TD
-    A["edit app.py<br/>APP_VERSION = x.y.z"] --> B["update CHANGELOG.md"]
-    B --> C{"py_compile<br/>node --check"}
+    A["edit app.py APP_VERSION<br/>CHANGELOG entry, no checksum block"] --> C{"CI checks<br/>compile, lint, tests"}
     C -->|fail| A
-    C -->|pass| D["regression run<br/>backend + CDP UI"]
-    D -->|fail| A
-    D -->|pass| E["./packaging/build_app.sh"]
-
-    E --> F["dist/MLX Studio.app<br/>Info.plist · icon · sources"]
-    F --> G["codesign --sign -<br/>ad-hoc"]
-    G --> H["stage: app + Applications symlink + Read Me"]
-    H --> I["hdiutil create -format UDZO"]
-    I --> J["dist/MLX.Studio-x.y.z.dmg<br/>+ sha256 printed"]
-
-    J --> K["./packaging/release_manifest.py<br/>--dmg --url --notes"]
-    K --> L["release/latest.json<br/>version · url · sha256 · size"]
-
-    L --> M["git commit · tag vx.y.z<br/>push main --tags"]
-    M --> N["GitHub Release<br/>upload DMG asset"]
-
-    N --> O["user downloads DMG"]
-    O --> P["drag to Applications"]
-    P --> Q["Gatekeeper blocks<br/>System Settings → Open Anyway"]
-    Q --> R["app runs"]
-
-    L -.->|"MLX_STUDIO_UPDATE_URL"| S["installed copy polls manifest"]
-    S --> T{"manifest.version<br/>&gt; APP_VERSION?"}
-    T -->|yes| U["Setup shows update panel<br/>+ nav ! badge"]
-    T -->|no| V["local build / up to date"]
-    U --> O
+    C -->|pass| M["merge to a clean commit"]
+    M --> E["./packaging/build_app.sh<br/>app (ad-hoc signed), dmg, pkg,<br/>dist/SHA256SUMS"]
+    E --> K["release_manifest.py<br/>--dist dist --notes"]
+    K --> L["release/latest.json (pkg)<br/>release/SHA256SUMS"]
+    L --> B["paste checksum block<br/>into CHANGELOG"]
+    B --> G{"release_manifest.py --verify --release<br/>security_audit.sh --release"}
+    G -->|fail| A
+    G -->|pass| N["owner approves: tag the built commit,<br/>publish that dmg and pkg<br/>as a pre-release"]
+    N --> R["pull request: latest.json,<br/>SHA256SUMS, CHANGELOG"]
+    R --> I["test scripts/install.sh --version<br/>dmg checked against SHA256SUMS on main"]
+    I --> P["owner approves: promote to latest"]
+    R -.->|"MLX_STUDIO_UPDATE_URL"| S["installed copy reads manifest"]
+    S --> T{"manifest version<br/>newer than APP_VERSION?"}
+    T -->|yes| U["Setup shows update notice"]
+    T -->|no| V["up to date"]
 ```
 
 ## Artefacts produced
 
 | Artefact | Path | Contains |
 |---|---|---|
-| App bundle | `dist/MLX Studio.app` | plist, icon, `app.py`, `launcher.py`, `ui/` |
-| Installer | `dist/MLX.Studio-x.y.z.dmg` | app, `Applications` symlink, `Read Me.txt` |
-| Manifest | `release/latest.json` | version, url, notes, published, sha256, size |
-| Release asset | GitHub Releases | the DMG |
+| App bundle | `dist/MLX Studio.app` | plist, icon, launcher binary, `app.py`, `mlx_guard.py`, `ui/` |
+| Disk image | `dist/MLX.Studio-x.y.z.dmg` | app, `Applications` symlink, read-me |
+| Package | `dist/*.pkg` | installs the app into `/Applications` |
+| Manifest | `release/latest.json` | version, url, notes, published, sha256, size of the pkg |
+| Checksums | `release/SHA256SUMS` | assets listed by the release tool; not created yet. It starts with the built and verified 2.0.9; no backfill |
+
+Steps, order and current release state: [DEPLOYMENT.md](../DEPLOYMENT.md) sections 5 and 6.
 
 ## Gates before a tag
 
 | Gate | Command | Blocks release |
 |---|---|---|
-| Python syntax | `python3 -m py_compile app.py` | yes |
+| Python syntax | `python3 -m py_compile app.py mlx_guard.py` | yes |
 | JS syntax | `node --check ui/app.js` | yes |
-| Backend smoke | `/api/ping`, `/api/state`, SSE chat | yes |
-| UI regression | CDP run, `RESULT: PASS` | yes |
-| Signature | `codesign --verify --deep --strict` | yes |
-| DMG integrity | `hdiutil verify` | yes |
-| Install and launch | copy out, `open`, `/api/ping` | yes |
-| Checksum match | download vs manifest `sha256` | yes |
+| Tests | `python3 -m pytest` | yes |
+| Release files | `python3 packaging/release_manifest.py --verify --release --dist dist` | yes |
+| Audit | `./scripts/security_audit.sh --release` | yes |
+| Manual checks | [TESTING.md](../TESTING.md) section 6 | yes |
 
-## Verified for 2.0.0
+## Recorded for 2.0.0 (historical, DMG-only flow)
 
 | Step | Result |
 |---|---|

@@ -42,7 +42,7 @@ sequenceDiagram
             G-->>H: ("token", text)
             H-->>UI: event: token
             UI-->>U: append to bubble, scroll
-            Note over G: stop_flag checked each token
+            Note over G: stop_event checked each token
         end
         G-->>H: ("done", meta)
         H-->>UI: event: done {tokens, tps, peak_gb}
@@ -53,7 +53,7 @@ sequenceDiagram
 
     U->>UI: Stop (optional)
     UI->>H: POST /api/chat/stop
-    H->>S: stop_flag = true
+    H->>S: stop_event.set()
     Note over G: loop exits, partial answer kept
 ```
 
@@ -70,10 +70,10 @@ sequenceDiagram
 
 | Rule | Where |
 |---|---|
-| Chat refuses without a loaded model | `409`, `app.py:608` |
-| Tokens are flushed per emission | `emit` writes and flushes, `app.py:724` |
-| Stop is a flag, not a kill | `State.stop_flag`, checked per token |
-| The partial answer survives a stop | `_finish_generation` keeps accumulated text |
+| Chat refuses without a loaded model | `409`, `Handler._stream_chat` |
+| Tokens are flushed per emission | `emit` writes and flushes, `Handler._stream_chat` |
+| Stop is an event, not a kill | A new event per reply in `State.stop_event`, checked per token |
+| The partial answer survives a stop | `stream_chat` leaves the loop and still sends `done`; `ui/app.js` keeps the text |
 | Every completed turn is logged | `log_activity("chat", …)` in `_stream_chat` |
 | The client disconnecting is not an error | `BrokenPipeError` caught, logged as failed |
 
@@ -81,7 +81,7 @@ sequenceDiagram
 
 | Failure | Response | UI |
 |---|---|---|
-| No model | `409` | Toast, no bubble |
+| No model, model loading or reply running | `409` | Toast and red bubble; the turn is dropped from history |
 | Generation raises | SSE `event: error` | Red bubble with the message |
 | Client disconnects | connection closed | Log entry `client disconnected` |
 | Stop pressed | partial `done` | Partial answer plus metrics |

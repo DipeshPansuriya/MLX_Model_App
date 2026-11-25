@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: "Runbook — MLX Studio"
-status: "Built at tag v2.0.7 (2026-11-25)"
+status: "Written for the 2.0.7 source (2026-11-25), held by tag v2.0.8"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -87,22 +87,31 @@ curl http://127.0.0.1:8080/v1/chat/completions \
        "messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-Point Claude Code or DeepSeek at `http://127.0.0.1:8080/v1` with any non-empty API
+Point DeepSeek Harness or another OpenAI-compatible client at `http://127.0.0.1:8080/v1` with any non-empty API
 key.
 
 ### 3.5 Update the runtime
 
 Setup tab → **Check for updates** → **Install / Update**. Output streams into the
-panel; versions refresh afterwards. Equivalent CLI:
+panel; versions refresh afterwards. It installs `mlx`, `mlx-lm` and
+`huggingface-hub` 2.4.0, keeps newer versions, and the hub row shows an update
+pill. Equivalent CLI on a machine without newer versions:
 
 ```bash
-python3 -m pip install --upgrade mlx mlx-lm
+python3 -m pip install mlx==0.32.4 mlx-lm==0.32.2 huggingface-hub==2.4.0
 ```
 
 ### 3.6 Check for an app update
 
 Setup tab → **Check for updates**. With `MLX_STUDIO_UPDATE_URL` set, a newer
-manifest shows the update panel with notes and a **Download DMG** button.
+manifest shows the update panel with notes and a **Download installer** button
+(the published manifest URL is the `.pkg`).
+
+### 3.7 After an update
+
+If the app shows **server unprotected**, open API Server and press **Restart now**.
+The older background server then restarts with the same model and mode, behind
+the request guard.
 
 ## 4. Recovery procedures
 
@@ -114,8 +123,8 @@ tail -40 ~/.mlx_studio/logs/launch.log
 
 | Log says | Cause | Fix |
 |---|---|---|
-| `No Python 3.10+ interpreter found` | No suitable Python | Install from python.org or `brew install python` |
-| `Missing app.py at …` | Bundle damaged | Reinstall from the DMG |
+| `no Python 3.10+ interpreter found` | No suitable Python | Install from python.org or `brew install python` |
+| `cannot find …/app.py` | Bundle damaged | Reinstall the app |
 | `ModuleNotFoundError: mlx` | Runtime missing | Setup tab → Install, or `pip install mlx mlx-lm` |
 | `ModuleNotFoundError: webview` | pywebview absent | `pip install pywebview`, or let it fall back to the browser |
 
@@ -170,6 +179,9 @@ mv ~/.mlx_studio/logs/activity.log ~/.mlx_studio/logs/activity.log.bak
 The file is recreated on the next action.
 
 ### 4.7 Gatekeeper blocks the app
+
+These steps were written for the DMG. How current macOS treats a downloaded
+unsigned `.pkg` is UNVERIFIED.
 
 **Symptom.** After dragging the app to `/Applications` and double-clicking it:
 
@@ -263,7 +275,16 @@ Dismiss hides the banner without restarting. A background server is adopted on
 the next launch from `~/.mlx_studio/server.pid`, so a stale pidfile is cleaned up
 automatically when the pid is gone.
 
-### 4.9 The log folder is missing
+### 4.9 "mlx_guard: refusing to start the API server"
+
+The guard found that the installed `mlx_lm` cannot be imported or its server no
+longer matches what the guard patches. It fails closed. Read `server.log` and
+`app.log`, then install the pinned version from the **Setup** tab. Do not bypass
+the guard ([ADR-009](adr/ADR-009-api-server-guard.md)).
+
+This message also appears if the `mlx_lm` tool call formatter has changed.
+
+### 4.10 The log folder is missing
 
 `~/.mlx_studio/logs/` is created on start. Logs written by 2.0.0 in
 `~/.mlx_studio/` are moved into it on first launch. If the move could not happen,
@@ -329,29 +350,34 @@ Collect these only when the app will not start at all:
 - [ ] `./scripts/install_hooks.sh --check` reports hooks active
 - [ ] `./scripts/check_secrets.py --all-history` finds no credentials
 - [ ] `./scripts/security_audit.sh` passes (0 failures)
-- [ ] `python3 -m py_compile app.py` passes
+- [ ] `python3 -m py_compile app.py mlx_guard.py` passes
 - [ ] `node --check ui/app.js` passes
+- [ ] `python3 -m pytest` passes
 - [ ] Backend smoke test passes
 - [ ] CDP UI run reports `RESULT: PASS` with no JS errors
-- [ ] `packaging/build_app.sh` succeeds
+- [ ] `packaging/build_app.sh` succeeds (app, dmg, pkg, `dist/SHA256SUMS`)
 - [ ] `codesign --verify --deep --strict` passes
 - [ ] `hdiutil verify` passes
-- [ ] DMG mounted, app copied out, launched, `/api/ping` OK
-- [ ] `release_manifest.py` regenerated with the new SHA-256
+- [ ] App installed from the built file, launched, `/api/ping` OK
+- [ ] `release_manifest.py` regenerated and `--verify --release` passes
 - [ ] `docs/` updated for any behaviour change
-- [ ] Commit, annotated tag, `git push origin main --tags`
-- [ ] GitHub release created with the DMG attached
-- [ ] Asset downloaded and checksum compared
+- [ ] Owner approval, then tag the built commit and publish that `.dmg` and `.pkg` as a pre-release
+- [ ] Assets downloaded and checksums compared
+- [ ] Pull request with `release/latest.json`, `release/SHA256SUMS`, `CHANGELOG.md`
+- [ ] Installer tested with `--version`, then owner approval to promote to latest
+
+Order and commands: [DEPLOYMENT.md](DEPLOYMENT.md) section 5.
 
 ## 8. Escalation
 
 | Symptom | First action | Then |
 |---|---|---|
-| App will not start | §4.1 launch log | Reinstall from DMG |
+| App will not start | §4.1 launch log | Reinstall the app |
 | Model will not load | §4.5 | Try a smaller model |
 | Server will not bind | §4.3 | Stop the conflicting process |
+| Guard refuses to start | §4.9 | Reinstall the pinned runtime |
 | Server died banner | §4.8 `server.log` and `app.log` | Restart from the banner |
-| Logs missing | §4.9 log folder | Export diagnostics |
+| Logs missing | §4.10 log folder | Export diagnostics |
 | Update check fails | Check network and proxy | Manifest/PyPI unreachable is non-fatal |
 | Data loss | Check `~/.mlx_studio` and the HF cache | Weights are re-downloadable |
 
@@ -360,6 +386,6 @@ Collect these only when the app will not start at all:
 | Source | Used for |
 |---|---|
 | `app.py` | Ports, endpoints, log paths, shutdown behaviour |
-| `packaging/launcher.py` | Launch log path and interpreter order |
+| `packaging/launcher.c` | Launch log path and interpreter order |
 | `docs/TESTING.md` | Verified commands |
 | Release verification run, 2026-11-24 | Expected outputs |

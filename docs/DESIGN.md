@@ -185,8 +185,11 @@ This is the contract between backend and interface. Every surface derives from
 ### 7.3 Download
 
 - Topbar: search input, **Search**, **Show all**.
-- Result card: short name, repo id, **Download**.
-- Downloading card replaces the action with a status tag: `running`, `success`, `failed`.
+- One card layout for recommended and search models; unknown fields are labelled,
+  never filled in.
+- Active Downloads starts collapsed; its header shows count and progress.
+- The toggle's name is fixed (**Active downloads**); `aria-expanded` gives its state.
+- A busy **Download** button uses `aria-disabled`, so it keeps keyboard focus.
 
 ### 7.4 API Server
 
@@ -206,7 +209,8 @@ This is the contract between backend and interface. Every surface derives from
 - Application panel: version, latest release, channel, Python, hardware, last check,
   plus an **App update available** panel when the manifest is newer.
 - Runtime packages panel: MLX, MLX-LM, huggingface-hub with version and pill;
-  **Install / Update** runs pip and streams output into a console.
+  **Install / Update** installs `mlx`, `mlx-lm` and `huggingface-hub` 2.4.0 (newer
+  versions are kept), streaming output into a console; the hub row has an update pill.
 - Hint line states the conclusion in words: "Everything is installed and up to
   date." / "A newer MLX release is available on PyPI."
 
@@ -252,7 +256,7 @@ This is the contract between backend and interface. Every surface derives from
 | No `aria-live` on the transcript | Screen readers do not announce streaming tokens | Would need a polite live region on the assistant body |
 | No reduced-motion query | Pulse and blink always animate | `prefers-reduced-motion` not yet honoured |
 | No light theme | Dark only | Tokens are centralised, so a theme is a token swap |
-| No transcript persistence | Closing the app loses chat | Activity log records prompts and outcomes only |
+| No transcript persistence | Closing the app loses chat | Activity log records actions and outcomes, not prompt text |
 | Fixed sampling | No temperature/top-p controls | `temp=0.7`, `top_p=0.95`; PRD OD-4 |
 
 ## 12. Screenshots
