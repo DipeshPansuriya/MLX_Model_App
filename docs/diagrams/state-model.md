@@ -83,6 +83,13 @@ classDiagram
         port: 8080
         endpoint: "http://127.0.0.1:8080/v1"
         lines: string[]
+        repos: string[] (unreleased)
+        resident: string[] (unreleased)
+        memory: object or null (unreleased)
+        events: object[] (unreleased)
+        oversize: string[] (unreleased)
+        multi_off: string or null (unreleased)
+        memory_low: object or null (unreleased)
     }
 
     class Download {
@@ -124,6 +131,12 @@ classDiagram
 | `loaded.error` | Last load failure text | Chat header |
 | `server.running` | Child process alive | Server pill, nav dot |
 | `server.lines` | Last 400 stdout lines | Server console |
+| `server.repos`, `server.resident` (unreleased) | Models started with; models in memory, current first | Server pill |
+| `server.memory` (unreleased) | Measured bytes at the last load or switch | Memory line on API Server |
+| `server.events` (unreleased) | Recent load, trim and eviction events; refresh events not recorded | Notice on API Server, server console |
+| `server.oversize` (unreleased) | Models loaded alone over the budget | **Loaded without enough memory** notice |
+| `server.multi_off` (unreleased) | Why only one model is kept | Notice on API Server |
+| `server.memory_low` (unreleased) | `null` or `{free_bytes, short_by_bytes}` when free memory dropped | **Free memory is low** notice |
 | `downloads[]` | Per-repo download status | Download cards |
 | `install.lines` | pip output | Setup console |
 | `generating` | A chat stream is in flight | Send/Stop visibility |

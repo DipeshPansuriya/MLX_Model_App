@@ -16,7 +16,9 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import functools
+import importlib.util
 import json
+import math
 import os
 import platform
 import re
@@ -70,6 +72,8 @@ SERVER_LOG = LOG_DIR / "server.log"
 UI_DIR = Path(__file__).resolve().parent / "ui"
 # The API server starts through this wrapper, which checks every request.
 GUARD_SCRIPT = Path(__file__).resolve().parent / "mlx_guard.py"
+# The .app keeps this next to app.py, in Contents/Resources.
+APP_ICON = Path(__file__).resolve().parent / "AppIcon.icns"
 
 # Rotation keeps the folder small enough to attach to a GitHub issue.
 LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -81,20 +85,46 @@ PORT = 8765
 SERVER_PORT = 8080
 # mlx_lm cuts replies at 512 tokens when a client sends no max_tokens.
 SERVER_MAX_TOKENS = 8192
+# Two models at once (see mlx_guard.install_multi). The share of memory they may
+# use is an assumption carried from the 18 GB "safe" figure on a 32 GB Mac.
+SERVER_MAX_MODELS = 2
+SERVER_RAM_FRACTION = 0.52
+# How long a reading of the free memory is shown before it is taken again.
+FREE_CACHE_SECONDS = 10
 # Versions verified for this release (mirrors requirements.txt).
 PINNED_PACKAGES = {"mlx": "0.32.4", "mlx-lm": "0.32.2", "huggingface-hub": "2.4.0"}
 
-# New on every launch. Only a page served by this process can read it, so an /api
-# request carrying it came from our own UI.
+# New on every launch. Handed to our own window in the URL fragment, never served,
+# so an /api request carrying it came from our own UI.
 API_TOKEN = secrets.token_urlsafe(32)
 TOKEN_HEADER = "X-MLX-Token"  # noqa: S105 - a header name, not a secret
-TOKEN_PLACEHOLDER = b"__MLX_TOKEN__"
 # A second launch is a different process and cannot know the token. Raising the
 # window changes no data, and the Host, Origin and JSON checks still apply.
 TOKEN_EXEMPT = frozenset({"/api/focus"})
 # It asks this first, to learn that we are here. The reply is only the version.
 OPEN_GETS = frozenset({"/api/ping"})
-BAD_TOKEN = "invalid session token; reload the window"  # noqa: S105 - a message
+BAD_TOKEN = "invalid session token; open MLX Studio again from its icon"  # noqa: S105
+# Browser mode: a second launch opens a new tab, no more often than this.
+REOPEN_SECONDS = 3.0
+REOPEN_LOCK = threading.Lock()
+
+# Scripts run only from files this server sends: no inline script, handler or
+# eval, so a missed escape in the UI cannot run code. The style hash is the
+# <style> pywebview 6.2.1 adds to turn text selection off; style attributes are
+# for the download progress bar; data: is the empty favicon.
+CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'sha256-RoIvEyQwR8x7XAq0wvZTfMiswRYjOD0c8DenZVf2Kss='",
+        "style-src-attr 'unsafe-inline'",
+        "img-src 'self' data:",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-ancestors 'none'",
+    )
+)
 
 APP_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -552,6 +582,11 @@ def installed_models() -> list[dict]:
     return models
 
 
+def _complete_models() -> set[str]:
+    """Installed models whose files are all there."""
+    return {m["repo"] for m in installed_models() if m["complete"]}
+
+
 # Bytes per stored value. In a quantised MLX model "U32" holds the packed weights
 # and the Hub counts the parameters inside them, not the 32-bit words.
 DTYPE_BYTES = {"F64": 8, "I64": 8, "F32": 4, "I32": 4, "BF16": 2, "F16": 2, "I16": 2}
@@ -878,6 +913,9 @@ class State:
         self.server_stops = 0  # a queued start older than the last Stop is dropped
         self.server_proc: subprocess.Popen | None = None
         self.server_repo: str | None = None
+        self.server_repos: list[str] = []  # the first is server_repo
+        self.server_context: int | None = None  # tokens per model, for two
+        self.free_read: tuple[float, int | None] | None = None  # see free_memory
         self.server_lines: list[str] = []
         self.server_background = False
         self.server_started_at: str | None = None
@@ -888,6 +926,8 @@ class State:
         self.server_unguarded = False  # adopted, and running without mlx_guard.py
         self.server_stopping = False
         self.window = None
+        self.browser_mode = False  # no native window; the UI is a browser tab
+        self.reopened_at: float | None = None
         self.downloads: dict[str, dict] = {}
         self.install: dict = {"running": False, "kind": "", "lines": []}
         self.versions: dict = {"checked_at": None, "mlx_latest": None, "mlx_lm_latest": None}
@@ -940,7 +980,14 @@ class State:
             return "the model is loading"
         serving = self.server_proc is not None or _pid_alive(self.server_pid)
         if repo in self.server_pending or (
-            serving and (self.server_repo == repo or repo in _served_models())
+            serving
+            and repo
+            in {
+                self.server_repo,
+                *self.server_repos,
+                *_served_models(),
+                *_resident_models(_read_resident(self.server_pid)),
+            }
         ):
             return "stop the API server first"
         if self.downloads.get(repo, {}).get("status") == "running":
@@ -962,6 +1009,7 @@ class State:
                 "loading": self.loading_repo,
                 "error": self.load_error,
             }
+        view = _resident_view(self.server_pid)
         return {
             "app": {
                 "name": APP_NAME,
@@ -996,6 +1044,9 @@ class State:
             "server": {
                 "running": self.server_proc is not None or _pid_alive(self.server_pid),
                 "repo": self.server_repo,
+                "repos": list(self.server_repos),
+                **view,
+                **_server_limits(list(self.server_repos), view),
                 "port": SERVER_PORT,
                 "endpoint": f"http://{HOST}:{SERVER_PORT}/v1",
                 "tool_support": tool_support(),
@@ -1082,6 +1133,8 @@ def worker_load(repo: str) -> None:
     if previous:
         clear_mlx_cache()
         log_activity("model", previous, "info", "unloaded from memory")
+    # Before the weights are read, so the server cannot take the same room.
+    _chat_model_changed()
     log_activity("model", repo, "running", "load started")
     try:
         from mlx_lm import load
@@ -1099,6 +1152,7 @@ def worker_load(repo: str) -> None:
             STATE.load_error = str(exc)[:500]
         log_activity("model", repo, "failed", str(exc)[:300])
         log_app("error", "model load failed", repo=repo, error=str(exc)[:500])
+        _chat_model_changed()
 
 
 class DownloadCancelled(Exception):
@@ -1357,6 +1411,335 @@ def _served_models() -> set[str]:
         return set()
 
 
+def _resident_file() -> Path:
+    """What a two-model API server holds in memory (see mlx_guard.status_writer)."""
+    return APP_DIR / "server.resident.json"
+
+
+def _budget_file() -> Path:
+    """The memory a two-model server may use now (read by mlx_guard at each load)."""
+    return APP_DIR / "server.budget"
+
+
+def _read_resident(pid: int | None) -> dict:
+    """The resident file, only when the server now running wrote it."""
+    try:
+        data = json.loads(_resident_file().read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) and pid and data.get("pid") == pid else {}
+
+
+def _resident_models(data: dict) -> list[str]:
+    """Loaded models, the current one first."""
+    names = data.get("resident")
+    return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+
+
+def _resident_view(pid: int | None) -> dict:
+    data = _read_resident(pid)
+    events = data.get("events")
+    sizes = ("budget_bytes", "active_bytes", "peak_bytes")
+    oversize = data.get("oversize")
+    measured = all(isinstance(data.get(key), int) for key in sizes)
+    tokens = data.get("context_tokens")
+    return {
+        "context_tokens": tokens if isinstance(tokens, int) and tokens > 0 else None,
+        "resident": _resident_models(data),
+        # Loaded although it does not fit the budget.
+        "oversize": [n for n in oversize if isinstance(n, str)]
+        if isinstance(oversize, list)
+        else [],
+        "memory": {**{key: data[key] for key in sizes}, "measured": True} if measured else None,
+        "events": [e for e in events if isinstance(e, dict)][-5:]
+        if isinstance(events, list)
+        else [],
+        "multi_off": str(data.get("reason")) if data.get("multi") is False else None,
+    }
+
+
+GUARD_IMPORT_LOCK = threading.Lock()
+
+
+@functools.lru_cache(maxsize=1)
+def _guard_module():
+    """mlx_guard.py as a module: the app and the server share one memory formula."""
+    spec = importlib.util.spec_from_file_location("mlx_studio_guard", GUARD_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    # A __pycache__ inside the app bundle would break its signature. The switch is
+    # process wide, so two first calls must not restore it under each other.
+    with GUARD_IMPORT_LOCK:
+        before, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = before
+    return module
+
+
+def _snapshot_dir(repo: str) -> Path:
+    entry = CACHE_DIR / f"models--{repo.replace('/', '--')}"
+    try:
+        commit = (entry / "refs" / "main").read_text("utf-8").strip()
+    except (OSError, ValueError):
+        commit = ""
+    if commit:
+        return entry / "snapshots" / commit
+    try:
+        found = sorted((entry / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime)
+    except (OSError, ValueError):  # ValueError: a name with a NUL byte
+        found = []
+    return found[-1] if found else entry
+
+
+def _server_budget() -> int:
+    """Memory the server's models may use; the app's own chat model comes off it."""
+    budget = int(SERVER_RAM_FRACTION * (hardware().get("ram_bytes") or 0))
+    chat = STATE.loaded_repo or STATE.loading_repo
+    if chat:
+        budget -= _guard_module().weights_bytes(_snapshot_dir(chat))
+    return max(budget, 0)
+
+
+def _publish_server_budget() -> None:
+    """Tell a two-model server what the Chat model leaves it, from its next load."""
+    temp = _budget_file().with_suffix(".budget.tmp")
+    # 1, not 0, when nothing is left: the guard ignores a figure below 1.
+    left = str(max(_server_budget(), 1))
+    with contextlib.suppress(OSError):
+        temp.unlink(missing_ok=True)
+        # A new private file: a link planted under this name is never written through.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        with os.fdopen(os.open(temp, flags, 0o600), "w", encoding="utf-8") as handle:
+            handle.write(left)
+        temp.replace(_budget_file())
+
+
+def _chat_model_changed() -> None:
+    if len(STATE.server_repos) > 1:
+        _publish_server_budget()
+
+
+def free_memory(fresh: bool = False) -> int | None:
+    """Memory free now, or None (see mlx_guard.free_bytes). A decision reads it afresh."""
+    last = STATE.free_read
+    if fresh or last is None or time.monotonic() - last[0] >= FREE_CACHE_SECONDS:
+        last = STATE.free_read = (time.monotonic(), _guard_module().free_bytes())
+    return last[1]
+
+
+def _server_models(repos: list[str]) -> list[tuple[str, dict, int]]:
+    """``(repo, config, weight bytes)`` for each model."""
+    guard = _guard_module()
+    snapshots = [(repo, _snapshot_dir(repo)) for repo in repos]
+    return [(repo, guard.read_config(s), guard.weights_bytes(s)) for repo, s in snapshots]
+
+
+def _kv_per_token(models: list) -> int:
+    """The larger cache cost of one token: it sizes the context and the prompt cache."""
+    guard = _guard_module()
+    return max(
+        guard.kv_bytes_per_token(config) or guard.UNKNOWN_KV_PER_TOKEN for _, config, _ in models
+    )
+
+
+def _server_need(models: list, tokens: int, cache: int) -> dict:
+    """What the server takes holding ``models`` with ``tokens`` of context each."""
+    guard = _guard_module()
+    weights = sum(size for _, _, size in models)
+    reply = max(guard.kv_reserve(config, tokens) for _, config, _ in models)
+    return {
+        "weights_bytes": weights,
+        "reply_bytes": reply,
+        "cache_bytes": cache,
+        "margin_bytes": guard.MEMORY_MARGIN,
+        "total_bytes": weights + reply + cache + guard.MEMORY_MARGIN,
+    }
+
+
+def _running_needs(asked: list[str], view: dict) -> list[dict]:
+    """The running two-model server's need: the pair asked for, then the two loaded now."""
+    guard = _guard_module()
+    # A server that does not report its context was started with the ceiling.
+    tokens = view["context_tokens"] or STATE.server_context or guard.KV_TOKENS
+    cache = guard.CACHED_CONVERSATIONS * _kv_per_token(_server_models(asked)) * tokens
+    pairs = [asked, view["resident"]] if len(view["resident"]) > 1 else [asked]
+    return [_server_need(_server_models(pair), tokens, cache) for pair in pairs]
+
+
+def _server_limits(asked: list[str], view: dict) -> dict:
+    """For the snapshot: a two-model server's context, and whether free memory ran low."""
+    limits = {"context_tokens": None, "memory_low": None}
+    if len(asked) < 2 or view["multi_off"] is not None:
+        return limits
+    # No memory_low until preload finishes: preload ends with a "hit" on the first model.
+    events = view.get("events", [])
+    if events:
+        last = events[-1]
+        first_model = asked[0] if asked else None
+        if not (last.get("event") == "hit" and last.get("model") == first_model):
+            # Preload in progress or server just started; wait for stable state.
+            return limits
+    limits["context_tokens"] = view["context_tokens"] or STATE.server_context
+    # Without a measurement there is nothing to compare the free memory with.
+    free = free_memory() if view["memory"] else None
+    if free is None:
+        return limits
+    guard = _guard_module()
+    need = max(figures["total_bytes"] for figures in _running_needs(asked, view))
+    # The running process has taken its overhead already, so that is not still to come.
+    # ADR-010 deviation 1: subtract PROCESS_OVERHEAD to fire later (accepted).
+    left = need - guard.PROCESS_OVERHEAD - view["memory"]["active_bytes"]
+    short = left - (free - guard.FREE_RESERVE)
+    if short > 0:
+        limits["memory_low"] = {"free_bytes": free, "short_by_bytes": short}
+    return limits
+
+
+def chat_load_problem(repo: str) -> str | None:
+    """Why this Chat model cannot be loaded beside a two-model API server, or None."""
+    with STATE.lock:
+        pid, asked = STATE.server_pid, list(STATE.server_repos)
+        running = STATE.server_proc is not None or _pid_alive(pid)
+    view = _resident_view(pid)
+    if not running or len(asked) < 2 or view["multi_off"] is not None:
+        return None
+    share = int(SERVER_RAM_FRACTION * (hardware().get("ram_bytes") or 0))
+    chat = _guard_module().weights_bytes(_snapshot_dir(repo))
+    # The pair asked for, which can come back, and the two loaded now.
+    needs = _running_needs(asked, view)
+    need = max(figures["total_bytes"] for figures in needs)
+    server = need
+    if view["memory"]:
+        now = needs[-1]
+        used = view["memory"]["active_bytes"] + now["reply_bytes"] + now["margin_bytes"]
+        server = max(server, used)
+    if not share or not chat:
+        return None
+    if server + chat > share:
+        return (
+            "not enough memory: the API server keeps two models (about "
+            f"{server / 1e9:.1f} GB) and this model adds {chat / 1e9:.1f} GB, over the "
+            f"{share / 1e9:.1f} GB allowed. Stop the API server or choose a smaller model."
+        )
+    free = free_memory(fresh=True)
+    if free is None:
+        return None
+    guard = _guard_module()
+    held = view["memory"]["active_bytes"] if view["memory"] else 0
+    more = max(0, need - held)
+    if chat + more <= free - guard.FREE_RESERVE:
+        return None
+    return (
+        f"not enough free memory: {free / 1e9:.1f} GB free, and this model "
+        f"({chat / 1e9:.1f} GB), what the API server may still take ({more / 1e9:.1f} GB) and "
+        f"{guard.FREE_RESERVE / 1e9:.1f} GB for macOS need more. Close apps, stop the API "
+        "server or choose a smaller model."
+    )
+
+
+def _running_server_bytes() -> int:
+    """What a running server holds: a start replaces it, so that memory comes back."""
+    memory = _resident_view(STATE.server_pid)["memory"]
+    return memory["active_bytes"] if memory else 0
+
+
+def server_memory_estimate(repos: list[str], fresh: bool = False) -> dict:
+    """Calculated memory for the API server holding ``repos`` together.
+
+    For two, the context per model follows the smaller of the fixed share of RAM and
+    what is free now. One model is only described: nothing is read or refused.
+    """
+    guard = _guard_module()
+    static = _server_budget()
+    pair = len(repos) > 1
+    free = free_memory(fresh) if pair else None
+    held = _running_server_bytes() if free is not None else 0
+    budget = static
+    if free is not None:
+        budget = max(0, min(static, held + free - guard.FREE_RESERVE))
+    models = _server_models(repos)
+    kv = _kv_per_token(models)
+    weights = sum(size for _, _, size in models)
+    context = guard.context_tokens(budget, weights, kv) if pair else guard.KV_TOKENS
+    # A refused pair is described at the smallest context it would be started with.
+    tokens = max(context, guard.MIN_CONTEXT)
+    cache = guard.CACHED_CONVERSATIONS * kv * tokens if pair else 0
+    need = _server_need(models, tokens, cache)
+    items = [
+        guard.Resident(repo, size, guard.kv_reserve(config, tokens))
+        for repo, config, size in models
+    ]
+    # The guard's own rule, with the earlier model and a full prompt cache in memory.
+    earlier = weights - items[-1].weights_bytes + cache
+    plan = guard.admission_plan(items[:-1], items[-1], earlier, 0, budget, len(items))
+    fits = context >= guard.MIN_CONTEXT and not (plan.evict or plan.alone)
+    refused = None
+    if pair and not fits:
+        least = need["total_bytes"]
+        if free is not None and static >= least:
+            # Said as free memory to reach, so it compares with the free figure.
+            # "needed" is the total free memory required: need(8K) + FREE_RESERVE - held.
+            wanted = least + guard.FREE_RESERVE - held
+            refused = (
+                f"Not enough free memory for two models: {math.floor(free / 1e9 * 10) / 10:.1f} GB free, "
+                f"{math.ceil(wanted / 1e9 * 10) / 10:.1f} GB needed for 8K each. "
+                "Close other apps or start one model."
+            )
+        else:
+            refused = (
+                f"Not enough memory for two models: {static / 1e9:.1f} GB allowed for the "
+                f"API server, {math.ceil(least / 1e9 * 10) / 10:.1f} GB needed for 8K each. "
+                "Choose smaller models or start one model."
+            )
+    free_for_one = max(budget - weights - guard.MEMORY_MARGIN, 0)
+    described = []
+    for repo, config, size in models:
+        per_token, limit = guard.kv_bytes_per_token(config), guard.context_limit(config)
+        if pair:
+            safe = min(context, limit or context)
+        elif per_token:
+            safe = int(free_for_one // (guard.REPLY_FACTOR * per_token))
+            safe = min(safe, limit or safe)
+        else:
+            safe = None
+        described.append(
+            {
+                "repo": repo,
+                "weights_bytes": size,
+                "safe_context": safe,
+                "context_limit": limit,
+            }
+        )
+    return {
+        "models": described,
+        **need,
+        "budget_bytes": budget,
+        "free_bytes": free,
+        "held_bytes": held,
+        "context_tokens": context,
+        "cache_cap_bytes": cache,
+        "fits": fits,
+        "refused": refused,
+        "free_is_limit": free is not None and held + free - guard.FREE_RESERVE < static,
+    }
+
+
+def _second_model_problem(repo: str, also) -> str | None:
+    """Why the ``also`` field of a server request cannot be used, or None."""
+    if not isinstance(also, list) or not all(isinstance(name, str) for name in also):
+        return "also must be a list of model names"
+    if len(also) >= SERVER_MAX_MODELS:
+        return "only one more model can be kept loaded"
+    if not also:
+        return None
+    if also[0] == repo:
+        return "the second model must be different from the first"
+    installed = {m["repo"] for m in installed_models() if m["complete"]}
+    missing = [name for name in (repo, *also) if name not in installed]
+    return f"{missing[0]} is not installed completely" if missing else None
+
+
 def _ps_field(pid: int, field: str) -> str:
     """One ``ps`` column for a pid, in a fixed locale and zone. Empty if unknown."""
     try:
@@ -1396,10 +1779,14 @@ def _is_guarded(pid: int) -> bool:
     return f"/{GUARD_SCRIPT.name} --model " in _ps_field(pid, "command")
 
 
-def _write_server_pidfile(pid: int, repo: str, background: bool) -> None:
+def _write_server_pidfile(
+    pid: int, repo: str, background: bool, repos: list[str] | None = None
+) -> None:
     payload = {
         "pid": pid,
+        # The first model: what the identity check reads, and all older builds know.
         "repo": repo,
+        "repos": repos or [repo],
         "background": background,
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "port": SERVER_PORT,
@@ -1425,8 +1812,9 @@ def _clear_server_pidfile(only_pid: int | None = None) -> None:
             return
         if current != only_pid:
             return
-    with contextlib.suppress(OSError):
-        path.unlink(missing_ok=True)
+    for stale in (path, _resident_file(), _budget_file()):
+        with contextlib.suppress(OSError):
+            stale.unlink(missing_ok=True)
 
 
 def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
@@ -1458,37 +1846,45 @@ def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
         # the current pid is allowed to declare the server down.
         if STATE.server_pid != pid:
             return
+        names = " and ".join(
+            name.rsplit("/", maxsplit=1)[-1] for name in STATE.server_repos or [repo]
+        )
         STATE.server_proc = None
         STATE.server_pid = None
         STATE.server_repo = None
+        STATE.server_repos = []
         STATE.server_background = False
         STATE.server_started_at = None
         STATE.server_unguarded = False
         STATE.server_last_error = (
             f"exited with status {code}" if code is not None else "process gone"
         )
+        if code == -signal.SIGKILL:
+            STATE.server_last_error += ", killed, possibly out of memory"
         STATE.server_down_notice = (
-            f"API server for {repo.rsplit('/', maxsplit=1)[-1]} stopped unexpectedly "
-            f"({STATE.server_last_error})"
+            f"API server for {names} stopped unexpectedly ({STATE.server_last_error})"
         )
     _clear_server_pidfile(only_pid=pid)
     log_activity("server", repo, "failed", f"stopped unexpectedly ({STATE.server_last_error})")
     log_app("error", "api server died", repo=repo, pid=pid, exit_code=code)
 
 
-def worker_server_start(repo: str, background: bool = False, ticket: int | None = None) -> None:
+def worker_server_start(
+    repo: str, background: bool = False, ticket: int | None = None, also: list[str] | None = None
+) -> None:
     proc = None
     try:
         with STATE.server_lock:
             # Stop can win the lock while this start is still queued.
             if ticket is None or ticket == STATE.server_stops:
-                proc = _launch_server(repo, background)
+                proc = _launch_server(repo, background, *([also] if also else []))
             else:
                 log_activity("server", repo, "info", "start cancelled by Stop")
     finally:
         with STATE.lock:
-            if repo in STATE.server_pending:
-                STATE.server_pending.remove(repo)
+            for name in (repo, *(also or [])):
+                if name in STATE.server_pending:
+                    STATE.server_pending.remove(name)
     if proc is None or background:
         return
 
@@ -1503,12 +1899,24 @@ def worker_server_start(repo: str, background: bool = False, ticket: int | None 
         STATE.server_last_error = f"exited with status {proc.returncode}"
 
 
-def _launch_server(repo: str, background: bool) -> subprocess.Popen | None:
+def _launch_server(
+    repo: str, background: bool, also: list[str] | None = None
+) -> subprocess.Popen | None:
     """Replace any running API server. The caller holds ``STATE.server_lock``."""
     stop_server()
     STATE.server_lines = []
     STATE.server_down_notice = None
     STATE.server_last_error = None
+    repos = [repo, *(also or [])]
+    # Read again now that the old server has given its memory back.
+    limits = server_memory_estimate(repos, fresh=True) if len(repos) > 1 else None
+    STATE.server_context = None
+    if limits and not limits["fits"]:
+        STATE.server_last_error = "not started: not enough memory"
+        STATE.server_down_notice = limits["refused"]
+        STATE.server_lines.append(limits["refused"])
+        log_activity("server", repo, "failed", limits["refused"])
+        return None
     cmd = [
         sys.executable,
         str(GUARD_SCRIPT),
@@ -1524,10 +1932,34 @@ def _launch_server(repo: str, background: bool) -> subprocess.Popen | None:
         "--allowed-origins",
         f"http://{HOST}:{PORT},http://localhost:{PORT}",
     ]
+    if limits:
+        STATE.server_context = limits["context_tokens"]
+        # Last on the line: the identity check reads from --model onwards.
+        cmd += [
+            "--prompt-cache-bytes",
+            str(limits["cache_cap_bytes"]),
+            "--studio-also-model",
+            repos[1],
+            "--studio-max-models",
+            str(SERVER_MAX_MODELS),
+            "--studio-budget-bytes",
+            str(max(limits["budget_bytes"], 1)),
+            "--studio-kv-tokens",
+            str(limits["context_tokens"]),
+        ]
     # A request must never make the server download a model.
-    env = {**os.environ, "HF_HUB_OFFLINE": "1", "MLX_STUDIO_SERVED_FILE": str(_served_file())}
-    with contextlib.suppress(OSError):
-        _served_file().unlink(missing_ok=True)
+    env = {
+        **os.environ,
+        "HF_HUB_OFFLINE": "1",
+        "MLX_STUDIO_SERVED_FILE": str(_served_file()),
+        "MLX_STUDIO_RESIDENT_FILE": str(_resident_file()),
+        "MLX_STUDIO_BUDGET_FILE": str(_budget_file()),
+    }
+    for stale in (_served_file(), _resident_file(), _budget_file()):
+        with contextlib.suppress(OSError):
+            stale.unlink(missing_ok=True)
+    if len(repos) > 1:
+        _publish_server_budget()
     try:
         if background:
             # Detached: survives the app window closing, output goes to a file
@@ -1565,10 +1997,11 @@ def _launch_server(repo: str, background: bool) -> subprocess.Popen | None:
     STATE.server_proc = proc
     STATE.server_pid = proc.pid
     STATE.server_repo = repo
+    STATE.server_repos = repos
     STATE.server_background = background
     STATE.server_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     STATE.server_stopping = False
-    _write_server_pidfile(proc.pid, repo, background)
+    _write_server_pidfile(proc.pid, repo, background, repos)
     log_activity(
         "server",
         repo,
@@ -1622,6 +2055,7 @@ def _stop_server_locked() -> None:
             STATE.server_pid = None
             STATE.server_identity = None
             STATE.server_repo = None
+            STATE.server_repos = []
             STATE.server_background = False
             STATE.server_started_at = None
             STATE.server_down_notice = None
@@ -1653,9 +2087,13 @@ def restore_server_state() -> None:
     STATE.server_pid = pid
     STATE.server_identity = data.get("started")
     STATE.server_repo = data.get("repo")
+    repos = data.get("repos")
+    known = isinstance(repos, list) and repos and all(isinstance(n, str) for n in repos)
+    STATE.server_repos = repos if known else [data.get("repo")]
     STATE.server_background = bool(data.get("background"))
     STATE.server_started_at = data.get("started_at")
     STATE.server_stopping = False
+    _chat_model_changed()  # no Chat model yet: drops what the last session took off
     # A build without the guard may have left it. Restarting is the user's call.
     STATE.server_unguarded = not _is_guarded(pid)
     if STATE.server_unguarded:
@@ -1690,6 +2128,7 @@ REPO_ROUTES = frozenset(
         "/api/delete",
         "/api/reveal",
         "/api/server/start",
+        "/api/server/estimate",
     }
 )
 
@@ -1727,8 +2166,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- plumbing -------------------------------------------------------- #
     def end_headers(self) -> None:
-        # Here so the chat stream and the library's own error pages get it too.
+        # Here so the chat stream and the library's own error pages get them too.
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
         super().end_headers()
 
     def _allowed_hosts(self) -> set[str]:
@@ -1744,8 +2184,9 @@ class Handler(BaseHTTPRequestHandler):
         hosts = self.headers.get_all("Host") or []
         if len(hosts) != 1 or hosts[0].strip().lower() not in allowed:
             return "forbidden host"
-        origin = self.headers.get("Origin")
-        if origin is not None and origin not in {f"http://{host}" for host in allowed}:
+        # Every value counts, as in mlx_guard.py: a second header must not slip by.
+        own = {f"http://{host}" for host in allowed}
+        if any(origin not in own for origin in self.headers.get_all("Origin") or []):
             return "forbidden origin"
         return None
 
@@ -1753,8 +2194,9 @@ class Handler(BaseHTTPRequestHandler):
         reason = self._foreign_request()
         if reason:
             return 403, reason
-        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if ctype != "application/json":
+        # Exactly one, as in mlx_guard.py.
+        types = self.headers.get_all("Content-Type") or []
+        if len(types) != 1 or types[0].split(";")[0].strip().lower() != "application/json":
             return 415, "Content-Type must be application/json"
         if path not in TOKEN_EXEMPT and not self._has_token():
             return 403, BAD_TOKEN
@@ -1798,7 +2240,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         # A framed copy of the UI would send the right Origin and token.
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -1847,10 +2288,7 @@ class Handler(BaseHTTPRequestHandler):
             ".png": "image/png",
             ".ico": "image/x-icon",
         }.get(target.suffix, "application/octet-stream")
-        body = target.read_bytes()
-        if rel == "index.html":
-            body = body.replace(TOKEN_PLACEHOLDER, API_TOKEN.encode())
-        self._send(200, body, ctype)
+        self._send(200, target.read_bytes(), ctype)
 
     # -- GET ------------------------------------------------------------- #
     def do_GET(self) -> None:
@@ -1862,7 +2300,7 @@ class Handler(BaseHTTPRequestHandler):
         if reason:
             self._reject(403, reason)
             return
-        # Static files stay open: index.html is how the window gets the token.
+        # Static files stay open; they carry no token.
         if path.startswith("/api/") and path not in OPEN_GETS and not self._has_token():
             self._reject(403, BAD_TOKEN)
             return
@@ -1941,6 +2379,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/load":
+            if STATE.loaded_repo != repo:
+                # Any other name would be read as a folder path, or downloaded.
+                if repo not in _complete_models():
+                    self._json({"error": f"{repo} is not installed completely"}, 400)
+                    return
+                problem = chat_load_problem(repo)
+                if problem:
+                    log_activity("model", repo, "failed", problem)
+                    self._json({"error": problem}, 409)
+                    return
             with STATE.lock:
                 already = STATE.loaded_repo == repo
                 if already:
@@ -1974,6 +2422,7 @@ class Handler(BaseHTTPRequestHandler):
             if previous:
                 clear_mlx_cache()
                 log_activity("model", previous, "info", "unloaded from memory")
+                _chat_model_changed()
             self._json({"ok": True})
             return
 
@@ -2031,18 +2480,35 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": f"could not open Finder: {out.strip()[:200]}"}, 500)
             return
 
-        if path == "/api/server/start":
+        if path in ("/api/server/start", "/api/server/estimate"):
+            also = [] if body.get("also") is None else body["also"]
+            problem = _second_model_problem(repo, also)
+            if problem:
+                self._json({"error": problem}, 400)
+                return
+            repos = [repo, *also]
+            if path == "/api/server/estimate":
+                # A pair is checked above; one name alone is checked here.
+                if not also and repo not in _complete_models():
+                    self._json({"error": f"{repo} is not installed completely"}, 400)
+                    return
+                self._json(server_memory_estimate(repos))
+                return
+            estimate = server_memory_estimate(repos, fresh=True) if also else None
+            if estimate and not estimate["fits"]:
+                self._json({"error": estimate["refused"], "estimate": estimate}, 409)
+                return
             background = bool(body.get("background"))
             with STATE.lock:
-                deleting = repo in STATE.deleting
+                deleting = any(name in STATE.deleting for name in repos)
                 if not deleting:
-                    STATE.server_pending.append(repo)
+                    STATE.server_pending.extend(repos)
                     ticket = STATE.server_stops
             if deleting:
                 self._json({"error": "the model is being deleted"}, 409)
                 return
             threading.Thread(
-                target=worker_server_start, args=(repo, background, ticket), daemon=True
+                target=worker_server_start, args=(repo, background, ticket, also), daemon=True
             ).start()
             self._json({"ok": True, "background": background})
             return
@@ -2166,15 +2632,68 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"close_connection skipped: {exc}")
 
 
+def launch_url() -> str:
+    """The address of our own UI, with the session token. Never print or log it.
+
+    A fragment is not sent over HTTP; the page keeps it and clears the address bar.
+    """
+    return f"http://{HOST}:{PORT}/#t={API_TOKEN}"
+
+
+def open_in_browser(url: str) -> bool:
+    """Open our URL in the default browser without putting it on a command line.
+
+    Other users can read command lines with ps, so osascript gets it on stdin, and
+    the fallback opens it inside this process. ``webbrowser`` is not used: it runs
+    ``/usr/bin/open <url>``.
+    """
+    # Nothing that could end the AppleScript string.
+    if not re.fullmatch(r"http://[\w.:/#=-]+", url):
+        raise ValueError("not an MLX Studio address")
+    try:
+        done = subprocess.run(
+            ["/usr/bin/osascript"],
+            input=f'open location "{url}"'.encode(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+        if done.returncode == 0:
+            return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        from AppKit import NSWorkspace
+        from Foundation import NSURL
+
+        if NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(url)):
+            return True
+    except Exception as exc:  # the type only: a message may quote the address
+        log_app("warning", "in-process open failed", error=type(exc).__name__)
+    advice = f"could not open the browser: quit {APP_NAME} and open it again from its icon"
+    log_app("warning", advice)
+    print(advice)
+    return False
+
+
 def focus_window() -> bool:
     """Bring the existing window to the front. Safe to call from a handler thread.
 
     pywebview's cocoa backend routes show/restore through AppHelper.callAfter, so
-    this does not touch AppKit off the main thread.
+    this does not touch AppKit off the main thread. In browser mode only this
+    process knows the token, so it opens the tab again.
     """
     window = STATE.window
     if window is None:
-        return False
+        if not STATE.browser_mode:
+            return False
+        with REOPEN_LOCK:
+            now = time.monotonic()
+            if STATE.reopened_at is not None and now - STATE.reopened_at < REOPEN_SECONDS:
+                return False
+            STATE.reopened_at = now
+        return open_in_browser(launch_url())
     try:
         window.restore()
         window.show()
@@ -2212,6 +2731,44 @@ def request_focus_from_running_instance() -> bool:
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
+def adopt_bundle_identity() -> None:
+    """In the .app, show its name and icon: the launcher execs Python's own app.
+
+    The icon is what the Dock and the confirm() boxes show. Does nothing outside
+    the bundle. Cosmetic, so a failure is only logged.
+    """
+    in_bundle = APP_ICON.parent.parts[-2:] == ("Contents", "Resources")
+    if sys.platform != "darwin" or not in_bundle or not APP_ICON.is_file():
+        return
+    # The name first: AppKit reads it when the application object is made.
+    try:
+        from Foundation import NSBundle
+
+        bundle = NSBundle.mainBundle()
+        for info in (bundle.localizedInfoDictionary(), bundle.infoDictionary()):
+            if info is not None:
+                info["CFBundleName"] = APP_NAME
+    except Exception as exc:
+        log_app("warning", "could not set the app name", error=str(exc)[:200])
+    try:
+        from AppKit import NSApplication, NSImage
+
+        image = NSImage.alloc().initWithContentsOfFile_(str(APP_ICON))
+        if image is None:
+            raise ValueError("unreadable icon file")
+        app = NSApplication.sharedApplication()
+        app.setActivationPolicy_(0)  # a Dock app first, the order pywebview uses
+        app.setApplicationIconImage_(image)
+        # NSAlert, the confirm() box, still drew Python's icon after that call
+        # (macOS 27): it looks the icon up by this name, so the name moves too.
+        old = NSImage.imageNamed_("NSApplicationIcon")
+        if old is not None:
+            old.setName_(None)
+        image.setName_("NSApplicationIcon")
+    except Exception as exc:
+        log_app("warning", "could not set the app icon", error=str(exc)[:200])
+
+
 def serve() -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     httpd.daemon_threads = True
@@ -2259,12 +2816,15 @@ def main() -> None:
     log_activity("app", "-", "info", f"{APP_NAME} {APP_VERSION} launched")
     restore_server_state()
 
+    # At debug level pywebview logs the window address, which holds the token.
+    os.environ.pop("PYWEBVIEW_LOG", None)
     try:
         import webview
 
+        adopt_bundle_identity()
         STATE.window = webview.create_window(
             f"{APP_NAME} {APP_VERSION}",
-            url,
+            launch_url(),
             width=1360,
             height=900,
             min_size=(1080, 720),
@@ -2272,11 +2832,13 @@ def main() -> None:
         )
         webview.start()
     except Exception as exc:
-        log_app("warning", "native window unavailable, using browser", error=str(exc))
-        print(f"native window unavailable ({exc}); opening browser")
-        import webbrowser
-
-        webbrowser.open(url)
+        # A library error may quote the address it was loading.
+        reason = str(exc).replace(API_TOKEN, "<token>")
+        log_app("warning", "native window unavailable, using browser", error=reason)
+        print(f"native window unavailable ({reason}); opening browser")
+        STATE.window = None  # it may exist but never have started
+        STATE.browser_mode = True
+        open_in_browser(launch_url())
         try:
             while True:
                 time.sleep(1)

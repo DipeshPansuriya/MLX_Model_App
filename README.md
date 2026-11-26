@@ -14,8 +14,11 @@ for DeepSeek Harness or any OpenAI-compatible client, and review a day-to-day
 activity log. It also reports installed versions and tells you when updates are
 available.
 
-> This page describes the **2.0.9 source**, which is not released yet. The
-> screenshots show an earlier version.
+> This page describes **2.0.9**, released on 2026-11-26 as the
+> [latest release](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
+> Text marked **unreleased** is in the working source for 2.0.10 only and is not
+> in the released app ([CHANGELOG](CHANGELOG.md)). The screenshots show an
+> earlier version.
 
 ![Chat view](screenshots/02-chat-loaded.png)
 
@@ -38,7 +41,7 @@ the old one, checks the signature, then swaps them and opens the app.
 | Note | Detail |
 |---|---|
 | Fails closed | No checksum line for the file, or a mismatch, means nothing is installed |
-| Availability | Needs a line for the version in `release/SHA256SUMS` on `main`. The file is not there yet: it starts with the built and verified 2.0.9, and 2.0.8 is not backfilled ([release steps](docs/DEPLOYMENT.md)). Versions with no line are refused |
+| Availability | Needs a line for the version in `release/SHA256SUMS` on `main`. The file lists the 2.0.9 dmg and pkg. 2.0.8 and older are not backfilled ([release steps](docs/DEPLOYMENT.md)). Versions with no line are refused |
 | Signature | Ad-hoc: it detects a damaged bundle, not who published it |
 | Options | `--version <x.y.z>`, `--dir ~/Applications`, `--no-launch` |
 
@@ -196,6 +199,7 @@ The double-clicked app does not look in that folder.
   the command line and start time still match.
 - If the server dies, the view shows a banner with **Restart** and records the
   event.
+- Unreleased: can keep [two models loaded](#one-or-two-models) at once.
 
 ### Activity
 - Filterable log of chats, loads, downloads, deletes, installs and server events.
@@ -255,7 +259,8 @@ Needs the Xcode command line tools (`clang`).
 ```
 
 The script compiles `packaging/launcher.c` for macOS 12.0 and stops if the binary
-reports a different minimum. Release files are generated from that exact build
+reports a different minimum. Unreleased: it also stops if `codesign` fails or
+`app.py` lacks exactly one `APP_VERSION = "X.Y.Z"` line. Release files are generated from that exact build
 (Python 3.11+), never edited by hand:
 
 ```bash
@@ -329,12 +334,35 @@ The figures are for a 32 GB Mac and are **calculated from measured bytes per
 token, not load-tested**. They include the reply. 500K or 1M context is not
 proven and is not recommended here.
 
-### One model at a time
+### One or two models
 
-The API server holds one model. A request naming another downloaded model makes it
-swap, after the running work finishes, which adds load time. The model loaded in
-the **Chat** tab is separate and uses its own memory; unload it if you only need
-the server.
+In the released 2.0.9 the API server holds one model. A request naming another
+downloaded model makes it swap, after the running work finishes, which adds load
+time. The model loaded in the **Chat** tab is separate and uses its own memory;
+unload it if you only need the server.
+
+**Unreleased (2.0.10 source):** the API Server tab has a second picker, **Also
+keep loaded (optional)**.
+
+| Point | Behaviour |
+|---|---|
+| Address | Both models answer on `http://127.0.0.1:8080/v1`; the client chooses by model name |
+| Turns | One model replies at a time. A request for the other waits for the running replies, then the server switches |
+| Third model | Naming another downloaded model evicts the least recently used one. If memory is still short, the server trims the prompt cache when that is enough; otherwise it evicts the other model too |
+| Memory | Budget is the smaller of 0.52 × RAM (less the Chat model's weights) and live free memory (free + speculative + purgeable + file-backed pages, minus 2 GB for macOS). An estimate is shown; **Start** is refused if the pair does not fit at 8,192 tokens each. A model that does not fit even on its own is still loaded alone, and the view warns **Loaded without enough memory** |
+| Chat tab | A Chat model loads only if it fits beside the two models. Otherwise the load is refused with the figures: stop the API server or choose a smaller model |
+| Refused Load | The reason stays in a panel at the bottom right until **Dismiss** or the next load |
+| Context | Context per model (T) is computed from the budget: T = min(32,768, floor((budget − weights − 1.4 GB) / (5.1 × KV per token)) rounded down to 1,024). If T < 8,192 the pair is refused. Set the client's context window to the shown "safe context" or lower |
+| Choosing **None** | One model, started with the same command as 2.0.9; the view adds a measured memory line |
+| Older or changed `mlx-lm` hooks | The server keeps one model and the app says why |
+
+Known limits: real two-model memory use, cache trim, eviction, switch time and
+swap are **not measured** on real models. The Chat tab check counts model weights,
+not that model's reply cache. A server started while a Chat model is loaded keeps
+the lower budget until it is restarted; a background server left running after you
+quit keeps a lowered budget until the app opens again. Any local program using
+port 8080 can make the server switch models, and a switch between two loaded
+models does no memory check. More: [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -410,7 +438,7 @@ MLX_Model_App/
 ├── docs/                       # PRD, architecture, design, ADRs, diagrams
 ├── release/
 │   ├── latest.json             # update manifest served to installed copies
-│   └── SHA256SUMS              # per-file checksums (not created yet)
+│   └── SHA256SUMS              # per-file checksums, read by the installer
 ├── screenshots/                # captured views
 ├── Run_MLX_Manager.command     # Finder launcher
 ├── run.sh                      # terminal launcher
@@ -439,6 +467,13 @@ server on 8080 has the rules listed above. Neither has user authentication: othe
 programs on the same Mac can still use them, and one can fetch `/` on 8765 to read
 the token. Chat prompts are not written to the activity log.
 
+**Unreleased (2.0.10 source):** `/` no longer holds the token (it goes to the
+window in the URL fragment), every `Origin` header is checked, and replies carry a
+full `Content-Security-Policy`. A POST needs exactly one `Content-Type`, and
+`PYWEBVIEW_LOG` is ignored. In browser mode, if the browser cannot be opened, quit
+MLX Studio and open it again from its icon. This is still not user
+authentication. Remaining limits: [docs/SECURITY.md](docs/SECURITY.md) section 5.
+
 Known open risk: any local program can use port 8080 and switch between
 downloaded models.
 
@@ -462,8 +497,9 @@ results on every PR. See [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md).
 App API on `http://127.0.0.1:8765`, used by the window. Every `/api/*` request,
 GET and POST, needs the `X-MLX-Token` header (`403` without it); the exceptions
 are `GET /api/ping` and `POST /api/focus`. POSTs also need
-`Content-Type: application/json`. The app puts the token into its page, which any
-local program can fetch, so it is not user authentication.
+`Content-Type: application/json`. In 2.0.9 the app puts the token into its page,
+which any local program can fetch, so it is not user authentication. In the
+unreleased source the page no longer holds it.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -479,7 +515,7 @@ local program can fetch, so it is not user authentication.
 | GET | `/api/logs/files` | Files in the log folder |
 | GET | `/api/logs/export` | Zip of the log folder + `environment.json` |
 | POST | `/api/focus` | Raise the window (used by a second launch) |
-| POST | `/api/load` `{repo}` | Load a model |
+| POST | `/api/load` `{repo}` | Load a model. Unreleased: `400` if not installed completely, `409` if it does not fit beside a two-model server |
 | POST | `/api/unload` | Unload the model |
 | POST | `/api/chat` `{messages}` | SSE stream: `token`, `done`, `error` |
 | POST | `/api/chat/stop` | Cancel generation |
@@ -487,7 +523,8 @@ local program can fetch, so it is not user authentication.
 | POST | `/api/download/cancel` `{repo}` | Cancel a running download |
 | POST | `/api/delete` `{repo}` | Delete a cached model |
 | POST | `/api/reveal` `{repo}` | Show a cached model in Finder |
-| POST | `/api/server/start` `{repo, background}` | Start the API server |
+| POST | `/api/server/start` `{repo, background}` | Start the API server. Unreleased: optional `also` with one more model |
+| POST | `/api/server/estimate` `{repo, also}` | Unreleased: memory estimate for the choice |
 | POST | `/api/server/stop` | Stop it |
 | POST | `/api/server/notice/clear` | Dismiss the "server stopped" banner |
 | POST | `/api/install` `{kind}` | `install` \| `update` \| `reinstall` |
@@ -506,6 +543,8 @@ local program can fetch, so it is not user authentication.
 | Launch log | `~/.mlx_studio/logs/launch.log` |
 | Background server output | `~/.mlx_studio/logs/server.log` |
 | Background server pid | `~/.mlx_studio/server.pid` |
+| Loaded models and memory (unreleased) | `~/.mlx_studio/server.resident.json`, removed on stop |
+| Two-model memory budget (unreleased) | `~/.mlx_studio/server.budget`, removed on stop |
 
 Logs rotate at 2 MB with three backups (`server.log` before a background start).
 The folder is `0700`. The activity, application, launch and server logs are
@@ -549,7 +588,13 @@ launcher needs Python 3.10+.
 in your default browser.
 
 **"invalid session token; reload the window"**: a window or tab from an earlier
-launch. Reload it.
+launch. Reload it. In the unreleased source the message is **"invalid session
+token; open MLX Studio again from its icon"**, and reloading does not help.
+
+**"This page has no session. Open MLX Studio from its app icon."** (unreleased):
+the page was opened without the app, for example from a bookmark. Open the app; in
+browser mode a second launch opens a new tab (not checked live: if an icon click
+only brings the running app forward, quit it and open it again).
 
 **Port 8765 busy**: another program holds it. A second MLX Studio launch only
 raises the first window.
