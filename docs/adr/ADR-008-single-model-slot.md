@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "ADR-008 — One resident model at a time"
-status: "Accepted"
+status: "Superseded"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -12,6 +12,9 @@ related:
 ---
 
 # ADR-008 — One resident model at a time
+
+> **Superseded** by [ADR-011](ADR-011-chat-through-the-api-server.md) in the
+> 2.0.13 source (unreleased). Released builds still follow this record.
 
 ## 1. Decision
 

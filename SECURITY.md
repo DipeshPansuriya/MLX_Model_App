@@ -78,7 +78,7 @@ These are known and documented, not vulnerabilities:
 Also fixed in the unreleased 2.0.10 source: port 8765 needs exactly one
 `Content-Type` on a POST; `PYWEBVIEW_LOG` is ignored; the memory budget file is
 written and read without following links, and bad values in it are ignored (N1,
-N2); `/api/load` accepts only a completely installed model (N3).
+N2); `/api/load` accepted only a completely installed model (N3; the route is removed in the 2.0.13 source).
 
 ## More detail
 

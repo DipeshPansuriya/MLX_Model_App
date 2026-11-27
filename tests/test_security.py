@@ -53,7 +53,7 @@ class TestHost:
 
     def test_foreign_host_post_is_rejected_even_with_the_token(self, server, app_module):
         status = request(
-            server, "POST", "/api/unload", b"{}", good_headers(app_module), host="evil.example"
+            server, "POST", "/api/chat/stop", b"{}", good_headers(app_module), host="evil.example"
         )[0]
         assert status == 403
 
@@ -75,11 +75,11 @@ class TestCrossSitePost:
     @pytest.mark.parametrize("origin", ["https://evil.example", "null", "http://127.0.0.1:1"])
     def test_foreign_origin_is_rejected_even_with_the_token(self, server, app_module, origin):
         headers = {**good_headers(app_module), "Origin": origin}
-        assert request(server, "POST", "/api/unload", b"{}", headers)[0] == 403
+        assert request(server, "POST", "/api/chat/stop", b"{}", headers)[0] == 403
 
     def test_non_json_content_type_is_415(self, server, app_module):
         headers = {**good_headers(app_module), "Content-Type": "text/plain"}
-        assert request(server, "POST", "/api/unload", b"{}", headers)[0] == 415
+        assert request(server, "POST", "/api/chat/stop", b"{}", headers)[0] == 415
 
     @pytest.mark.parametrize("token", [None, "", "wrong"])
     def test_post_without_the_launch_token_is_rejected(self, server, token):
@@ -91,7 +91,7 @@ class TestCrossSitePost:
     def test_own_ui_post_is_accepted(self, server, app_module):
         port = server.server_address[1]
         headers = {**good_headers(app_module), "Origin": f"http://127.0.0.1:{port}"}
-        assert request(server, "POST", "/api/unload", b"{}", headers)[0] == 200
+        assert request(server, "POST", "/api/chat/stop", b"{}", headers)[0] == 200
 
     def test_focus_needs_no_token_but_stays_same_origin(self, server):
         json_type = {"Content-Type": "application/json"}
@@ -164,7 +164,7 @@ def with_origins(server, app_module, method, path, origins):
         conn.close()
 
 
-CALLS = [("GET", "/api/logs"), ("POST", "/api/unload")]
+CALLS = [("GET", "/api/logs"), ("POST", "/api/chat/stop")]
 EVIL = "https://evil.example"
 
 
@@ -287,7 +287,9 @@ def test_two_host_headers_are_refused(server, app_module, method, order):
     hosts = {"good": f"127.0.0.1:{port}", "evil": "evil.example"}
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        conn.putrequest(method, "/api/ping" if method == "GET" else "/api/unload", skip_host=True)
+        conn.putrequest(
+            method, "/api/ping" if method == "GET" else "/api/chat/stop", skip_host=True
+        )
         for name in order:
             conn.putheader("Host", hosts[name])
         body = b"{}" if method == "POST" else None
@@ -390,9 +392,13 @@ class TestNoSniff:
         assert (got, headers.get_all("X-Content-Type-Options")) == (status, ["nosniff"])
 
     def test_the_chat_stream(self, server, app_module, monkeypatch):
-        monkeypatch.setattr(app_module, "stream_chat", lambda *a: iter([("done", {})]))
-        app_module.STATE.model, app_module.STATE.loaded_repo = object(), "org/model"
-        body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+        monkeypatch.setattr(
+            app_module, "stream_chat", lambda *a: (e for e in [("done", {"tokens": 0, "tps": 0})])
+        )
+        monkeypatch.setattr(app_module, "_chat_problem", lambda repo: None)
+        body = json.dumps(
+            {"repo": "org/model", "messages": [{"role": "user", "content": "hi"}]}
+        ).encode()
         got, headers, _ = request(server, "POST", "/api/chat", body, good_headers(app_module))
         assert (got, headers["X-Content-Type-Options"]) == (200, "nosniff")
 
@@ -412,9 +418,11 @@ def test_log_wording_does_not_claim_prompts_are_recorded():
 
 def test_chat_text_is_not_written_to_the_logs(server, app_module, monkeypatch):
     done = [("token", "secret-reply"), ("done", {"tokens": 1, "tps": 2})]
-    monkeypatch.setattr(app_module, "stream_chat", lambda *a: iter(done))
-    app_module.STATE.model, app_module.STATE.loaded_repo = object(), "org/model"
-    body = json.dumps({"messages": [{"role": "user", "content": "secret-prompt"}]}).encode()
+    monkeypatch.setattr(app_module, "stream_chat", lambda *a: (e for e in done))
+    monkeypatch.setattr(app_module, "_chat_problem", lambda repo: None)
+    body = json.dumps(
+        {"repo": "org/model", "messages": [{"role": "user", "content": "secret-prompt"}]}
+    ).encode()
     assert request(server, "POST", "/api/chat", body, good_headers(app_module))[0] == 200
     written = "".join(p.read_text("utf-8") for p in app_module.LOG_DIR.iterdir() if p.is_file())
     assert "1 tokens" in written

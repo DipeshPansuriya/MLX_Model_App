@@ -21,6 +21,22 @@ related:
 > then built. Where a requirement is aspirational it is marked **Design** or
 > **Open** and listed in §9. Nothing here claims a customer sign-off.
 
+> 2.0.13 source (unreleased): F5, F7 and F8 (load, unload, loaded-model delete
+> guard) are replaced. Chat uses the models the running API server serves
+> ([ADR-011](adr/ADR-011-chat-through-the-api-server.md)). The text below that
+> mentions **Load** or **Unload** describes released builds.
+
+> 2.0.13 source (unreleased) also adds:
+>
+> | ID | Requirement | Accepted when |
+> |---|---|---|
+> | C1 | Settings for all models or one, on their own page | Each field shows the effective value; Save stores only changes; Reset clears one entry; invalid values are named and not sent; a lowered context is said |
+> | L1 | Load test of one model at chosen sizes | Offered and typed sizes; refused while the API server runs; progress and Cancel; no chosen size built in |
+> | L2 | Memory safety, shown plainly | Skip over the gate, kill at the kill line, larger sizes not run; the page says 80% cannot be guaranteed |
+> | L3 | Results that can be used | Size, speeds, first-token time, peak memory, settings; earlier runs; Apply only on passed, current rows |
+>
+> Verified with fakes only; no real model.
+
 ## 1. Purpose and premise
 
 Apple Silicon Macs run large language models well because CPU and GPU share one
@@ -89,7 +105,7 @@ person, one Mac, one process.
 | ID | Requirement | Acceptance |
 |---|---|---|
 | F1 | Launch into a native window, not a terminal | A 1360×900 window opens; `pywebview` present. Fallback: default browser at the same URL |
-| F2 | Six destinations reachable without a reload | Chat, Models, Download, API Server, Activity, Setup switch instantly; the URL hash tracks the active view and browser Back works |
+| F2 | Eight destinations reachable without a reload (six in released builds) | API Server, Chat, Models, Download, Configuration, Load Test, Activity, Setup switch instantly (2.0.13 order; the app opens on API Server); the URL hash tracks the active view and browser Back works |
 | F3 | Report the app version | Sidebar shows `v2.0.0`; Setup shows version, latest release and channel |
 | F4 | Report hardware | Sidebar and Setup show chip and unified memory, e.g. `Apple M6 · 32 GB` |
 

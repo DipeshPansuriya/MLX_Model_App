@@ -79,16 +79,9 @@ class TestLaunch:
 
     def test_one_model_is_launched_as_before(self, app_module, monkeypatch, ram):
         cmd = launched(app_module, monkeypatch)["cmd"]
-        assert not [p for p in cmd if p.startswith(("--studio", "--prompt-cache"))]
-        assert cmd[-2] == "--allowed-origins"
-
-    def test_the_chat_model_in_the_app_comes_off_the_budget(self, app_module, monkeypatch, ram):
-        for repo in (A, B, "org/chat"):
-            cache_model(app_module, repo, weights=5000)
-        app_module.STATE.loaded_repo = "org/chat"
-        cmd = launched(app_module, monkeypatch, [B])["cmd"]
-        budget = cmd[cmd.index("--studio-budget-bytes") + 1]
-        assert int(budget) == int(0.52 * RAM) - 5000
+        assert not [p for p in cmd if p.startswith(("--studio", "--prompt-cache-bytes"))]
+        assert cmd[cmd.index("--prompt-cache-size") + 1] == "2"
+        assert cmd[-4] == "--allowed-origins"  # then only the cache size
 
     def test_state_and_pidfile_name_both(self, app_module, monkeypatch, ram):
         class Proc:
@@ -385,7 +378,7 @@ class TestEstimate:
         cache_model(app_module, A, config={})
         est = app_module.server_memory_estimate([A])
         assert est["models"][0]["safe_context"] is None
-        assert est["reply_bytes"] == int(3.1 * 131_072 * 32768)
+        assert est["reply_bytes"] == int(6.4 * 131_072 * 32768)  # one model's factor
 
     def test_importing_the_guard_writes_no_bytecode_into_the_bundle(
         self, app_module, monkeypatch, tmp_path

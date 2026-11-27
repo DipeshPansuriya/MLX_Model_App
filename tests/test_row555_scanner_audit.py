@@ -303,7 +303,7 @@ class Audit:
             "app.py",
             'HOST = "127.0.0.1"\n'
             "# STATIC_FILES.get(rel) _build_static_allowlist MAX_BODY\n"
-            "# unload the model first; truststore.inject_into_ssl\n",
+            "# stop the API server first; truststore.inject_into_ssl\n",
         )
         self.write(".gitignore", "dist/\n*.dmg\n*.app/\n__pycache__/\n.env\n*.safetensors\n")
         # The real pip-audit reaches PyPI, so every run gets a stand-in that
@@ -363,6 +363,21 @@ def test_a_clean_tree_passes_the_whole_audit(audit):
     audit.bundle()
     code, output = audit.run(platform="linux")
     assert code == 0, output
+
+
+def test_sa05_finds_the_delete_guard_by_its_current_words(audit):
+    # The words app.py answers with when a held model is to be deleted.
+    real = (ROOT / "app.py").read_text("utf-8")
+    assert 'return "stop the API server first"' in real
+    _, output = audit.run()
+    assert "PASS SA-05 delete refuses a model the server holds" in results(output, "SA-05")
+
+
+def test_sa05_warns_when_the_delete_guard_is_gone(audit):
+    app = audit.root / "app.py"
+    audit.write("app.py", app.read_text("utf-8").replace("stop the API server first", "gone"))
+    _, output = audit.run()
+    assert "WARN SA-05 loaded-model delete guard not found" in results(output, "SA-05")
 
 
 def test_sa07_passes_a_clean_tree(audit):

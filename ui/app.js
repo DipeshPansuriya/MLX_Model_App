@@ -9,7 +9,9 @@ const state = {
   messages: [],
   streaming: false,
   pollTimer: null,
-  lastLoaded: null,
+  // The model the user chats with, and whether the server can be asked.
+  chatModel: "",
+  chatStatus: "",
   catalog: null,
   search: null,
   searchSeq: 0,
@@ -32,6 +34,12 @@ const state = {
   lastApplyNotice: null,
   estimate: null,
   estimateError: "",
+  view: "",
+  // The Configuration page: whose values it shows, and each field as it was loaded.
+  config: { repo: "", view: null, loaded: {}, seq: 0 },
+  // The Load Test page: the model, its figures and what the user chose.
+  lt: { repo: "", view: null, seq: 0, picked: new Set(), extra: [], loaded: {},
+    signature: "", testing: false, sending: false },
 };
 
 /* ───────────── utilities ───────────── */
@@ -81,9 +89,9 @@ function setHTML(el, html) {
 function focusedSelector(el) {
   const now = document.activeElement;
   if (!now || !el.contains?.(now)) return "";
-  // A button with a slot keeps it when its action changes (Load becomes Unload).
+  // A button with a slot keeps it when its action changes (Download becomes Installed).
   return Object.entries(now.dataset || {})
-    .filter(([k]) => !(now.dataset.slot && ["act", "catDownload", "catLoad"].includes(k)))
+    .filter(([k]) => !(now.dataset.slot && ["act", "catDownload"].includes(k)))
     .map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(v)}"]`)
     .join("");
 }
@@ -107,27 +115,6 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
-}
-
-/* ───────────── loading a Chat model ───────────── */
-// A refused load stays on screen, and is announced, until the next try or Dismiss.
-// A toast was gone before a refusal with figures could be read.
-function showLoadProblem(text) {
-  setText($("#loadProblem"), text);
-  $("#loadProblemBox").classList.toggle("show", !!text);
-  $("#loadProblemDismiss").hidden = !text;
-}
-
-// True when the app accepted the load.
-async function loadModel(repo) {
-  showLoadProblem("");
-  try {
-    await api("/api/load", { method: "POST", body: JSON.stringify({ repo }) });
-    return true;
-  } catch (err) {
-    showLoadProblem(err.message);
-    return false;
-  }
 }
 
 /* ───────────── copy model name ───────────── */
@@ -181,10 +168,11 @@ function notify(title, body) {
 }
 
 /* ───────────── navigation ───────────── */
-const VIEWS = ["chat", "models", "download", "server", "logs", "settings"];
+const VIEWS = ["server", "chat", "models", "download", "config", "loadtest",
+  "logs", "settings"];
 
 function showView(name) {
-  if (!VIEWS.includes(name)) name = "chat";
+  if (!VIEWS.includes(name)) name = VIEWS[0];
   $$(".nav-item").forEach((b) => {
     const current = b.dataset.view === name;
     b.classList.toggle("active", current);
@@ -196,6 +184,9 @@ function showView(name) {
   if (name === "logs") loadLogs();
   if (name === "models") refreshModels();
   if (name === "download") loadCatalog();
+  state.view = name;
+  if (name === "config") loadConfig();
+  if (name === "loadtest") loadLoadTest();
 }
 $$(".nav-item").forEach((btn) => btn.addEventListener("click", () => showView(btn.dataset.view)));
 window.addEventListener("hashchange", () => showView(location.hash.slice(1)));
@@ -224,61 +215,37 @@ function refreshState() {
 }
 
 function render(snap) {
-  const { app, hardware, python, versions, models, loaded, server, downloads, install } = snap;
+  const { app, hardware, python, versions, models, server, downloads, install } = snap;
 
   // sidebar
   setText($("#appVersion"), `v${app.version}`);
   setText($("#hwInfo"), `${hardware.chip}\n${hardware.ram} unified`);
-
-  const loadedName = loaded.repo ? loaded.repo.split("/").pop() : null;
-  const globalDot = $("#globalDot");
-  const globalStatus = $("#globalStatus");
-  if (loaded.loading) {
-    globalDot.className = "dot dot-live";
-    setText(globalStatus, `Loading ${loaded.loading.split("/").pop()}…`);
-  } else if (loaded.repo) {
-    globalDot.className = "dot dot-ok";
-    setText(globalStatus, loadedName);
-  } else {
-    globalDot.className = "dot dot-warn";
-    setText(globalStatus, "No model loaded");
-  }
 
   const updateAvailable =
     versions.mlx_update || versions.mlx_lm_update || versions.huggingface_hub_update ||
     versions.mlx_missing || app.update;
   $("#navUpdateDot").classList.toggle("hidden", !updateAvailable);
 
-  // chat header
-  const loadState = $("#loadState");
-  if (loaded.loading) {
-    setHTML(loadState, `<span class="dot dot-live"></span>Loading ${esc(loaded.loading.split("/").pop())}…`);
-  } else if (loaded.repo) {
-    setHTML(loadState, `<span class="dot dot-ok"></span>Loaded — ${esc(loadedName)}`);
-  } else if (loaded.error) {
-    setHTML(loadState, `<span class="dot dot-bad"></span>Load failed`);
-  } else {
-    setHTML(loadState, `<span class="dot dot-warn"></span>Not loaded`);
-  }
-  $("#loadBtn").hidden = !!loaded.repo || !!loaded.loading;
-  $("#unloadBtn").hidden = !loaded.repo;
-  $("#loadBtn").disabled = !!loaded.loading;
+  renderChat(server);
 
   // server
   const held = document.activeElement;
   const unguarded = !!(server.running && server.unguarded);
-  const runningDot = unguarded ? "dot-warn" : "dot-ok";
+  const unloaded = !!(server.running && server.load_failed);
+  const runningDot = unloaded ? "dot-bad" : unguarded ? "dot-warn" : "dot-ok";
   $("#serverUnguarded").hidden = !unguarded;
   if (unguarded && !state.lastServerUnguarded) {
     toast("Restart the API server to apply the 2.0.10 protection (API Server page)", true);
   }
   state.lastServerUnguarded = unguarded;
   setHTML($("#serverState"), server.running
-    ? `<span class="dot ${runningDot}"></span>${esc(runningNames(server))}`
+    ? `<span class="dot ${runningDot}"></span>${esc(unloaded
+      ? "Model not loaded: press Stop, then Start Server" : runningNames(server))}`
     : `<span class="dot dot-warn"></span>Stopped`);
   $("#navServerDot").className = "dot " + (server.running ? runningDot : "");
   setText($("#navServerText"),
-    unguarded ? "server unprotected" : server.running ? "server running" : "server stopped");
+    unloaded ? "model not loaded" : unguarded ? "server unprotected"
+      : server.running ? "server running" : "server stopped");
   setText($("#endpointText"), server.endpoint);
   setText($("#serverModePill"), unguarded ? "unprotected" : server.running
     ? (server.background ? "background" : "foreground")
@@ -395,7 +362,6 @@ function render(snap) {
 
   // model dropdowns
   const ready = models.filter((m) => m.complete !== false).map((m) => m.repo);
-  fillSelect("#chatModelSelect", ready, loaded.repo);
   state.readyModels = ready;
   renderServerMemory(server);
   refreshEstimate(snap);
@@ -405,10 +371,12 @@ function render(snap) {
     ["#serverUnguardedRestart", "#serverUnguarded"]];
   if (gone.some(([button, box]) => held === $(button) && $(box).hidden)) spareControl().focus();
   renderToolsWarning(server);
-  renderModelCards(models, loaded, downloads);
+  renderModelCards(models, server, downloads);
   renderDownloads(downloads);
   renderCatalog();
   renderSearch();
+  renderConfigPage(server);
+  renderLoadTest(snap);
 }
 
 // target is the version the Install button would apply, if newer than current.
@@ -453,7 +421,7 @@ function serverSet() {
 function serverPending() {
   const server = state.server;
   return !!server?.running && (!sameSet(serverSet(), runningSet(server)) ||
-    $("#serverBackground").checked !== !!server.background);
+    $("#serverBackground").checked !== !!server.background || !!server.settings_pending);
 }
 
 // The model fields of a start request.
@@ -536,6 +504,613 @@ function multiNotice(server) {
     : nothing;
 }
 
+/* ───────────── configuration page ───────────── */
+const CONFIG_KEYS = ["max_context_tokens", "server_max_reply_tokens", "chat_max_reply_tokens",
+  "chat_temperature", "chat_top_p", "prompt_cache_size", "prompt_cache_bytes",
+  "mlx_cache_limit_mb", "two_model_context_tokens", "memory_limit_percent",
+  "performance_mode", "kv_bits", "kv_group_size", "prefill_step_size"];
+const PERF_NAMES = { standard: "Standard", save_memory: "Save memory", advanced: "Advanced" };
+const KV_GROUPS = [32, 64, 128];
+const ALL_MODELS = "All models (defaults)";
+
+const configField = (key) => $(`#cfg-${key}`);
+const repoQuery = (repo) => (repo ? `?repo=${encodeURIComponent(repo)}` : "");
+
+// Whether a field holds something the user typed and has not saved.
+function configEdited(key) {
+  const input = configField(key);
+  const loaded = state.config.loaded[key];
+  return loaded !== undefined && !input.disabled &&
+    (input.value.trim() !== loaded || !!input.validity?.badInput);
+}
+const configDirty = () => CONFIG_KEYS.some(configEdited);
+
+function fieldError(key, message) {
+  const input = configField(key);
+  if (message) input.setAttribute("aria-invalid", "true");
+  else input.removeAttribute("aria-invalid");
+  setText($(`#cfg-${key}-error`), message);
+}
+
+function clearConfig() {
+  state.config.view = null;
+  state.config.loaded = {};
+  for (const key of CONFIG_KEYS) {
+    configField(key).value = "";
+    fieldError(key, "");
+    setText($(`#cfg-${key}-now`), "");
+  }
+  for (const id of ["#configError", "#configClamp", "#configTestWarn"]) setText($(id), "");
+  $("#configSaveBtn").disabled = $("#configResetBtn").disabled = true;
+  setText($("#cfg-performance_mode-blocked"), "");
+  paintPerformance();
+}
+
+// The raw fields show only under Advanced; 4-bit is never chosen without a warning.
+function paintPerformance() {
+  const view = state.config.view;
+  const inherited = (key) => (view?.repo ? view.settings[key]?.inherited : null);
+  const mode = configField("performance_mode").value || inherited("performance_mode") || "standard";
+  $("#cfg-advanced").hidden = mode !== "advanced";
+  const bits = configField("kv_bits").value || String(inherited("kv_bits") ?? "");
+  $("#cfg-kv4-warn").hidden = !(mode === "advanced" && bits === "4");
+}
+
+// What the chosen model cannot do is switched off, with the reason.
+function paintBlocked(view) {
+  const blocked = view.performance?.blocked || {};
+  const groups = blocked.kv_group_size || {};
+  const shared = view.settings.performance_mode?.inherited;
+  setText($("#cfg-mode-default"), view.repo
+    ? `Same as All models (${PERF_NAMES[shared] || PERF_NAMES.standard})`
+    : "Standard (recommended)");
+  // Under All models the first entry already is Standard.
+  $("#cfg-mode-standard").hidden = !view.repo && view.settings.performance_mode?.value !== "standard";
+  $("#cfg-mode-save_memory").disabled = !!blocked.save_memory;
+  for (const g of KV_GROUPS) $(`#cfg-group-${g}`).disabled = !!groups[g];
+  const none = KV_GROUPS.every((g) => groups[g]);
+  if (none) configField("kv_bits").disabled = configField("kv_group_size").disabled = true;
+  const unfit = [...new Set(Object.values(groups))].join("; ");
+  setText($("#cfg-performance_mode-blocked"), blocked.save_memory
+    ? `Save memory is not available for this model, so it stays on Standard: ${blocked.save_memory}.`
+    : unfit ? `Some group sizes are not available for this model: ${unfit}.` : "");
+}
+
+function configHint(view, setting) {
+  const now = `Effective: ${setting.effective}`;
+  if (!view.repo) return now;
+  if (setting.global_only) return `${now}. Change it under ${ALL_MODELS}.`;
+  const shared = setting.inherited;
+  if (setting.own != null) {
+    return `${now} (set for this model${shared != null ? `; All models: ${shared}` : ""})`;
+  }
+  return shared != null ? `${now} (from All models)` : now;
+}
+
+// Typed, unsaved text stays; every other field follows what is saved.
+function paintConfig(view) {
+  state.config.view = view;
+  for (const key of CONFIG_KEYS) {
+    const setting = view.settings[key];
+    const input = configField(key);
+    const locked = !!(view.repo && setting.global_only);
+    input.disabled = locked;
+    const edited = configEdited(key);
+    const saved = String((view.repo ? setting.own : setting.value) ?? "");
+    input.min = setting.min;
+    input.max = setting.max;
+    input.step = setting.decimal ? "any" : "1";
+    input.placeholder = view.repo && setting.inherited != null
+      ? `inherited: ${setting.inherited}` : "automatic";
+    if (!edited) input.value = locked ? String(setting.value ?? "") : saved;
+    state.config.loaded[key] = saved;
+    setText($(`#cfg-${key}-now`), configHint(view, setting));
+  }
+  paintBlocked(view);
+  paintPerformance();
+  setText($("#configClamp"), view.context_message || "");
+  $("#configSaveBtn").disabled = $("#configResetBtn").disabled = false;
+}
+
+// A context above everything a load test has passed is only a hope: say so.
+function warnUntested(view, tests) {
+  const passed = (tests?.results || []).filter((run) => !run.stale)
+    .flatMap((run) => run.rows.filter((r) => r.status === "passed").map((r) => r.size));
+  const largest = Math.max(0, ...passed);
+  const context = view.applied_context || view.settings.max_context_tokens.value;
+  setText($("#configTestWarn"), largest && context > largest
+    ? `The context here (${context} tokens) is above the largest size that passed a load ` +
+      `test (${largest} tokens).` : "");
+}
+
+async function loadConfig() {
+  if (!API_TOKEN) return;
+  const { repo } = state.config;
+  const seq = ++state.config.seq;
+  try {
+    const view = await api(`/api/config${repoQuery(repo)}`);
+    if (seq !== state.config.seq) return;
+    if (state.config.failed) setText($("#configError"), "");
+    state.config.failed = false;
+    paintConfig(view);
+    if (!repo) return setText($("#configTestWarn"), "");
+    // The warning is extra: the page works when these figures cannot be read.
+    api(`/api/loadtest${repoQuery(repo)}`)
+      .then((tests) => { if (seq === state.config.seq) warnUntested(view, tests); })
+      .catch(() => {});
+  } catch (err) {
+    if (seq !== state.config.seq) return;
+    state.config.failed = true;
+    setText($("#configError"), err.message);
+  }
+}
+
+// Puts the app's choice in a page's searchable model list.
+function setModelPick(sel, values, value) {
+  fillSelect(sel, values, value);
+  $(sel).value = value;
+  pickers[sel]?.sync(values);
+}
+const paintConfigPick = () => setModelPick("#configModelSelect",
+  [ALL_MODELS, ...(state.readyModels || [])], state.config.repo || ALL_MODELS);
+
+async function chooseConfigModel(value) {
+  const repo = value === ALL_MODELS ? "" : value;
+  if (repo === state.config.repo) return;
+  if (configDirty() && !confirm("Discard your unsaved changes?")) {
+    paintConfigPick();
+    await null; // the list says "Selected" when this first returns
+    setText($("#configModelSelectStatus"), `Kept ${state.config.repo || ALL_MODELS}.`);
+    return;
+  }
+  state.config.repo = repo;
+  paintConfigPick();
+  clearConfig();
+  await loadConfig();
+}
+
+function renderConfigPage(server) {
+  const { repo } = state.config;
+  const gone = !!repo && !(state.readyModels || []).includes(repo);
+  if (gone) {
+    state.config.repo = "";
+    clearConfig();
+  }
+  paintConfigPick();
+  if (gone && state.view === "config") loadConfig();
+  const behind = !!(server.running && server.settings_pending);
+  // The button goes away once applied: leave the focus on something that stays.
+  const held = document.activeElement === $("#configApplyBtn");
+  $("#configPending").hidden = !behind;
+  if (held && !behind) $("#configModelSelectSearch").focus();
+}
+
+async function postSettings(body) {
+  await api("/api/server/settings", { method: "POST", body: JSON.stringify(body) });
+  state.estimateKey = null; // the figures and any warning are asked for again
+}
+
+// Saves only the changed fields; an emptied one goes back to automatic or inherited.
+async function saveConfig() {
+  const { view, repo } = state.config;
+  if (!view) return;
+  const values = {};
+  const bad = [];
+  for (const key of CONFIG_KEYS) {
+    fieldError(key, "");
+    if (!configEdited(key)) continue;
+    const { min, max, decimal } = view.settings[key];
+    const input = configField(key);
+    const raw = input.value.trim();
+    const word = key === "performance_mode"; // every other setting is a number
+    const value = raw === "" ? null : word ? raw : Number(raw);
+    const fits = value === null || word ||
+      (value >= min && value <= max && (decimal || Number.isInteger(value)));
+    if (input.validity?.badInput || !fits) {
+      const kind = decimal ? "number" : "whole number";
+      fieldError(key, `Use a ${kind} from ${min} to ${max}, or leave it empty.`);
+      bad.push(input);
+    } else {
+      values[key] = value;
+    }
+  }
+  if (bad.length) {
+    setText($("#configError"), bad.length === 1 ? "Not saved: 1 field needs a change."
+      : `Not saved: ${bad.length} fields need a change.`);
+    bad[0].focus();
+    return;
+  }
+  setText($("#configError"), "");
+  if (!Object.keys(values).length) return toast("Nothing changed");
+  try {
+    await postSettings({ values, ...(repo ? { repo } : {}) });
+  } catch (err) {
+    setText($("#configError"), err.message);
+    return;
+  }
+  state.config.loaded = {};
+  toast("Saved. Server limits apply at the next start or Apply changes.");
+  refreshState();
+  await loadConfig();
+}
+
+async function resetConfig() {
+  const { view, repo } = state.config;
+  if (!view || !confirm(`Clear every value saved for ${repo || ALL_MODELS}?`)) return;
+  try {
+    await postSettings({ reset: true, ...(repo ? { repo } : {}) });
+  } catch (err) {
+    setText($("#configError"), err.message);
+    return;
+  }
+  clearConfig();
+  toast(repo ? "This model uses the All models values again." : "Defaults reset to automatic.");
+  refreshState();
+  await loadConfig();
+}
+
+/* ───────────── load test page ───────────── */
+const LT_NUMBERS = ["reply_tokens", "rounds", "margin_percent", "timeout_seconds"];
+const LT_MAX_SIZES = 8;
+const LT_ENDED = { done: "finished", memory: "stopped for memory safety",
+  cancelled: "cancelled", failed: "failed", interrupted: "interrupted" };
+const LT_PILL = { passed: "ok", skipped: "warn", cancelled: "warn", interrupted: "warn",
+  stopped: "bad", failed: "bad" };
+
+const ltError = (message) => setText($("#ltError"), message);
+const figure = (v) => (typeof v === "number" ? String(Math.round(v * 10) / 10) : "n/a");
+const seconds = (v) => (typeof v === "number" ? `${figure(v)} s` : "n/a");
+
+function setLoadTestModel(repo) {
+  Object.assign(state.lt, { repo, view: null, extra: [] });
+  state.lt.picked.clear();
+  ltError("");
+  setHTML($("#ltSizes"), "");
+  setHTML($("#ltResults"), "");
+  setText($("#ltRange"), "");
+  $("#ltOutcome").hidden = true;
+}
+
+async function loadLoadTest() {
+  const { repo } = state.lt;
+  if (!API_TOKEN || !repo) return;
+  const seq = ++state.lt.seq;
+  try {
+    const view = await api(`/api/loadtest${repoQuery(repo)}`);
+    if (seq !== state.lt.seq) return;
+    if (state.lt.failed) ltError("");
+    state.lt.failed = false;
+    state.lt.view = view;
+    paintLoadTest();
+  } catch (err) {
+    if (seq !== state.lt.seq) return;
+    state.lt.failed = true;
+    ltError(err.message);
+  }
+}
+
+function paintLoadTest() {
+  const { view, loaded } = state.lt;
+  for (const key of LT_NUMBERS) {
+    const { value, min, max } = view.load_test[key];
+    const input = $(`#lt-${key}`);
+    input.min = min;
+    input.max = max;
+    if (loaded[key] === undefined || input.value === loaded[key]) input.value = String(value);
+    loaded[key] = String(value);
+  }
+  const { min, max } = view.sizes;
+  $("#ltCustom").min = min;
+  $("#ltCustom").max = max;
+  setText($("#ltRange"),
+    `This model takes ${min} to ${max} tokens. Up to ${LT_MAX_SIZES} sizes in one test.`);
+  paintLoadTestControls();
+  paintResults();
+}
+
+// The settings' sizes, the ones used last and the ones typed now.
+function listedSizes() {
+  const { view, extra } = state.lt;
+  const all = [...view.sizes.offered.map((s) => s.size),
+    ...view.load_test.last_sizes.value, ...extra];
+  return [...new Set(all)].sort((a, b) => a - b);
+}
+
+function paintSizes(off) {
+  const { view, picked } = state.lt;
+  if (!view) return;
+  const { min, max } = view.sizes;
+  setHTML($("#ltSizes"), listedSizes().map((size) => {
+    const outside = size < min || size > max;
+    return `<label class="check"><input type="checkbox" value="${esc(size)}" ` +
+      `data-size="${esc(size)}"${picked.has(size) && !outside ? " checked" : ""}` +
+      `${outside || off ? " disabled" : ""} /><span>${esc(size)} tokens` +
+      `${outside ? ` (this model takes up to ${esc(max)})` : ""}</span></label>`;
+  }).join(""));
+}
+
+function paintLoadTestControls() {
+  const snap = state.snapshot;
+  if (!snap) return;
+  const { view } = state.lt;
+  const testing = !!snap.loadtest?.active;
+  const none = !(state.readyModels || []).length;
+  const serving = !!(snap.server?.running || snap.server?.starting);
+  let why = "";
+  if (!none && !testing) {
+    why = serving ? "The API server is running. A load test needs it stopped."
+      : view?.blocked ? `Cannot start now: ${view.blocked}.` : "";
+  }
+  const start = $("#ltStartBtn");
+  const cancel = $("#ltCancelBtn");
+  const held = document.activeElement;
+  $("#ltNoModel").hidden = !none;
+  setText($("#ltWhy"), why);
+  start.disabled = none || testing || !!why || !view;
+  cancel.hidden = !testing;
+  // aria-disabled, not disabled: the button keeps the focus while the test stops.
+  if (snap.loadtest?.status === "cancelling") cancel.setAttribute("aria-disabled", "true");
+  else cancel.removeAttribute("aria-disabled");
+  const stopServing = $("#ltStopServerBtn");
+  stopServing.hidden = !(serving && !testing);
+  for (const id of ["#ltModelSelectSearch", "#ltCustom", "#ltAddBtn",
+    ...LT_NUMBERS.map((key) => `#lt-${key}`)]) {
+    $(id).disabled = none || testing;
+  }
+  paintSizes(testing);
+  // Focus follows Start to Cancel and back.
+  if (held === start && testing) cancel.focus();
+  const gone = (held === cancel && !testing) || (held === stopServing && stopServing.hidden);
+  if (gone) (start.disabled ? $("#ltModelSelectSearch") : start).focus();
+}
+
+// Only a new step is read out; the counts that move with every poll are not.
+function paintProgress(run) {
+  const testing = !!run?.active;
+  $("#ltRunning").hidden = !testing;
+  if (!testing) {
+    if (state.lt.testing && run) {
+      setText($("#ltAnnounce"), `Load test ${LT_ENDED[run.status] || run.status}.`);
+    }
+    state.lt.testing = false;
+    return;
+  }
+  state.lt.testing = true;
+  const cancelling = run.status === "cancelling";
+  const where = run.size ? `, size ${run.index} of ${run.of} (${run.size} tokens)` : "";
+  const phase = cancelling ? "Stopping the test…"
+    : `Testing ${run.repo}${where}: ${run.step || "starting"}.`;
+  setText($("#ltStep"), phase);
+  setText($("#ltAnnounce"), phase);
+  const reading = !cancelling && run.total > 0;
+  const bar = $("#ltProgress");
+  bar.hidden = !reading;
+  if (reading) {
+    bar.max = run.total;
+    bar.value = run.done;
+  }
+  const limit = state.lt.view?.results.find((r) => r.id === run.run_id)?.limit_percent;
+  setText($("#ltDetail"), [
+    reading ? `Reading the prompt: ${run.done} of ${run.total} tokens.` : "",
+    run.memory_percent == null ? ""
+      : `Memory now: ${run.memory_percent}% of RAM${limit ? ` (limit ${limit}%)` : ""}.`,
+  ].filter(Boolean).join(" "));
+}
+
+// Why the last test of this model did not finish, in one place.
+function paintOutcome(last) {
+  const told = !!last && !state.snapshot?.loadtest?.active &&
+    !["done", "running", "cancelling"].includes(last.status);
+  $("#ltOutcome").hidden = !told;
+  if (!told) return;
+  const memory = last.status === "memory";
+  setText($("#ltOutcomeTitle"), memory ? "Stopped for memory safety"
+    : `Test ${LT_ENDED[last.status] || last.status}`);
+  setText($("#ltOutcomeText"), memory
+    ? `${last.reason}. Memory limit: ${last.limit_percent}%. Larger sizes were not run.`
+    : last.reason);
+}
+
+function resultRow(run, row, testing) {
+  const used = run.values || {};
+  const note = (text) => (text ? `<span class="lt-note">${esc(text)}</span>` : "");
+  const apply = row.status === "passed" && !run.stale && run.status !== "running"
+    ? `<button type="button" class="btn btn-mini" data-apply="${esc(row.size)}" ` +
+      `data-run="${esc(run.id)}" aria-label="Apply this size to config: ${esc(row.size)} ` +
+      `tokens"${testing ? " disabled" : ""}>Apply this size to config</button>`
+    : "";
+  return `<tr><th scope="row">${esc(row.size)}` +
+    note(row.prompt_tokens ? `${row.prompt_tokens} in prompt` : "") +
+    `</th><td><span class="pill ${LT_PILL[row.status] || ""}">${esc(row.status)}</span>` +
+    note(row.reason) +
+    `</td><td>${figure(row.read_tps)}</td><td>${seconds(row.first_token_s)}` +
+    note(row.follow_up_first_token_s == null ? ""
+      : `follow-up ${seconds(row.follow_up_first_token_s)}`) +
+    `</td><td>${figure(row.write_tps)}</td><td>` +
+    (row.peak_percent == null ? "n/a" : `${figure(row.peak_percent)}%`) +
+    note(row.server_peak_bytes ? `server ${gb(row.server_peak_bytes)} GB` : "") +
+    note(row.projected_percent == null ? "" : `projected ${figure(row.projected_percent)}%`) +
+    `</td><td>${esc(`reply ${used.reply_tokens} tokens, ${used.rounds} rounds`)}` +
+    note(`margin ${used.margin_percent}%, limit ${run.limit_percent}%`) +
+    `</td><td>${apply}</td></tr>`;
+}
+
+function resultRun(run, testing) {
+  const name = `Run of ${run.time}`;
+  const ended = LT_ENDED[run.status] || run.status;
+  const heads = ["Size", "Status", "Read tok/s", "First token", "Write tok/s",
+    "Peak memory", "Settings used"].map((h) => `<th scope="col">${h}</th>`).join("");
+  return `<section class="panel lt-run"><h2>${esc(name)}: ${esc(ended)}` +
+    `${run.stale ? ' <span class="pill warn">stale</span>' : ""}</h2>` +
+    (run.stale ? '<p class="hint">Settings, software or the model changed since this run. ' +
+      "Run it again before applying a size.</p>" : "") +
+    `<div class="lt-table" role="region" tabindex="0" aria-label="${esc(name)}">` +
+    `<table class="table"><thead><tr>${heads}<th scope="col"><span class="sr-only">Config` +
+    "</span></th></tr></thead><tbody>" +
+    (run.rows.map((row) => resultRow(run, row, testing)).join("") ||
+      '<tr><td colspan="8">No size has finished.</td></tr>') +
+    "</tbody></table></div>" +
+    `<p class="hint">Server flags: <span class="mono">${esc((run.flags || []).join(" "))}` +
+    "</span></p>" +
+    '<p class="hint">Apply saves the size as this model\'s max context (one-model mode). ' +
+    "A pass is a measurement, not a guarantee.</p></section>";
+}
+
+function paintResults() {
+  const { view } = state.lt;
+  if (!view) return;
+  const testing = !!state.snapshot?.loadtest?.active;
+  const [last, ...older] = [...view.results].reverse();
+  paintOutcome(last);
+  const box = $("#ltResults");
+  const drawn = setHTML(box, !last ? '<p class="hint">No results for this model yet.</p>'
+    : resultRun(last, testing) + (older.length
+      ? `<details class="lt-history"><summary>Earlier runs (${older.length})</summary>` +
+        `${older.map((run) => resultRun(run, testing)).join("")}</details>` : ""));
+  if (!drawn) return;
+  box.querySelectorAll("[data-apply]").forEach((button) => button.addEventListener(
+    "click", () => applyLoadTest(button.dataset.run, Number(button.dataset.apply))));
+}
+
+function renderLoadTest(snap) {
+  const lt = state.lt;
+  const run = snap.loadtest;
+  const testing = !!run?.active;
+  const ready = state.readyModels || [];
+  // A running test is shown whatever was picked before.
+  const repo = testing ? run.repo : ready.includes(lt.repo) ? lt.repo
+    : ready.includes(run?.repo) ? run.repo : ready[0] || "";
+  const moved = repo !== lt.repo;
+  if (moved) setLoadTestModel(repo);
+  setModelPick("#ltModelSelect", ready, repo);
+  const signature = JSON.stringify([repo, snap.server?.running, snap.server?.starting,
+    snap.install?.running, (snap.downloads || []).find((d) => d.repo === repo)?.status,
+    run?.run_id, run?.status, run?.active, run?.size]);
+  const changed = signature !== lt.signature;
+  lt.signature = signature;
+  // What blocked a start may be over: it is asked for again below.
+  if (changed && lt.view) lt.view = { ...lt.view, blocked: null };
+  paintProgress(run);
+  paintLoadTestControls();
+  if (state.view === "loadtest" && (changed || (!testing && lt.view?.blocked))) loadLoadTest();
+}
+
+// The typed size: {size: null} when the field is empty.
+function typedSize() {
+  const input = $("#ltCustom");
+  const raw = input.value.trim();
+  if (raw === "" && !input.validity?.badInput) return { size: null };
+  const { min, max } = state.lt.view.sizes;
+  const size = Number(raw);
+  return Number.isInteger(size) && size >= min && size <= max && raw !== "" ? { size }
+    : { problem: `Custom size: use a whole number from ${min} to ${max}.` };
+}
+
+function keepSize(size) {
+  state.lt.extra.push(size);
+  state.lt.picked.add(size);
+  $("#ltCustom").value = "";
+  paintLoadTestControls();
+}
+
+function addCustomSize() {
+  if (!state.lt.view) return;
+  const { size, problem } = typedSize();
+  if (problem || size === null) {
+    const { min, max } = state.lt.view.sizes;
+    ltError(problem || `Custom size: use a whole number from ${min} to ${max}.`);
+    $("#ltCustom").focus();
+    return;
+  }
+  ltError("");
+  keepSize(size);
+}
+
+async function startLoadTest() {
+  const lt = state.lt;
+  if (!lt.view || lt.sending || $("#ltStartBtn").disabled) return;
+  const typed = typedSize();
+  if (typed.problem) return ltError(typed.problem);
+  const { max } = lt.view.sizes;
+  const sizes = [...new Set([...lt.picked, ...(typed.size ? [typed.size] : [])])]
+    .filter((size) => size <= max).sort((a, b) => a - b);
+  if (!sizes.length) return ltError("Choose at least one context size.");
+  if (sizes.length > LT_MAX_SIZES) {
+    return ltError(`Choose at most ${LT_MAX_SIZES} sizes; ${sizes.length} are chosen.`);
+  }
+  const values = {};
+  for (const key of LT_NUMBERS) {
+    const { min, max: most } = lt.view.load_test[key];
+    const input = $(`#lt-${key}`);
+    const raw = input.value.trim();
+    const value = raw === "" ? null : Number(raw);
+    if (input.validity?.badInput || (value !== null &&
+      !(Number.isInteger(value) && value >= min && value <= most))) {
+      return ltError(`Run values, ${key.replace(/_/g, " ")}: use a whole number from ` +
+        `${min} to ${most}, or leave it empty.`);
+    }
+    values[key] = value;
+  }
+  if (typed.size) keepSize(typed.size);
+  ltError("");
+  lt.sending = true;
+  try {
+    await postSettings({ load_test: { ...values, last_sizes: sizes } });
+    await api("/api/loadtest/start",
+      { method: "POST", body: JSON.stringify({ repo: lt.repo, sizes }) });
+    lt.loaded = {};
+    toast("Load test started");
+  } catch (err) {
+    ltError(err.message);
+  }
+  lt.sending = false;
+  refreshState();
+  await loadLoadTest();
+}
+
+async function cancelLoadTest() {
+  if ($("#ltCancelBtn").getAttribute("aria-disabled") === "true") return;
+  try { await api("/api/loadtest/cancel", { method: "POST", body: "{}" }); }
+  catch (err) { toast(err.message, true); }
+  refreshState();
+}
+
+async function applyLoadTest(runId, size) {
+  const { repo } = state.lt;
+  if (state.config.repo === repo && configDirty()) {
+    if (!confirm("Discard your unsaved Configuration changes for this model?")) return;
+    clearConfig();
+  }
+  try {
+    await api("/api/loadtest/apply",
+      { method: "POST", body: JSON.stringify({ repo, run_id: runId, size }) });
+  } catch (err) {
+    ltError(err.message);
+    toast(err.message, true);
+    return;
+  }
+  state.estimateKey = null;
+  toast(`Saved ${size} tokens as max context. It applies at the next server start.`);
+  refreshState();
+  await loadLoadTest();
+}
+
+const acceptsNothing = (server, repo) =>
+  !!server?.running && server.prompt_limits?.[repo] === 0;
+
+// Said for a running server that refuses every prompt of a model, else empty.
+function noPromptWords(server) {
+  const names = Object.keys(server?.prompt_limits || {})
+    .filter((repo) => acceptsNothing(server, repo))
+    .map((repo) => `${shortName(repo)} accepts no prompt`);
+  if (!names.length) return "";
+  const used = server.memory_used_percent;
+  return `${names.join(", ")}. ` +
+    (used == null ? "" : `Memory in use now: ${used}%. `) +
+    "Close other apps (web browsers, code editors, virtual machines, other model apps), " +
+    "then press Stop, then Start Server.";
+}
+
 function renderServerMemory(server) {
   const memory = server.running ? server.memory : null;
   $("#serverMemory").hidden = !memory;
@@ -545,7 +1120,7 @@ function renderServerMemory(server) {
     setText($("#serverMemory"), holdsTwo(server)
       ? `${used} of a ${gb(memory.budget_bytes)} GB budget. ` +
         "Measured by the API server, refreshed about every 10 s."
-      : `${used}. Measured at the last model load. A model on the Chat tab is not included.`);
+      : `${used}. Measured at the last model load.`);
   }
   const tokens = holdsTwo(server) ? server.context_tokens : null;
   $("#serverPromptHint").hidden = !tokens;
@@ -553,26 +1128,28 @@ function renderServerMemory(server) {
     ? `Keep prompts to ${tokens} tokens or fewer. The prompt cache holds about ` +
       `${2 * tokens} tokens in total; above that, older prompts are dropped and read again.`
     : "");
+  const limits = Object.entries((server.running && server.prompt_limits) || {})
+    .filter(([, most]) => most > 0)
+    .map(([repo, most]) => `${shortName(repo)} ${most} tokens`);
+  const words = [noPromptWords(server), limits.length
+    ? `Prompt limit: ${limits.join(", ")}. A longer prompt is refused at once.`
+    : ""].filter(Boolean).join(" ");
+  $("#serverPromptLimit").hidden = !words;
+  setText($("#serverPromptLimit"), words);
   const [title, notice] = multiNotice(server);
   $("#serverMulti").hidden = !notice;
   setText($("#serverMultiTitle"), title);
   setText($("#serverMultiText"), notice);
-  $("#chatServerNote").hidden = !holdsTwo(server);
-  setText($("#chatServerNote"), holdsTwo(server)
-    ? "The API server keeps two models loaded. A Chat model loads only if it fits beside them."
-    : "");
 }
 
 const ESTIMATE_RETRY_MS = 10000;
 
-// Asked again when the choice or the app's own chat model changes, and a while after
-// the last answer, as the free memory moves. An unchanged running server keeps its
+// Asked again when the choice changes, and a while after the last answer, as the free
+// memory moves. An unchanged running server keeps its
 // answer; an edit waiting for Apply does not.
 async function refreshEstimate(snap) {
   const choice = serverChoice();
-  const key = choice.repo
-    ? JSON.stringify([choice, snap?.loaded?.repo, snap?.loaded?.loading])
-    : "";
+  const key = choice.repo ? JSON.stringify(choice) : "";
   const same = key === (state.estimateKey || "");
   const settled = !!snap?.server?.running && !serverPending();
   if (same && (!(Date.now() >= state.estimateRetryAt) || (settled && state.estimated))) return;
@@ -605,7 +1182,8 @@ const FULL_CONTEXT = 32768;
 // What the picked pair will get, or why it cannot be started.
 function estimateWords(estimate) {
   const unread = estimate.free_bytes === null;
-  const fallback = unread ? " Free memory could not be read; using the fixed 52% rule." : "";
+  const fallback = unread ? " Free memory could not be read; using the fixed " +
+    `${estimate.budget_percent ?? 52}% rule.` : "";
   if (estimate.fits === false) return `${estimate.refused}${fallback}`;
 
   let uses;
@@ -626,6 +1204,10 @@ function estimateWords(estimate) {
   if (estimate.context_tokens >= FULL_CONTEXT) {
     return `Two models: 32K tokens each. ${uses}${fallback}`;
   }
+  if (estimate.capped_by_setting) {
+    return `Two models: about ${Math.floor(estimate.context_tokens / 1000)}K tokens each ` +
+      `(your Settings cap). ${uses}${fallback}`;
+  }
   const shrinkNote = estimate.free_is_limit ? " Close other apps for more." : "";
   return `Two models: about ${Math.floor(estimate.context_tokens / 1000)}K tokens each ` +
     `(one model alone can use more). ${uses}` +
@@ -635,6 +1217,7 @@ function estimateWords(estimate) {
 function showEstimate(estimate, error = "") {
   state.estimate = estimate;
   state.estimateError = error;
+  setText($("#serverContextWarn"), estimate?.context_warning || "");
   paintServerCard();
 }
 
@@ -642,6 +1225,8 @@ const kilo = (tokens) => Math.floor(tokens / 1024);
 
 // What one row can promise about its context; empty when nothing is known.
 function contextWords(repo, view) {
+  // The running server's own figure beats an older estimate.
+  if (acceptsNothing(view.server, repo)) return "accepts no prompt";
   const found = view.estimate?.models?.find((m) => m.repo === repo);
   let tokens = view.estimate?.fits === false && view.two ? null : found?.safe_context;
   if (view.live && view.two && holdsTwo(view.server) && view.server.context_tokens) {
@@ -655,6 +1240,8 @@ function serverReason(view) {
   const { server, set, two, live, estimate, refused } = view;
   if (server.starting) return "Starting the server…";
   if (state.serverStartError) return state.serverStartError;
+  const closed = noPromptWords(server);
+  if (closed) return closed;
   if (!set.length) {
     return server.running ? "Add a model, or press Stop." : "Add a model to start the server.";
   }
@@ -1020,7 +1607,7 @@ function modelCard(repo, badge, body, actions) {
 }
 
 /* ───────────── models view ───────────── */
-function renderModelCards(models, loaded, downloads) {
+function renderModelCards(models, server, downloads) {
   const wrap = $("#modelCards");
   if (!wrap) return;
   const busy = new Set((downloads || []).filter((d) => d.status === "running").map((d) => d.repo));
@@ -1032,9 +1619,9 @@ function renderModelCards(models, loaded, downloads) {
 
   const changed = setHTML(wrap, shown.map((m) => {
     const info = catalog.get(m.repo) || {};
-    const isLoaded = loaded.repo === m.repo;
+    const served = !!server.running && (server.repos || []).includes(m.repo);
     const partial = m.complete === false;
-    const badge = isLoaded ? '<span class="card-tag ok">loaded</span>'
+    const badge = served ? '<span class="card-tag ok">served</span>'
       : partial ? '<span class="card-tag bad">incomplete</span>' : fitBadge(info.fit);
     const button = (act, label, extra = "", slot = "") =>
       `<button class="btn btn-mini ${extra}" data-act="${act}" data-repo="${esc(m.repo)}"${slot}>${label}</button>`;
@@ -1045,9 +1632,7 @@ function renderModelCards(models, loaded, downloads) {
       `${metaLine(m.size_h, info.params, info.category)}
        ${metaLine(info.use)}
        <div class="card-path" title="${esc(m.path)}">📁 ${esc(m.path)}</div>`,
-      (partial
-        ? button("download", "Resume download", "", MAIN)
-        : button(isLoaded ? "unload" : "load", isLoaded ? "Unload" : "Load", "", MAIN)) +
+      (partial ? button("download", "Resume download", "", MAIN) : "") +
         button("reveal", "Reveal") +
         copyButton(m.repo) +
         button("delete", "Delete", "btn-danger"),
@@ -1062,10 +1647,6 @@ function renderModelCards(models, loaded, downloads) {
 }
 
 async function modelAction(act, repo) {
-  if (act === "load") {
-    if (await loadModel(repo)) refreshState();
-    return;
-  }
   if (act === "delete" && !confirm(`Delete ${repo} from disk?`)) return;
   try {
     await api(`/api/${act}`, { method: "POST", body: JSON.stringify({ repo }) });
@@ -1118,8 +1699,8 @@ function offerCard(m, busy, ready) {
     `${metaLine(m.params || "params unknown", size, m.category || "category unknown")}
        ${metaLine(m.use || "use unknown")}`,
     (!running && installed
-      ? `<button class="btn btn-mini" disabled>Installed</button>
-           <button class="btn btn-mini" ${slot} data-cat-load="${esc(m.repo)}">Load</button>`
+      // aria-disabled keeps the focus the Download button had.
+      ? `<button class="btn btn-mini" ${slot} aria-disabled="true">Installed</button>`
       // aria-disabled, not disabled: a busy button must keep keyboard focus.
       : `<button class="btn btn-mini btn-primary" ${slot} data-cat-download="${esc(m.repo)}" ${disabled ? "disabled" : running ? 'aria-disabled="true"' : ""}>${label}</button>`) +
       copyButton(m.repo),
@@ -1152,13 +1733,6 @@ function renderOfferCards(wrap, rows) {
         btn.removeAttribute("aria-disabled");
         btn.textContent = "Download";
       }
-    });
-  });
-  wrap.querySelectorAll("[data-cat-load]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (!(await loadModel(btn.dataset.catLoad))) return;
-      toast("Loading model…");
-      refreshState();
     });
   });
 }
@@ -1276,16 +1850,102 @@ async function doSearch(q) {
   }
 }
 
+/* ───────────── chat model ───────────── */
+// Chat asks the running API server, so only the models it serves can be chosen.
+const CHAT_PLACEHOLDER = "Send a message…  (Enter to send, Shift+Enter for newline)";
+// status: [dot, short text, longer text, placeholder, offer the API Server page]
+const CHAT_STATUS = {
+  ready: ["dot-ok", "Ready", "", CHAT_PLACEHOLDER, false],
+  starting: ["dot-live", "Starting…",
+    "The API server is starting. You can type when it is ready.",
+    "Waiting for the API server…", false],
+  restarting: ["dot-live", "Restarting…",
+    "The API server is restarting. You can type when it is ready.",
+    "Waiting for the API server…", false],
+  stopped: ["dot-warn", "Server stopped",
+    "Start the API server first. Chat uses the models it serves.",
+    "Start the API server first…", true],
+  failed: ["dot-bad", "Model not loaded",
+    "The API server could not load its model. On the API Server page, press Stop, then Start Server.",
+    "Model not loaded: press Stop, then Start Server", true],
+};
+
+function chatStatus(server) {
+  if (server.starting) return server.running ? "restarting" : "starting";
+  if (!server.running) return "stopped";
+  if (server.load_failed) return "failed";
+  return server.ready ? "ready" : "starting";
+}
+
+function renderChat(server) {
+  const status = chatStatus(server);
+  const served = server.running ? server.repos || [] : [];
+  // The choice stays while it is still served; a server on its way does not change it.
+  const chosen = served.includes(state.chatModel) ? state.chatModel : served[0] || "";
+  if (status === "ready") state.chatModel = chosen;
+  const select = $("#chatModelSelect");
+  setHTML(select, served.length
+    ? served.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("")
+    : '<option value="">No model served</option>');
+  select.value = chosen;
+  const ready = status === "ready";
+  select.disabled = !ready;
+
+  const [dot, short, long, placeholder, offer] = CHAT_STATUS[status];
+  setHTML($("#chatState"), `<span class="dot ${dot}"></span>${short}`);
+  $("#chatGate").hidden = ready;
+  setText($("#chatGateText"), long);
+  $("#chatGoServer").hidden = !offer;
+  // Disabling keeps the typed text; the conversation is not touched.
+  const input = $("#input");
+  input.disabled = !ready;
+  input.placeholder = placeholder;
+  $("#sendBtn").disabled = !ready;
+  renderChatMode(server);
+  const became = ready && state.chatStatus !== "ready";
+  state.chatStatus = status;
+  const idle = !document.activeElement || document.activeElement === document.body;
+  if (became && idle && $("#view-chat").classList.contains("active")) input.focus();
+
+  $("#globalDot").className = `dot ${dot}`;
+  setText($("#globalStatus"), ready ? served.map(shortName).join(", ")
+    : server.running || server.starting ? short : "No model served");
+}
+
+// The mode the server reports for the chosen model; never guessed from what is saved.
+function renderChatMode(server) {
+  const perf = server?.performance;
+  $("#chatMode").hidden = !perf;
+  if (!perf) return;
+  const model = server.running ? perf.models[$("#chatModelSelect").value] : null;
+  setText($("#chatModeName"), server.running
+    ? model?.in_force || "not reported yet" : `${perf.saved} (used at the next Start)`);
+  const behind = server.settings_pending && model?.in_force && model.saved !== model.in_force;
+  setText($("#chatModeNote"), [
+    behind ? `${model.saved} is saved but not applied yet.` : "",
+    model?.note || "",
+  ].filter(Boolean).join(" "));
+}
+
 /* ───────────── chat ───────────── */
-function addMessage(role, text, meta) {
+function addMessage(role, text) {
   const wrap = $("#messages");
   const el = document.createElement("div");
   el.className = `msg msg-${role}`;
+  const reply = role === "assistant";
   el.innerHTML = `
-    <div class="msg-role">${role === "user" ? "You" : "Assistant"}</div>
+    <div class="msg-role">${reply ? "Assistant" : "You"}</div>
+    ${reply ? `<details class="msg-think" hidden><summary>Thinking</summary>
+      <div class="msg-think-text"></div></details>
+    <div class="msg-wait" hidden></div>` : ""}
     <div class="msg-body"></div>
-    ${meta ? `<div class="msg-meta">${esc(meta)}</div>` : ""}`;
+    ${reply ? '<div class="msg-note" hidden></div>' : ""}`;
   el.querySelector(".msg-body").textContent = text;
+  if (reply) {
+    for (const part of [".msg-think", ".msg-wait", ".msg-note"]) {
+      el.querySelector(part).hidden = true;
+    }
+  }
   wrap.appendChild(el);
   scrollChat();
   return el;
@@ -1296,11 +1956,74 @@ function scrollChat() {
   s.scrollTop = s.scrollHeight;
 }
 
+// A reply's thinking and answer. The server sends thinking apart (mlx_lm calls it
+// "reasoning"); some chat templates leave it in the text between <think> tags.
+function splitReply(reasoning, content) {
+  const text = content.trimStart();
+  if (text.startsWith("<think>")) {
+    const end = text.indexOf("</think>");
+    return {
+      thinking: reasoning + text.slice(7, end === -1 ? undefined : end),
+      answer: end === -1 ? "" : text.slice(end + 8).trimStart(),
+    };
+  }
+  // The first tokens may be the start of the tag.
+  if ("<think>".startsWith(text)) return { thinking: reasoning, answer: "" };
+  return { thinking: reasoning, answer: reasoning ? text : content };
+}
+
+function paintReply(el, { thinking, answer }) {
+  el.querySelector(".msg-think").hidden = !thinking.trim();
+  setText(el.querySelector(".msg-think-text"), thinking.trim());
+  setText(el.querySelector(".msg-body"), answer);
+}
+
+function replyNote(el, text) {
+  const note = el.querySelector(".msg-note");
+  note.hidden = !text;
+  setText(note, text);
+}
+
+// Calls onEvent(name, data) for every event of the app's reply stream.
+async function readEvents(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() || "";
+    for (const frame of frames) {
+      const evLine = frame.split("\n").find((l) => l.startsWith("event: "));
+      const dataLine = frame.split("\n").find((l) => l.startsWith("data: "));
+      if (!evLine || !dataLine) continue;
+      onEvent(evLine.slice(7).trim(), JSON.parse(dataLine.slice(6)));
+    }
+  }
+}
+
+// The small line under a reply. A figure that is not known is left out.
+function statsLine(data) {
+  const s = data.stats || {};
+  const known = (value, words) => (value === null || value === undefined ? "" : words);
+  return [
+    known(s.reply_tokens, `${s.reply_tokens} tokens`),
+    known(s.first_s, `First answer after ${s.first_s} s`),
+    known(s.tps, `Writing ${s.tps} tokens/s`),
+    known(s.prompt_tokens, `Prompt ${s.prompt_tokens} tokens`),
+    known(s.mode, `${s.mode} mode`),
+    data.stopped ? "stopped" : "",
+    data.truncated ? "length limit reached" : "",
+  ].filter(Boolean).join(" · ");
+}
+
 async function sendMessage() {
   const input = $("#input");
   const text = input.value.trim();
-  if (!text || state.streaming) return;
-  if (!state.snapshot?.loaded?.repo) { toast("Load a model first", true); return; }
+  if (!text || state.streaming || state.chatStatus !== "ready") return;
+  const repo = $("#chatModelSelect").value;
 
   input.value = "";
   input.style.height = "auto";
@@ -1315,75 +2038,112 @@ async function sendMessage() {
 
   const assistantEl = addMessage("assistant", "");
   const body = assistantEl.querySelector(".msg-body");
+  const wait = assistantEl.querySelector(".msg-wait");
   body.classList.add("cursor");
 
   state.streaming = true;
   $("#sendBtn").hidden = true;
   $("#stopBtn").hidden = false;
 
+  let reasoning = "";
+  let content = "";
+  let ended = false;
+  let stopped = false;
+  let unanswered = false;
+  // Shows what arrived. Once the reply is over nothing may stay folded away
+  // without an answer under it: then the thinking is the reply.
+  const settle = () => {
+    const parts = splitReply(reasoning, content);
+    let alone = "";
+    if (!parts.answer) {
+      alone = parts.thinking.trim();
+      parts.answer = alone || content;
+      parts.thinking = "";
+    }
+    paintReply(assistantEl, parts);
+    return { answer: parts.answer, alone: !!alone };
+  };
+  const fail = (message) => {
+    ended = true;
+    assistantEl.classList.add("msg-error");
+    if (reasoning || content) {
+      settle();
+      replyNote(assistantEl, message);
+    } else {
+      body.textContent = message;
+    }
+    toast(message, true);
+  };
+
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: apiHeaders(),
-      body: JSON.stringify({ messages: state.messages }),
+      body: JSON.stringify({ repo, messages: state.messages }),
     });
     if (!res.ok) {
+      // Refused before anything was asked: give the typed text back.
+      if (!input.value) input.value = text;
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || "chat failed");
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let full = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() || "";
-      for (const frame of frames) {
-        const evLine = frame.split("\n").find((l) => l.startsWith("event: "));
-        const dataLine = frame.split("\n").find((l) => l.startsWith("data: "));
-        if (!evLine || !dataLine) continue;
-        const ev = evLine.slice(7).trim();
-        const data = JSON.parse(dataLine.slice(6));
-        if (ev === "token") {
-          full += data;
-          body.textContent = full;
-          scrollChat();
-        } else if (ev === "done") {
-          body.classList.remove("cursor");
-          const meta = `${data.tokens} tokens · ${data.tps} tok/s · ${data.peak_gb} GB peak`;
-          const metaEl = document.createElement("div");
-          metaEl.className = "msg-meta";
-          metaEl.textContent = meta;
-          assistantEl.appendChild(metaEl);
-          if (state.messages === history) history.push({ role: "assistant", content: full });
-          replied = true;
-        } else if (ev === "error") {
-          body.classList.remove("cursor");
-          assistantEl.classList.add("msg-error");
-          body.textContent = full || data;
-          toast(data, true);
-        }
+    await readEvents(res, (ev, data) => {
+      if (ev === "status") {
+        // Once the reply has begun, a pause needs no words.
+        if (reasoning || content) return;
+        wait.hidden = false;
+        setText(wait, data.state === "prompt"
+          ? `Reading the prompt… ${data.done} of ${data.total} tokens`
+          : "Waiting for the API server… It may be answering another client or loading the model.");
+        return;
       }
-    }
+      wait.hidden = true;
+      if (ev === "token" || ev === "reasoning") {
+        if (ev === "token") content += data;
+        else reasoning += data;
+        paintReply(assistantEl, splitReply(reasoning, content));
+        scrollChat();
+      } else if (ev === "done") {
+        ended = true;
+        stopped = !!data.stopped;
+        const { answer, alone } = settle();
+        const notes = [];
+        if (alone) notes.push("No answer came after the thinking, so it is shown here.");
+        if (!answer) notes.push(stopped ? "Stopped before any reply." : "The reply was empty.");
+        replyNote(assistantEl, notes.join(" "));
+        const metaEl = document.createElement("div");
+        metaEl.className = "msg-meta";
+        metaEl.textContent = statsLine(data);
+        if (metaEl.textContent) assistantEl.appendChild(metaEl);
+        // A turn with no answer is dropped below, like a failed one: an empty reply,
+        // or thinking alone, which the model must not take for what it answered.
+        unanswered = alone;
+        if (answer && !alone) {
+          if (state.messages === history) history.push({ role: "assistant", content: answer });
+          replied = true;
+        }
+      } else if (ev === "error") {
+        fail(data);
+      }
+    });
+    if (!ended) fail("The reply was cut off.");
   } catch (err) {
-    body.classList.remove("cursor");
-    assistantEl.classList.add("msg-error");
-    body.textContent = err.message;
-    toast(err.message, true);
+    fail(err.message);
   } finally {
     // A turn without a reply would break role alternation on every later send.
     const at = state.messages.indexOf(turn);
     if (!replied && at !== -1) state.messages.splice(at, 1);
+    wait.hidden = true;
     body.classList.remove("cursor");
-    setText($("#chatAnnounce"), replied ? "Reply complete" : "Reply failed");
+    setText($("#chatAnnounce"),
+      stopped ? "Reply stopped" : replied ? "Reply complete"
+        : unanswered ? "Reply ended without an answer" : "Reply failed");
     state.streaming = false;
+    const held = document.activeElement === $("#stopBtn");
     $("#sendBtn").hidden = false;
     $("#stopBtn").hidden = true;
+    if (held) $("#input").focus();
     refreshState();
   }
 }
@@ -1491,9 +2251,34 @@ async function sendStart(body, message, keep = {}) {
   refreshState().finally(() => { state.serverSending = false; });
 }
 
+// Start, or Apply changes, with what the API Server card shows.
+async function startFromCard() {
+  if (state.serverSending) return;
+  const set = serverSet();
+  if (!set.length) { toast("No model selected", true); return; }
+  const background = $("#serverBackground").checked;
+  const applying = !!state.server?.running;
+  state.serverStartError = "";
+  try {
+    await sendStart({ ...serverChoice(set), background },
+      applying ? "Restarting server…"
+        : background ? "Starting in background…" : "Starting server…");
+  } catch (err) {
+    // The reason stays on the card; the next poll asks for the figures again.
+    state.estimateRetryAt = 0;
+    state.serverStartError = err.message;
+    paintServerCard();
+    toast(err.message, true);
+  }
+}
+
+async function stopServer() {
+  try { await api("/api/server/stop", { method: "POST", body: "{}" }); refreshState(); }
+  catch (err) { toast(err.message, true); }
+}
+
 /* ───────────── wiring ───────────── */
 function wire() {
-  createPicker("#chatModelSelect");
   createPicker("#serverModelSelect", {
     onLeave(escaped) {
       showAddPicker(false);
@@ -1501,20 +2286,17 @@ function wire() {
     },
   });
 
-  $("#loadBtn").addEventListener("click", async () => {
-    const repo = $("#chatModelSelect").value;
-    if (!repo) { toast("No model selected", true); return; }
-    if (await loadModel(repo)) refreshState();
+  $("#chatModelSelect").addEventListener("change", () => {
+    state.chatModel = $("#chatModelSelect").value;
+    renderChatMode(state.server);
   });
-  $("#loadProblemDismiss").addEventListener("click", () => {
-    showLoadProblem("");
-    // The button is gone: leave the focus on something that stays.
+  for (const key of ["performance_mode", "kv_bits"]) {
+    configField(key).addEventListener("change", paintPerformance);
+  }
+  $("#chatGoServer").addEventListener("click", () => {
+    showView("server");
+    // The button leaves the screen: keep the focus on something that stays.
     $(".nav-item.active").focus();
-  });
-
-  $("#unloadBtn").addEventListener("click", async () => {
-    try { await api("/api/unload", { method: "POST", body: "{}" }); refreshState(); }
-    catch (err) { toast(err.message, true); }
   });
 
   $("#newChatBtn").addEventListener("click", () => {
@@ -1526,7 +2308,9 @@ function wire() {
   });
 
   $("#sendBtn").addEventListener("click", sendMessage);
-  $("#stopBtn").addEventListener("click", async () => {
+  $("#stopBtn").addEventListener("click", async (e) => {
+    // Stop takes Send's place: the second click of a double click is not a Stop.
+    if (e.detail > 1) return;
     try { await api("/api/chat/stop", { method: "POST", body: "{}" }); } catch (_) {}
   });
 
@@ -1554,6 +2338,39 @@ function wire() {
     $("#serverModelSelectSearch").focus();
     pickers["#serverModelSelect"].open();
   });
+  createPicker("#configModelSelect");
+  createPicker("#ltModelSelect");
+  $("#configModelSelect").addEventListener("change",
+    (e) => chooseConfigModel(e.target.value));
+  $("#configFields").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing) return;
+    e.preventDefault();
+    return saveConfig();
+  });
+  $("#configSaveBtn").addEventListener("click", saveConfig);
+  $("#configResetBtn").addEventListener("click", resetConfig);
+  $("#configApplyBtn").addEventListener("click", startFromCard);
+  $("#ltModelSelect").addEventListener("change", (e) => {
+    setLoadTestModel(e.target.value);
+    paintLoadTestControls();
+    return loadLoadTest();
+  });
+  $("#ltSizes").addEventListener("change", (e) => {
+    const size = Number(e.target.value);
+    if (e.target.checked) state.lt.picked.add(size);
+    else state.lt.picked.delete(size);
+    ltError("");
+    paintLoadTestControls();
+  });
+  $("#ltAddBtn").addEventListener("click", addCustomSize);
+  $("#ltCustom").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    addCustomSize();
+  });
+  $("#ltStartBtn").addEventListener("click", startLoadTest);
+  $("#ltCancelBtn").addEventListener("click", cancelLoadTest);
+  $("#ltStopServerBtn").addEventListener("click", stopServer);
   $("#serverBackground").addEventListener("change", () => {
     if (startOnItsWay()) state.keptBox = true;
     serverCardChanged();
@@ -1569,29 +2386,8 @@ function wire() {
   $("#view-server").addEventListener("click", secondClick, true);
   $("#view-server").addEventListener("mousedown", secondClick, true);
 
-  $("#serverStartBtn").addEventListener("click", async () => {
-    if (state.serverSending) return;
-    const set = serverSet();
-    if (!set.length) { toast("No model selected", true); return; }
-    const background = $("#serverBackground").checked;
-    const applying = !!state.server?.running;
-    state.serverStartError = "";
-    try {
-      await sendStart({ ...serverChoice(set), background },
-        applying ? "Restarting server…"
-          : background ? "Starting in background…" : "Starting server…");
-    } catch (err) {
-      // The reason stays on the card; the next poll asks for the figures again.
-      state.estimateRetryAt = 0;
-      state.serverStartError = err.message;
-      paintServerCard();
-      toast(err.message, true);
-    }
-  });
-  $("#serverStopBtn").addEventListener("click", async () => {
-    try { await api("/api/server/stop", { method: "POST", body: "{}" }); refreshState(); }
-    catch (err) { toast(err.message, true); }
-  });
+  $("#serverStartBtn").addEventListener("click", startFromCard);
+  $("#serverStopBtn").addEventListener("click", stopServer);
   const dismissNotice = async () => {
     try { await api("/api/server/notice/clear", { method: "POST", body: "{}" }); refreshState(); }
     catch (err) { toast(err.message, true); }
@@ -1670,7 +2466,7 @@ function wire() {
 `curl http://127.0.0.1:8080/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -d '{"model":"<model>","messages":[{"role":"user","content":"Hello!"}]}'`;
-  showView(location.hash.slice(1) || "chat");
+  showView(location.hash.slice(1) || VIEWS[0]);
   // Without a token every request is refused: say so once and ask for nothing.
   if (!API_TOKEN) return toast("This page has no session. Open MLX Studio from its app icon.", true);
   await refreshState();

@@ -86,7 +86,14 @@ class Tree:
         (self.root / "packaging").mkdir(parents=True)
         (self.root / "ui").mkdir()
         shutil.copy(ROOT / "packaging" / "release_manifest.py", self.root / "packaging")
-        for name in ("app.py", GUARD, "ui/index.html", "ui/style.css", "ui/app.js"):
+        for name in (
+            "app.py",
+            GUARD,
+            "mlx_loadtest.py",
+            "ui/index.html",
+            "ui/style.css",
+            "ui/app.js",
+        ):
             (self.root / name).write_text(f"# {name}\n", encoding="utf-8")
         (self.root / "app.py").write_text('APP_VERSION = "3.1.0"\n', encoding="utf-8")
         self.mod = load_manifest_module(self.root / "packaging" / "release_manifest.py")
@@ -110,7 +117,14 @@ def fake_pkgutil(tree: Tree, monkeypatch, change) -> list[str]:
         contents = Path(argv[-1]) / "Payload" / "Applications" / "MLX Studio.app" / "Contents"
         resources = contents / "Resources"
         (resources / "ui").mkdir(parents=True)
-        for name in ("app.py", GUARD, "ui/index.html", "ui/style.css", "ui/app.js"):
+        for name in (
+            "app.py",
+            GUARD,
+            "mlx_loadtest.py",
+            "ui/index.html",
+            "ui/style.css",
+            "ui/app.js",
+        ):
             shutil.copy(tree.root / name, resources / name)
         (contents / "Info.plist").write_text(
             '<plist version="1.0"><dict><key>CFBundleShortVersionString</key>'
@@ -161,11 +175,13 @@ def audit(tmp_path: Path, guard: str | None, bundled: str | None = "same") -> st
     shutil.copy(ROOT / "scripts" / "security_audit.sh", root / "scripts")
     (root / "app.py").write_text('HOST = "127.0.0.1"\n', encoding="utf-8")
     (root / "ui" / "app.js").write_text("// ui\n", encoding="utf-8")
+    (root / "mlx_loadtest.py").write_text("# load test\n", encoding="utf-8")
     if guard is not None:
         (root / GUARD).write_text(guard, encoding="utf-8")
     resources = root / "dist" / "MLX Studio.app" / "Contents" / "Resources"
     (resources / "ui").mkdir(parents=True)
-    shutil.copy(root / "app.py", resources / "app.py")
+    for name in ("app.py", "mlx_loadtest.py"):
+        shutil.copy(root / name, resources / name)
     shutil.copy(root / "ui" / "app.js", resources / "ui" / "app.js")
     if bundled == "same" and guard is not None:
         shutil.copy(root / GUARD, resources / GUARD)

@@ -3,6 +3,104 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.13] — unreleased
+
+Checked with automated tests and the screen served against a fake API server. No
+model was loaded.
+
+### Changed
+
+- **API Server is first in the menu, Chat second**, and the app opens on the API
+  Server page.
+- **Chat uses the running API server.** No second copy of a model is loaded, and
+  the **Load** and **Unload** buttons are gone from Chat, Models and Download. The
+  Model list holds only the served models; one model is selected already. While the
+  server is stopped Chat offers **Go to API Server**; while it starts, typing is
+  off. A busy server shows a waiting line, and **Stop** closes the request.
+- Reasoning (`reasoning` field or `<think>` text) shows in a collapsed
+  **Thinking** block. A reply with no end of thinking is shown in full; thinking
+  alone is not kept in the chat history.
+- Each reply reports `tokens · tok/s`; peak memory is no longer shown.
+- The memory estimate no longer counts a Chat model.
+- `/api/load` and `/api/unload` are removed; `/api/chat` needs `repo`.
+
+### Added
+
+- **Load Test page.** Tick or type context sizes, watch progress and memory,
+  cancel, compare results with earlier runs and apply a passed size to the model's
+  config. `mlx_loadtest.py` tests the sizes with its own guarded server while the
+  API server is stopped; routes `/api/config` and `/api/loadtest`. It stops at 77% of memory and sends nothing
+  projected above 75%; sampling cannot guarantee 80%. Not run with a real model.
+  [Routes and limits](docs/API.md#6c-configuration-and-load-test).
+- **Configuration page**, for all models or one: it replaces the Settings box on
+  the API Server card, which now links to it. Menu: API Server, Chat, Models,
+  Download, Configuration, Load Test, Activity, Setup.
+- **User settings**, kept in `~/.mlx_studio/settings.json`: max
+  context tokens, two-model context cap, memory limit percent (30 to 80), server
+  and Chat reply caps, prompt cache size and bytes, MLX buffer cache limit. Empty
+  means automatic. A max context above the memory ceiling (80% of RAM, or the
+  memory percent, by the app's formula) is lowered to it, and the app says which
+  figure applies. Each model's own max context also applies after the server
+  switches models. Chat temperature and top-p can be set. Ports, hosts, the token and security
+  checks cannot be set. The file and `/api/server/settings` also take overrides per
+  model (all keys but the memory percent); two models use the stricter value. [Keys and ranges](docs/API.md#6b-user-settings).
+- **The API server refuses a too long prompt at once** (`400`,
+  `context_length_exceeded`) instead of reading it for minutes. The limit is shown
+  on the API Server card and is never above the model's own. Two models: the
+  context the server was started with. One model: what fits in 80% of RAM after
+  taking off the memory other apps hold when the server starts. If that cannot be
+  read: what fits in 52% of RAM, at least 32,768 (or the model's smaller limit),
+  but never more than fits in 80%.
+- **The one-model memory figure is higher and the context lower.** Reply room is
+  6.4 times the cache bytes per token (was 3.1), fitted to measurements of one
+  model on one Mac (Qwen2.5-7B 4-bit, Apple M6, 32 GB); other models and Macs are
+  calculated. On that Mac the automatic limit is about 21,000 tokens with other
+  apps at 41% and 12,600 at 50% (calculated). Below 4096 every prompt is refused
+  (code `insufficient_memory`) with the memory in use and a message to close other
+  apps, then press **Stop**, then **Start Server**. A set Max context follows the
+  same rule, other apps included; there is no override.
+  Not run with a real model, and no guarantee that memory stays under 80%.
+- **Performance mode** on Configuration, for all models or one: **Standard
+  (recommended)** changes nothing; **Save memory** passes `--kv-bits 8
+  --prefill-step-size 256`, which uses less memory but reads new prompts about half
+  as fast (measured on one model and one Mac); **Advanced** sets `--kv-bits` (8 or
+  4, with a warning for 4), `--kv-group-size` (32, 64, 128) and
+  `--prefill-step-size` (64 to 2048). Used by the API server and the load test.
+  A model that cannot compress its cache is refused the choice, with the reason,
+  and runs in Standard. The automatic prompt limit is not raised.
+- **Chat reply stats**: time to the first answer, writing speed, prompt size and
+  mode under each reply (unknown figures are left out), and the mode in force at the
+  top of the page.
+- **MLX buffer cache limit** (`mlx_cache_limit_mb`, Configuration page, global and
+  per model; also used by the load test): `mx.set_cache_limit` in decimal MB. Empty
+  keeps MLX's default. Its effect on speed and memory is not measured.
+
+### Fixed
+
+Pre-release review, security and browser findings:
+
+- A reply is capped so that prompt plus reply stays within the prompt limit (at
+  least one token).
+- The prompt cache holds 2 conversations by default (`--prompt-cache-size 2`) and
+  has a byte cap with one model too: 2 times cache bytes per token times the limit.
+  `prompt_cache_bytes` only lowers it.
+- A model that accepts no prompt is shown as such on the API Server card. The card
+  sizes one model at what it will serve, not always 32,768 tokens.
+- Load test: a size above what the server accepts is **skipped**, and requests go
+  only to a port held by the test's own server. A cancel marks the remaining sizes
+  cancelled.
+- Chat: an unreadable progress line no longer ends the reply; no prompt is sent to
+  an adopted server that is no longer ours; a double click on **Send** does not
+  stop the reply; a stopped reply is announced as stopped; focus moves off a
+  **Stop** button that goes away; a failed model load is said on both pages.
+- Configuration shows the applied max context and the one-model memory rule.
+  "Chat only" hints are read with their fields.
+
+- Reading the remembered model set no longer leaks a file descriptor when its path
+  is a folder.
+- In a narrow browser window the Load Test page no longer scrolls sideways, and
+  **New chat** stays on screen in Chat.
+
 ## [2.0.12] — 2026-11-27
 
 Not released: pre-release build; the released 2.0.9 app has none of these changes.

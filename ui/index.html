@@ -21,7 +21,10 @@
     </div>
 
     <nav class="nav">
-      <button class="nav-item active" data-view="chat" aria-current="page">
+      <button class="nav-item active" data-view="server" aria-current="page">
+        <span class="nav-ico" aria-hidden="true">🔌</span><span>API Server</span><span class="dot" id="navServerDot" aria-hidden="true"></span><span class="sr-only" id="navServerText">server stopped</span>
+      </button>
+      <button class="nav-item" data-view="chat">
         <span class="nav-ico" aria-hidden="true">💬</span><span>Chat</span>
       </button>
       <button class="nav-item" data-view="models">
@@ -30,8 +33,11 @@
       <button class="nav-item" data-view="download">
         <span class="nav-ico" aria-hidden="true">⬇</span><span>Download</span>
       </button>
-      <button class="nav-item" data-view="server">
-        <span class="nav-ico" aria-hidden="true">🔌</span><span>API Server</span><span class="dot" id="navServerDot" aria-hidden="true"></span><span class="sr-only" id="navServerText">server stopped</span>
+      <button class="nav-item" data-view="config">
+        <span class="nav-ico" aria-hidden="true">🎛</span><span>Configuration</span>
+      </button>
+      <button class="nav-item" data-view="loadtest">
+        <span class="nav-ico" aria-hidden="true">📈</span><span>Load Test</span>
       </button>
       <button class="nav-item" data-view="logs">
         <span class="nav-ico" aria-hidden="true">📜</span><span>Activity</span>
@@ -45,7 +51,7 @@
       <div class="hw" id="hwInfo">—</div>
       <div class="status-line">
         <span class="dot" id="globalDot"></span>
-        <span id="globalStatus">No model loaded</span>
+        <span id="globalStatus">No model served</span>
       </div>
     </div>
   </aside>
@@ -54,46 +60,39 @@
   <main class="main">
 
     <!-- ══════════ Chat ══════════ -->
-    <section class="view active" id="view-chat">
+    <section class="view" id="view-chat">
       <header class="topbar">
         <div class="topbar-left">
-          <label class="field-label" for="chatModelSelectSearch">Model</label>
-          <div class="picker">
-            <select id="chatModelSelect" class="select" aria-label="Model" hidden></select>
-            <div class="search-field">
-              <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
-              <input type="text" class="input picker-input" id="chatModelSelectSearch" role="combobox" placeholder="Search models…" aria-label="Search models" aria-describedby="chatModelSelectChosen" aria-autocomplete="list" aria-expanded="false" aria-controls="chatModelSelectList" autocomplete="off" spellcheck="false" />
-              <button type="button" class="search-clear" id="chatModelSelectClear" aria-label="Clear model search" title="Clear search" tabindex="-1" hidden>×</button>
-            </div>
-            <div class="picker-chosen" id="chatModelSelectChosen">Selected: none</div>
-            <ul class="picker-list" id="chatModelSelectList" role="listbox" aria-label="Installed models" hidden></ul>
-            <div class="sr-only" id="chatModelSelectStatus" role="status"></div>
-          </div>
-          <button class="btn btn-primary" id="loadBtn">Load</button>
-          <button class="btn btn-ghost" id="unloadBtn" hidden>Unload</button>
-          <span class="state" id="loadState" role="status"><span class="dot dot-warn"></span>Not loaded</span>
+          <label class="field-label" for="chatModelSelect">Model</label>
+          <select id="chatModelSelect" class="select chat-model" disabled><option value="">No model served</option></select>
+          <span class="state" id="chatState" role="status"><span class="dot dot-warn"></span>Checking…</span>
         </div>
         <div class="topbar-right">
           <button class="btn btn-ghost" id="newChatBtn">＋ New chat</button>
         </div>
       </header>
 
-      <p class="hint chat-note" id="chatServerNote" hidden></p>
+      <p class="chat-mode hint" id="chatMode" hidden>Performance mode: <strong id="chatModeName"></strong>. <a href="#config">Change in Configuration</a>. A change takes effect after Stop then Start, or Apply, on the API Server page. <span id="chatModeNote"></span></p>
+
+      <div class="chat-gate" id="chatGate" hidden>
+        <p id="chatGateText" role="status"></p>
+        <button class="btn btn-primary" id="chatGoServer" type="button" hidden>Go to API Server</button>
+      </div>
 
       <div class="chat-scroll" id="chatScroll">
         <div class="empty" id="chatEmpty">
           <div class="empty-mark">◈</div>
           <h2>Start a conversation</h2>
-          <p>Load a model above, then type below. Everything runs locally on your Apple Silicon GPU.</p>
+          <p>Chat uses the models your API server is running. Everything runs locally on your Apple Silicon GPU.</p>
         </div>
         <div id="messages"></div>
       </div>
       <div class="sr-only" id="chatAnnounce" role="status" aria-live="polite"></div>
 
       <div class="composer">
-        <textarea id="input" aria-label="Message" rows="1" placeholder="Send a message…  (Enter to send, Shift+Enter for newline)"></textarea>
+        <textarea id="input" aria-label="Message" rows="1" placeholder="Start the API server first…" disabled></textarea>
         <div class="composer-side">
-          <button class="btn btn-primary" id="sendBtn">Send</button>
+          <button class="btn btn-primary" id="sendBtn" disabled>Send</button>
           <button class="btn btn-ghost" id="stopBtn" hidden>Stop</button>
         </div>
       </div>
@@ -185,7 +184,7 @@
     </section>
 
     <!-- ══════════ Server ══════════ -->
-    <section class="view" id="view-server">
+    <section class="view active" id="view-server">
       <header class="topbar">
         <div class="topbar-left">
           <h1 class="title">API Server</h1>
@@ -243,6 +242,8 @@
           </div>
           <div class="sr-only" id="serverSetStatus" role="status"></div>
           <p class="server-memory" id="serverMemoryLine" hidden></p>
+          <p class="server-memory" id="serverPromptLimit" hidden></p>
+          <p class="server-memory" id="serverContextWarn" role="status"></p>
           <!-- The status region below says the same words to a screen reader. -->
           <p class="server-why" id="serverWhy" aria-hidden="true" hidden></p>
           <div class="sr-only" id="serverStartWhy" role="status"></div>
@@ -255,6 +256,7 @@
             <p class="hint" id="serverMemory" hidden></p>
             <p class="hint" id="serverPromptHint" hidden></p>
           </details>
+          <p class="hint server-link"><a href="#config">Context, reply limits and memory: open Configuration</a></p>
           <div class="server-row">
             <label class="check" title="Keep the server running after the window closes">
               <input type="checkbox" id="serverBackground" />
@@ -298,6 +300,247 @@
           </div>
           <pre class="console" id="serverLog"></pre>
         </div>
+      </div>
+    </section>
+
+    <!-- ══════════ Configuration ══════════ -->
+    <section class="view" id="view-config">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="title">Configuration</h1>
+        </div>
+      </header>
+      <div class="scroll">
+        <div class="panel">
+          <div class="setting page-picker">
+            <label for="configModelSelectSearch">Settings for</label>
+            <div class="picker">
+              <select id="configModelSelect" class="select" aria-label="Model" hidden></select>
+              <div class="search-field">
+                <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
+                <input type="text" class="input picker-input" id="configModelSelectSearch" role="combobox" placeholder="Search models…" aria-label="Search models: settings for" aria-describedby="configModelSelectChosen" aria-autocomplete="list" aria-expanded="false" aria-controls="configModelSelectList" autocomplete="off" spellcheck="false" />
+                <button type="button" class="search-clear" id="configModelSelectClear" aria-label="Clear model search" title="Clear search" tabindex="-1" hidden>×</button>
+              </div>
+              <span class="picker-chosen" id="configModelSelectChosen"></span>
+              <ul class="picker-list" id="configModelSelectList" role="listbox" aria-label="Settings for: models" hidden></ul>
+              <div class="sr-only" id="configModelSelectStatus" role="status"></div>
+            </div>
+          </div>
+          <p class="hint">An empty field is automatic. Under a model, an empty field uses the All models value. Server limits apply at the next server start or Apply changes.</p>
+          <p class="hint">With two models the lower value wins. The server reply cap and prompt cache come from the model or models the server starts with.</p>
+          <div class="notice" id="configPending" hidden>
+            <div class="notice-body"><div class="notice-text">Saved settings are not in the running API server yet.</div></div>
+            <div class="notice-actions"><button type="button" class="btn btn-mini btn-primary" id="configApplyBtn">Apply changes</button></div>
+          </div>
+          <p class="server-why" id="configClamp" role="status"></p>
+          <p class="server-why" id="configTestWarn" role="status"></p>
+          <div id="configFields">
+            <div class="setting perf-mode">
+              <label for="cfg-performance_mode">Performance mode</label>
+              <select class="select" id="cfg-performance_mode" aria-describedby="cfg-performance_mode-now cfg-performance_mode-error cfg-performance_mode-help cfg-performance_mode-blocked">
+                  <option value="" id="cfg-mode-default">Standard (recommended)</option>
+                  <option value="standard" id="cfg-mode-standard">Standard (recommended)</option>
+                  <option value="save_memory" id="cfg-mode-save_memory">Save memory</option>
+                  <option value="advanced" id="cfg-mode-advanced">Advanced</option>
+              </select>
+              <span class="hint" id="cfg-performance_mode-help">Save memory uses less memory but reads new prompts about half as fast (measured on one model and one Mac). Compression starts after 5,000 tokens, and requests are answered one at a time. The automatic prompt limit stays the same.</span>
+              <span class="server-why" id="cfg-performance_mode-blocked" role="status"></span>
+              <span class="hint" id="cfg-performance_mode-now"></span>
+              <span class="field-error" id="cfg-performance_mode-error"></span>
+            </div>
+            <div id="cfg-advanced" hidden>
+              <p class="field-error" id="cfg-kv4-warn" role="alert" hidden>Warning: 4-bit produced broken answers in testing (one model, one Mac). Use 8-bit or leave it not set.</p>
+              <div class="settings-grid">
+              <div class="setting">
+                <label for="cfg-kv_bits">Memory compression (KV bits)</label>
+                <select class="select" id="cfg-kv_bits" aria-describedby="cfg-kv_bits-now cfg-kv_bits-error cfg-kv_bits-help">
+                  <option value="">Not set (off, or the All models value)</option>
+                  <option value="8">8-bit</option>
+                  <option value="4">4-bit (broke answers in testing)</option>
+                </select>
+                <span class="hint" id="cfg-kv_bits-help">Stores what the model remembers in fewer bits.</span>
+                <span class="hint" id="cfg-kv_bits-now"></span>
+                <span class="field-error" id="cfg-kv_bits-error"></span>
+              </div>
+              <div class="setting">
+                <label for="cfg-kv_group_size">Compression group size</label>
+                <select class="select" id="cfg-kv_group_size" aria-describedby="cfg-kv_group_size-now cfg-kv_group_size-error cfg-kv_group_size-help">
+                  <option value="">Not set (64)</option>
+                  <option value="32" id="cfg-group-32">32</option>
+                  <option value="64" id="cfg-group-64">64</option>
+                  <option value="128" id="cfg-group-128">128</option>
+                </select>
+                <span class="hint" id="cfg-kv_group_size-help">Used only with compression.</span>
+                <span class="hint" id="cfg-kv_group_size-now"></span>
+                <span class="field-error" id="cfg-kv_group_size-error"></span>
+              </div>
+              <div class="setting">
+                <label for="cfg-prefill_step_size">Prompt read step (tokens)</label>
+                <input type="number" step="1" inputmode="numeric" class="input" id="cfg-prefill_step_size" placeholder="automatic" aria-describedby="cfg-prefill_step_size-now cfg-prefill_step_size-error cfg-prefill_step_size-help" />
+                <span class="hint" id="cfg-prefill_step_size-help">Prompt tokens read at a time, 64 to 2048. Smaller needs less memory and can be slower.</span>
+                <span class="hint" id="cfg-prefill_step_size-now"></span>
+                <span class="field-error" id="cfg-prefill_step_size-error"></span>
+              </div>
+              </div>
+            </div>
+            <div class="settings-grid">
+            <div class="setting">
+              <label for="cfg-max_context_tokens">Max context tokens (one model)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-max_context_tokens" placeholder="automatic" aria-describedby="cfg-max_context_tokens-now cfg-max_context_tokens-error" />
+              <span class="hint" id="cfg-max_context_tokens-now"></span>
+              <span class="field-error" id="cfg-max_context_tokens-error"></span>
+            </div>
+            <div class="setting">
+              <label for="cfg-server_max_reply_tokens">Server max reply tokens</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-server_max_reply_tokens" placeholder="automatic" aria-describedby="cfg-server_max_reply_tokens-now cfg-server_max_reply_tokens-error" />
+              <span class="hint" id="cfg-server_max_reply_tokens-now"></span>
+              <span class="field-error" id="cfg-server_max_reply_tokens-error"></span>
+            </div>
+            <div class="setting">
+              <label for="cfg-chat_max_reply_tokens">Chat reply cap (tokens)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-chat_max_reply_tokens" placeholder="automatic" aria-describedby="cfg-chat_max_reply_tokens-now cfg-chat_max_reply_tokens-error cfg-chat_max_reply_tokens-scope" />
+              <span class="hint" id="cfg-chat_max_reply_tokens-now"></span>
+              <span class="field-error" id="cfg-chat_max_reply_tokens-error"></span>
+              <span class="hint" id="cfg-chat_max_reply_tokens-scope">Chat only: applies to the next message.</span>
+            </div>
+            <div class="setting">
+              <label for="cfg-chat_temperature">Chat temperature</label>
+              <input type="number" step="any" inputmode="decimal" class="input" id="cfg-chat_temperature" placeholder="automatic" aria-describedby="cfg-chat_temperature-now cfg-chat_temperature-error cfg-chat_temperature-scope" />
+              <span class="hint" id="cfg-chat_temperature-now"></span>
+              <span class="field-error" id="cfg-chat_temperature-error"></span>
+              <span class="hint" id="cfg-chat_temperature-scope">Chat only: applies to the next message.</span>
+            </div>
+            <div class="setting">
+              <label for="cfg-chat_top_p">Chat top-p</label>
+              <input type="number" step="any" inputmode="decimal" class="input" id="cfg-chat_top_p" placeholder="automatic" aria-describedby="cfg-chat_top_p-now cfg-chat_top_p-error cfg-chat_top_p-scope" />
+              <span class="hint" id="cfg-chat_top_p-now"></span>
+              <span class="field-error" id="cfg-chat_top_p-error"></span>
+              <span class="hint" id="cfg-chat_top_p-scope">Chat only: applies to the next message.</span>
+            </div>
+            <div class="setting">
+              <label for="cfg-prompt_cache_size">Prompt cache size (conversations)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-prompt_cache_size" placeholder="automatic" aria-describedby="cfg-prompt_cache_size-now cfg-prompt_cache_size-error" />
+              <span class="hint" id="cfg-prompt_cache_size-now"></span>
+              <span class="field-error" id="cfg-prompt_cache_size-error"></span>
+            </div>
+            <div class="setting">
+              <label for="cfg-prompt_cache_bytes">Prompt cache limit (bytes)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-prompt_cache_bytes" placeholder="automatic" aria-describedby="cfg-prompt_cache_bytes-now cfg-prompt_cache_bytes-error" />
+              <span class="hint" id="cfg-prompt_cache_bytes-now"></span>
+              <span class="field-error" id="cfg-prompt_cache_bytes-error"></span>
+            </div>
+            <div class="setting">
+              <label for="cfg-mlx_cache_limit_mb">MLX buffer cache limit (MB)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-mlx_cache_limit_mb" placeholder="automatic" aria-describedby="cfg-mlx_cache_limit_mb-now cfg-mlx_cache_limit_mb-error" />
+              <span class="hint" id="cfg-mlx_cache_limit_mb-now"></span>
+              <span class="field-error" id="cfg-mlx_cache_limit_mb-error"></span>
+            </div>
+            <div class="setting">
+              <label for="cfg-two_model_context_tokens">Two-model context cap (tokens each)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-two_model_context_tokens" placeholder="automatic" aria-describedby="cfg-two_model_context_tokens-now cfg-two_model_context_tokens-error" />
+              <span class="hint" id="cfg-two_model_context_tokens-now"></span>
+              <span class="field-error" id="cfg-two_model_context_tokens-error"></span>
+            </div>
+            <div class="setting">
+              <label for="cfg-memory_limit_percent">Memory limit (% of RAM)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-memory_limit_percent" placeholder="automatic" aria-describedby="cfg-memory_limit_percent-now cfg-memory_limit_percent-error" />
+              <span class="hint" id="cfg-memory_limit_percent-now"></span>
+              <span class="field-error" id="cfg-memory_limit_percent-error"></span>
+            </div>
+            </div>
+          </div>
+            <div class="field-error" id="configError" role="alert"></div>
+            <div class="server-row">
+              <button type="button" class="btn btn-primary" id="configSaveBtn" disabled>Save</button>
+              <button type="button" class="btn btn-ghost" id="configResetBtn" disabled>Reset this entry</button>
+            </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ Load Test ══════════ -->
+    <section class="view" id="view-loadtest">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="title">Load Test</h1>
+        </div>
+      </header>
+      <div class="scroll">
+        <p class="hint" id="ltNoModel" hidden>No model is installed. <a href="#download">Get one on the Download page</a>.</p>
+        <div class="panel">
+          <p class="hint">Measures one model on this Mac at the context sizes you choose, with made-up text. It starts its own server, so the API server must be stopped. A request is not sent when memory is projected to pass the gate, and the test server is ended when memory nears the limit. Memory is sampled, so a sudden jump cannot be ruled out: save your work in other apps first.</p>
+          <div class="setting page-picker">
+            <label for="ltModelSelectSearch">Model to test</label>
+            <div class="picker">
+              <select id="ltModelSelect" class="select" aria-label="Model" hidden></select>
+              <div class="search-field">
+                <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
+                <input type="text" class="input picker-input" id="ltModelSelectSearch" role="combobox" placeholder="Search models…" aria-label="Search models: model to test" aria-describedby="ltModelSelectChosen" aria-autocomplete="list" aria-expanded="false" aria-controls="ltModelSelectList" autocomplete="off" spellcheck="false" />
+                <button type="button" class="search-clear" id="ltModelSelectClear" aria-label="Clear model search" title="Clear search" tabindex="-1" hidden>×</button>
+              </div>
+              <span class="picker-chosen" id="ltModelSelectChosen"></span>
+              <ul class="picker-list" id="ltModelSelectList" role="listbox" aria-label="Model to test: models" hidden></ul>
+              <div class="sr-only" id="ltModelSelectStatus" role="status"></div>
+            </div>
+          </div>
+          <fieldset class="lt-sizes">
+            <legend>Context sizes (tokens)</legend>
+            <div class="server-row" id="ltSizes"></div>
+            <div class="server-row">
+              <label for="ltCustom">Custom size</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="ltCustom" aria-describedby="ltRange" />
+              <button type="button" class="btn btn-ghost" id="ltAddBtn">Add size</button>
+            </div>
+            <p class="hint" id="ltRange"></p>
+          </fieldset>
+          <details class="server-details">
+            <summary>Run values (saved when a test starts)</summary>
+            <div class="settings-grid">
+              <div class="setting">
+                <label for="lt-reply_tokens">Reply tokens per request</label>
+                <input type="number" step="1" inputmode="numeric" class="input" id="lt-reply_tokens" aria-describedby="lt-reply_tokens-note" />
+                <span class="hint" id="lt-reply_tokens-note">Longer replies give a steadier write speed.</span>
+              </div>
+              <div class="setting">
+                <label for="lt-rounds">Rounds per size</label>
+                <input type="number" step="1" inputmode="numeric" class="input" id="lt-rounds" aria-describedby="lt-rounds-note" />
+                <span class="hint" id="lt-rounds-note">Each round is a new conversation and a follow-up.</span>
+              </div>
+              <div class="setting">
+                <label for="lt-margin_percent">Safety margin (%)</label>
+                <input type="number" step="1" inputmode="numeric" class="input" id="lt-margin_percent" aria-describedby="lt-margin_percent-note" />
+                <span class="hint" id="lt-margin_percent-note">A request is sent only if memory is projected to stay this far under the limit.</span>
+              </div>
+              <div class="setting">
+                <label for="lt-timeout_seconds">Time limit per size (seconds)</label>
+                <input type="number" step="1" inputmode="numeric" class="input" id="lt-timeout_seconds" aria-describedby="lt-timeout_seconds-note" />
+                <span class="hint" id="lt-timeout_seconds-note">The size is stopped after this.</span>
+              </div>
+            </div>
+          </details>
+          <div class="field-error" id="ltError" role="alert"></div>
+          <p class="server-why" id="ltWhy" role="status"></p>
+          <div class="server-row">
+            <button type="button" class="btn btn-primary" id="ltStartBtn" aria-describedby="ltWhy" disabled>Start test</button>
+            <button type="button" class="btn btn-ghost" id="ltStopServerBtn" hidden>Stop API server</button>
+            <button type="button" class="btn btn-danger" id="ltCancelBtn" hidden>Cancel test</button>
+          </div>
+          <div id="ltRunning" hidden>
+            <p class="server-memory" id="ltStep"></p>
+            <progress id="ltProgress" max="1" value="0" aria-label="Prompt tokens read in this step" hidden></progress>
+            <p class="server-memory" id="ltDetail"></p>
+          </div>
+          <div class="sr-only" id="ltAnnounce" role="status"></div>
+        </div>
+        <div role="status">
+          <div class="notice" id="ltOutcome" hidden>
+            <div class="notice-body">
+              <div class="notice-title" id="ltOutcomeTitle"></div>
+              <div class="notice-text" id="ltOutcomeText"></div>
+            </div>
+          </div>
+        </div>
+        <div id="ltResults"></div>
       </div>
     </section>
 
@@ -464,10 +707,6 @@
     </section>
 
   </main>
-</div>
-<div class="load-problem" id="loadProblemBox">
-  <div id="loadProblem" role="alert"></div>
-  <button class="btn btn-mini btn-ghost" id="loadProblemDismiss" type="button" hidden>Dismiss</button>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="/app.js"></script>

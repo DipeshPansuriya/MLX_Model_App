@@ -68,8 +68,15 @@ INSTALLER = ROOT / "scripts" / "install.sh"
 REPO = "DipeshPansuriya/MLX_Model_App"
 BUILD_RECORD = "SHA256SUMS"
 # Sources that end up in the bundle; a release tag must hold exactly these.
-SHIPPED = ("app.py", "mlx_guard.py", "ui", "packaging")
-BUNDLED = ("app.py", "mlx_guard.py", "ui/index.html", "ui/style.css", "ui/app.js")
+SHIPPED = ("app.py", "mlx_guard.py", "mlx_loadtest.py", "ui", "packaging")
+BUNDLED = (
+    "app.py",
+    "mlx_guard.py",
+    "mlx_loadtest.py",
+    "ui/index.html",
+    "ui/style.css",
+    "ui/app.js",
+)
 
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
 APP_VERSION_RE = re.compile(r'^APP_VERSION\s*=\s*"([^"]+)"', re.MULTILINE)

@@ -27,23 +27,18 @@ flowchart TB
             end
 
             subgraph STATE["State — single source of truth"]
-                SLOT["model · tokenizer<br/>loaded_repo"]
+                SLOT["server state"]
                 SESS["server_proc · server_lines"]
                 PROG["downloads · install"]
                 VERS["versions · app_release"]
             end
 
             subgraph WORK["worker threads"]
-                WLOAD["worker_load"]
+                WCHAT["stream_chat"]
                 WDL["worker_download"]
                 WINST["worker_install"]
                 WVER["worker_check_versions"]
                 WSRV["worker_server_start"]
-            end
-
-            subgraph MLX["mlx_lm — in process"]
-                LOAD["load()"]
-                GEN["stream_generate()"]
             end
 
             subgraph FILES["durable files"]
@@ -67,10 +62,9 @@ flowchart TB
     ROUTER <-->|"read snapshot<br/>mutate under lock"| STATE
     ROUTER -->|"spawn"| WORK
     WORK -->|"update"| STATE
-    WLOAD --> LOAD
-    LOAD -->|"weights"| CACHE
-    ROUTER -->|"stream"| GEN
-    GEN --> SLOT
+    ROUTER -->|"stream"| WCHAT
+    WCHAT -->|"HTTP · 127.0.0.1:8080"| SRV
+    SRV -->|"read weights"| CACHE
     WDL -->|"snapshot_download"| HF
     WDL --> CACHE
     WVER --> PYPI
@@ -101,8 +95,8 @@ flowchart TB
 | UI/API port | `127.0.0.1:8765` | `app.py`, `PORT` |
 | OpenAI server port | `127.0.0.1:8080` | `app.py`, `SERVER_PORT` |
 | Server is a child process | started through `mlx_guard.py` | `app.py`, `GUARD_SCRIPT` |
-| Inference is in-process | `stream_generate` | `app.py` |
-| One model slot in the app process | `State.loaded_repo` | `app.py`, class `State` |
+| Inference is in the API server child (2.0.13) | `stream_chat` proxy | `app.py` |
+| The app process loads no model | no `load` call | `app.py` |
 | Server child models | one in 2.0.9; up to two in the unreleased source, taking turns | `mlx_guard.py`, `install_multi` |
 | Logs are files | `~/.mlx_studio/logs/` | `app.py`, `LOG_DIR` |
 | Weights are a file tree | Hugging Face cache | `app.py`, `CACHE_DIR` |

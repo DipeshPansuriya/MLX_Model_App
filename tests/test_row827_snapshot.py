@@ -123,36 +123,12 @@ def break_model(app, repo, how):
 
 @pytest.mark.parametrize("how", BREAKS)
 class TestIncompleteModelInUse:
-    @pytest.mark.parametrize("state", ["loaded_repo", "loading_repo"])
-    def test_the_budget_still_deducts_the_chat_model(self, app_module, ram, how, state):
-        cache_model(app_module, CHAT, weights=20 * GB)
-        setattr(app_module.STATE, state, CHAT)
-        break_model(app_module, CHAT, how)
-        assert app_module._server_budget() == SHARE - 20 * GB
-
-    def test_a_pair_that_did_not_fit_still_does_not(self, app_module, ram, how):
-        for repo in (A, B):
-            cache_model(app_module, repo, weights=6 * GB)
-        cache_model(app_module, CHAT, weights=20 * GB)
-        app_module.STATE.loaded_repo = CHAT
-        assert app_module.server_memory_estimate([A, B])["fits"] is False
-        break_model(app_module, CHAT, how)
-        assert app_module.server_memory_estimate([A, B])["fits"] is False
-
     def test_a_served_model_keeps_its_weights_and_config(self, app_module, monkeypatch, ram, how):
         serving(app_module, monkeypatch)
         before = app_module._server_models([A, B])
         break_model(app_module, A, how)
         assert app_module._server_models([A, B]) == before
         assert before[0][1] == apps.CONFIG and before[0][2] == 4 * GB
-
-    def test_a_chat_load_is_still_refused(self, app_module, monkeypatch, ram, how):
-        serving(app_module, monkeypatch)
-        # 22 GB beside the pair's 11.8 GB is over the 33.3 GB share.
-        cache_model(app_module, CHAT, weights=22 * GB)
-        assert "allowed" in app_module.chat_load_problem(CHAT)
-        break_model(app_module, CHAT, how)
-        assert "allowed" in app_module.chat_load_problem(CHAT)
 
 
 def two_revisions(app, newest):

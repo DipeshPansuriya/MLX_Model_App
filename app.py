@@ -16,15 +16,18 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import functools
+import http.client
 import importlib.util
 import json
 import math
 import os
 import platform
+import queue
 import re
 import secrets
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -74,6 +77,7 @@ SERVER_LOG = LOG_DIR / "server.log"
 UI_DIR = Path(__file__).resolve().parent / "ui"
 # The API server starts through this wrapper, which checks every request.
 GUARD_SCRIPT = Path(__file__).resolve().parent / "mlx_guard.py"
+LOADTEST_SCRIPT = Path(__file__).resolve().parent / "mlx_loadtest.py"
 # The .app keeps this next to app.py, in Contents/Resources.
 APP_ICON = Path(__file__).resolve().parent / "AppIcon.icns"
 
@@ -85,6 +89,13 @@ LOG_LOCK = threading.Lock()
 HOST = "127.0.0.1"
 PORT = 8765
 SERVER_PORT = 8080
+# Chat asks the running API server with these settings.
+CHAT_SETTINGS = {"max_tokens": 2048, "temperature": 0.7, "top_p": 0.95}
+CHAT_CONNECT_SECONDS = 5
+CHAT_BEAT_SECONDS = 1.0  # how often a silent wait is reported to the browser
+CHAT_LINE_BYTES = 1024 * 1024
+CHAT_ERROR_BYTES = 64 * 1024
+CHAT_CUT_SHORT = "The API server stopped before the reply finished. Check the API Server page."
 # mlx_lm cuts replies at 512 tokens when a client sends no max_tokens.
 SERVER_MAX_TOKENS = 8192
 # Two models at once (see mlx_guard.install_multi). The share of memory they may
@@ -93,6 +104,68 @@ SERVER_MAX_MODELS = 2
 # Limits for reading server.last.json: far above two real model ids.
 LAST_MODELS_MAX_BYTES = 4096
 MODEL_NAME_MAX = 200
+# The limits the user may set in settings.json: (lowest, highest). A key that is
+# absent keeps the built-in rule. Ports, hosts, the token, Origin/CSP checks and
+# paths are deliberately not here.
+SETTINGS = {
+    "max_context_tokens": (4096, 100_000_000),
+    "two_model_context_tokens": (8192, 32768),
+    "memory_limit_percent": (30, 80),
+    "server_max_reply_tokens": (64, 131072),
+    "chat_max_reply_tokens": (64, 131072),
+    "prompt_cache_size": (1, 100),
+    "prompt_cache_bytes": (100_000_000, 100_000_000_000),
+    "mlx_cache_limit_mb": (0, 1_000_000),  # mlx_guard.CACHE_LIMIT_MB_RANGE
+    "chat_temperature": (0, 2),
+    "chat_top_p": (0.05, 1),
+    # (first, last) of CHOICE_SETTINGS; the read step is mlx_guard.PREFILL_RANGE.
+    "performance_mode": ("standard", "advanced"),
+    "kv_bits": (4, 8),
+    "kv_group_size": (32, 128),
+    "prefill_step_size": (64, 2048),
+}
+# These take one of the listed values only (the numbers: mlx_guard.KV_BITS, KV_GROUPS).
+CHOICE_SETTINGS = {
+    "performance_mode": ("standard", "save_memory", "advanced"),
+    "kv_bits": (4, 8),
+    "kv_group_size": (32, 64, 128),
+}
+# mlx_lm's own flags. Advanced passes the set ones; they are never merged by "lower".
+PERFORMANCE_FLAGS = ("kv_bits", "kv_group_size", "prefill_step_size")
+PERFORMANCE_SETTINGS = ("performance_mode", *PERFORMANCE_FLAGS)
+# What "Save memory" passes: the pair measured on one model and one Mac.
+SAVE_MEMORY_FLAGS = {"kv_bits": 8, "prefill_step_size": 256}
+# These take decimals; every other key takes whole numbers.
+DECIMAL_SETTINGS = ("chat_temperature", "chat_top_p")
+# The guard picks these by the model it loads: {key: name in the launch stamp}.
+PER_MODEL_AT_START = {
+    "max_context_tokens": "model_contexts",
+    "mlx_cache_limit_mb": "model_cache_limits",
+}
+# Sent with each Chat request, so a change needs no server restart.
+CHAT_ONLY_SETTINGS = ("chat_max_reply_tokens", *DECIMAL_SETTINGS)
+# The "load_test" block of settings.json. The offered sizes are only test sizes, none
+# of them a chosen limit. margin_percent: see also mlx_loadtest.GATE_MARGIN_PERCENT.
+LOAD_TEST_SIZES = (4096, 8192, 16384, 32768)
+LOAD_TEST_SIZE_RANGE = (4096, 100_000_000)
+LOAD_TEST_MAX_SIZES = 8
+LOAD_TEST_NUMBERS = {  # key: (default, lowest, highest)
+    "reply_tokens": (256, 32, 1024),
+    "rounds": (2, 1, 3),
+    "margin_percent": (5, 5, 20),
+    "timeout_seconds": (900, 60, 3600),
+}
+LOAD_TEST_LISTS = {"sizes": LOAD_TEST_SIZES, "last_sizes": ()}
+LOADTEST_RESULT_BYTES = 256 * 1024
+LOADTEST_RUNS_KEPT = 5  # for each model
+LOADTEST_CANCEL_SECONDS = 10  # then the runner's process group is killed
+LOADTEST_LINE_BYTES = 64 * 1024
+LOADTEST_LOG_LINES = 50
+LOADTEST_WAIT_SECONDS = 40  # longer than the runner waits for its server
+# The keys a model may override under "models"; the memory percent is for the whole app.
+MODEL_SETTINGS = tuple(key for key in SETTINGS if key != "memory_limit_percent")
+SETTINGS_MAX_BYTES = 64 * 1024
+SETTINGS_LOCK = threading.Lock()
 SERVER_RAM_FRACTION = 0.52
 # How long a reading of the free memory is shown before it is taken again.
 FREE_CACHE_SECONDS = 10
@@ -907,11 +980,6 @@ def model_catalog() -> list[dict]:
 class State:
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.model = None
-        self.tokenizer = None
-        self.loaded_repo: str | None = None
-        self.loading_repo: str | None = None
-        self.load_error: str | None = None
         self.generating = False
         self.stop_event = threading.Event()  # replaced for every reply
         self.deleting: set[str] = set()
@@ -920,9 +988,13 @@ class State:
         self.server_pending: list[str] = []  # requested, not yet running
         self.server_stops = 0  # a queued start older than the last Stop is dropped
         self.server_proc: subprocess.Popen | None = None
+        self.loadtest: dict | None = None  # the running or last load test
+        self.loadtest_complaints: set[str] = set()
         self.server_repo: str | None = None
         self.server_repos: list[str] = []  # the first is server_repo
         self.server_context: int | None = None  # tokens per model, for two
+        self.server_started_with: str | None = None  # the settings of the last launch
+        self.settings_complaint = ""  # the last settings.json problem logged
         self.free_read: tuple[float, int | None] | None = None  # see free_memory
         self.server_lines: list[str] = []
         self.server_background = False
@@ -946,25 +1018,23 @@ class State:
         self.setup_lines: list[str] = []
 
     # -- models ---------------------------------------------------------- #
-    def _release_locked(self) -> str | None:
-        repo = self.loaded_repo
-        self.model = None
-        self.tokenizer = None
-        self.loaded_repo = None
-        self.load_error = None
-        return repo
-
     # -- API server ------------------------------------------------------- #
     def cancel_pending_starts(self) -> None:
         with self.lock:
             self.server_stops += 1
             self.server_fallback = None
 
+    # -- load test -------------------------------------------------------- #
+    def testing(self, repo: str | None = None) -> bool:
+        """Whether a load test is running (of ``repo``, when one is named)."""
+        run = self.loadtest
+        return bool(run and run["active"] and repo in (None, run["repo"]))
+
     # -- packages --------------------------------------------------------- #
     def reserve_install(self, kind: str) -> bool:
         """Claim the single pip slot; False while an install is running."""
         with self.lock:
-            if self.install["running"]:
+            if self.install["running"] or self.testing():
                 return False
             self.install = {"running": True, "kind": kind, "lines": []}
             return True
@@ -973,7 +1043,8 @@ class State:
     def reserve_download(self, repo: str) -> threading.Event | None:
         """Claim the download slot for repo; None when it is already taken."""
         with self.lock:
-            if repo in self.deleting or self.downloads.get(repo, {}).get("status") == "running":
+            busy = repo in self.deleting or self.testing(repo)
+            if busy or self.downloads.get(repo, {}).get("status") == "running":
                 return None
             self.downloads[repo] = {
                 "repo": repo,
@@ -986,10 +1057,8 @@ class State:
 
     def in_use_locked(self, repo: str) -> str | None:
         """Why repo cannot be deleted now, or None. Caller holds the lock."""
-        if self.loaded_repo == repo:
-            return "unload the model first"
-        if self.loading_repo == repo:
-            return "the model is loading"
+        if self.testing(repo):
+            return LOADTEST_BUSY
         serving = self.server_proc is not None or _pid_alive(self.server_pid)
         if repo in self.server_pending or (
             serving
@@ -1016,11 +1085,6 @@ class State:
         hf_v = pkg_version("huggingface-hub")
         with self.lock:
             downloads = [dict(d) for d in self.downloads.values()]
-            loaded = {
-                "repo": self.loaded_repo,
-                "loading": self.loading_repo,
-                "error": self.load_error,
-            }
         view = _resident_view(self.server_pid)
         return {
             "app": {
@@ -1052,13 +1116,18 @@ class State:
                 "mlx_lm_missing": not mlx_lm_v,
             },
             "models": models,
-            "loaded": loaded,
             "server": {
                 "running": self.server_proc is not None or _pid_alive(self.server_pid),
                 "repo": self.server_repo,
                 "repos": list(self.server_repos),
                 **view,
                 **_server_limits(list(self.server_repos), view),
+                "performance": _performance_view(list(self.server_repos), self.server_pid),
+                "settings": settings_view(),
+                "model_settings": _read_settings()[1],
+                "settings_pending": _settings_pending(
+                    self.server_proc is not None or _pid_alive(self.server_pid), view
+                ),
                 "port": SERVER_PORT,
                 "endpoint": f"http://{HOST}:{SERVER_PORT}/v1",
                 "tool_support": tool_support(),
@@ -1070,10 +1139,12 @@ class State:
                 "down_notice": self.server_down_notice,
                 "apply_notice": self.server_apply_notice,
                 "starting": bool(self.server_pending),
+                **_server_readiness(),
                 "pid": self.server_pid,
                 "unguarded": self.server_unguarded and _pid_alive(self.server_pid),
             },
             "downloads": downloads,
+            "loadtest": loadtest_summary(),
             "install": {
                 "running": self.install["running"],
                 "kind": self.install["kind"],
@@ -1083,93 +1154,157 @@ class State:
         }
 
 
-def clear_mlx_cache() -> None:
-    try:
-        import mlx.core as mx
-
-        mx.clear_cache()
-    except Exception as exc:
-        print(f"mlx cache release skipped: {exc}")
-
-
 STATE = State()
 
 
 # --------------------------------------------------------------------------- #
 # Chat streaming
 # --------------------------------------------------------------------------- #
-def stream_chat(messages: list[dict], stop: threading.Event):
-    """Yield ('token', text) / ('done', meta) / ('error', msg) tuples."""
-    with STATE.lock:
-        model = STATE.model
-        tokenizer = STATE.tokenizer
-        repo = STATE.loaded_repo
-    if model is None or tokenizer is None:
-        yield ("error", "No model is loaded. Load a model first.")
-        return
-
+def _chat_refusal(stream: http.client.HTTPResponse) -> str:
+    """The API server's own words for a refused request."""
     try:
-        from mlx_lm import stream_generate
-        from mlx_lm.sample_utils import make_sampler
+        error = json.loads(stream.read(CHAT_ERROR_BYTES))["error"]
+        if isinstance(error, dict):
+            error = error["message"]
+        said = str(error)[:500]
+    except Exception:  # not the JSON mlx_lm sends: the status line has to do
+        said = f"{stream.status} {stream.reason}"
+    return f"The API server refused the request: {said}"
 
-        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-        sampler = make_sampler(temp=0.7, top_p=0.95)
-        last = None
-        started = time.time()
-        for resp in stream_generate(model, tokenizer, prompt, max_tokens=2048, sampler=sampler):
-            if stop.is_set():
-                break
-            last = resp
-            yield ("token", resp.text)
-        elapsed = max(time.time() - started, 1e-6)
-        meta = {
-            "tokens": getattr(last, "generation_tokens", 0) if last else 0,
-            "tps": round(getattr(last, "generation_tps", 0.0) if last else 0.0, 1),
-            "peak_gb": round(getattr(last, "peak_memory", 0.0) if last else 0.0, 2),
-            "prompt_tokens": getattr(last, "prompt_tokens", 0) if last else 0,
-            "elapsed": round(elapsed, 2),
-            "stopped": stop.is_set(),
-            "repo": repo,
+
+def _read_reply(conn: http.client.HTTPConnection, body: bytes, put) -> None:
+    """Send the request and ``put`` what comes back; runs in its own thread."""
+    usage, finish = {}, None
+    try:
+        conn.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
+        response = conn.getresponse()
+        if response.status != 200:
+            put(("error", _chat_refusal(response)))
+            return
+        while line := response.readline(CHAT_LINE_BYTES):
+            line = line.decode("utf-8").strip()
+            if line.startswith(": keepalive "):
+                done, _, total = line.removeprefix(": keepalive ").partition("/")
+                with contextlib.suppress(ValueError):  # no figures: only the progress is lost
+                    put(("status", {"state": "prompt", "done": int(done), "total": int(total)}))
+            if not line.startswith("data: "):
+                continue
+            if line == "data: [DONE]":
+                put(("end", {"usage": usage, "finish": finish}))
+                return
+            data = json.loads(line.removeprefix("data: "))
+            usage = data.get("usage") or usage
+            for choice in data.get("choices") or []:
+                finish = choice.get("finish_reason") or finish
+                delta = choice.get("delta") or {}
+                for kind, key in (("reasoning", "reasoning"), ("token", "content")):
+                    if isinstance(delta.get(key), str) and delta[key]:
+                        put((kind, delta[key]))
+        put(("error", CHAT_CUT_SHORT))
+    except (OSError, http.client.HTTPException):
+        put(("error", CHAT_CUT_SHORT))
+    except Exception as exc:  # a reply that is not what mlx_lm sends
+        put(("error", f"The API server sent a reply that could not be read: {exc}"[:500]))
+
+
+def _reply_stats(usage: dict, asked: float, first, ended: float, mode: str | None) -> dict:
+    """The figures under a reply: the server's counts and this app's clock.
+
+    None where a figure is unknown: nothing is estimated.
+    """
+    counts = {k: usage.get(f"{k}_tokens") for k in ("prompt", "completion")}
+    prompt, reply = (v if type(v) is int and v >= 0 else None for v in counts.values())
+    writing = ended - first if first else 0
+    return {
+        "first_s": round(first - asked, 2) if first else None,
+        # One token, or no time between the first and last, is not a speed.
+        "tps": round(reply / writing, 1) if reply and reply > 1 and writing >= 0.05 else None,
+        "prompt_tokens": prompt,
+        "reply_tokens": reply,
+        "mode": mode,
+    }
+
+
+def stream_chat(repo: str, messages: list[dict], stop: threading.Event):
+    """Ask the running API server, yielding ``(event, data)`` for the browser.
+
+    ``status`` is repeated while nothing arrives, so the screen can say it is waiting
+    and a browser that has gone away is noticed. Closing this generator closes the
+    request to the server.
+    """
+    body = json.dumps(
+        {
+            "model": repo,
+            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            **chat_settings(repo),
         }
-        yield ("done", meta)
-    except Exception as exc:
-        yield ("error", str(exc))
+    ).encode("utf-8")
+    conn = http.client.HTTPConnection(HOST, SERVER_PORT, timeout=CHAT_CONNECT_SECONDS)
+    try:
+        conn.connect()
+    except OSError:
+        yield ("error", "The API server could not be reached. Check the API Server page.")
+        return
+    # Kept: http.client lets go of the socket once the reply headers are read.
+    sock = conn.sock
+    # Once closed here, a late reader thread must not open it again and ask after all.
+    conn.auto_open = 0
+    # No time limit from here: the server may be busy with another client for minutes.
+    sock.settimeout(None)
+    inbox: queue.Queue = queue.Queue()
+    asked = time.monotonic()
+    threading.Thread(target=_read_reply, args=(conn, body, inbox.put), daemon=True).start()
+    pieces, first = 0, None
+    try:
+        while True:
+            try:
+                item = inbox.get(timeout=CHAT_BEAT_SECONDS)
+            except queue.Empty:
+                item = None
+            if stop.is_set():
+                item = ("end", {"usage": {}, "finish": None})
+            if item is None:
+                yield ("status", {"state": "waiting"})
+                continue
+            kind, data = item
+            if kind in ("token", "reasoning"):
+                pieces += 1
+                first = first or time.monotonic()
+            if kind != "end":
+                yield item
+                if kind == "error":
+                    return
+                continue
+            tokens = data["usage"].get("completion_tokens") or pieces
+            ended = time.monotonic()
+            elapsed = max(ended - first, 1e-6) if first else 0
+            mode = performance_in_force(repo)
+            yield (
+                "done",
+                {
+                    "tokens": tokens,
+                    "tps": round(tokens / elapsed, 1) if elapsed else 0.0,
+                    "elapsed": round(elapsed, 2),
+                    "stopped": stop.is_set(),
+                    "truncated": data["finish"] == "length",
+                    "repo": repo,
+                    "stats": _reply_stats(data["usage"], asked, first, ended, mode),
+                },
+            )
+            return
+    finally:
+        # Shutting the socket down wakes the reader and tells the server to stop.
+        with contextlib.suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+        conn.close()
+        sock.close()
 
 
 # --------------------------------------------------------------------------- #
 # Background workers
 # --------------------------------------------------------------------------- #
-def worker_load(repo: str) -> None:
-    with STATE.lock:
-        STATE.loading_repo = repo
-        STATE.load_error = None
-        # One model slot: free the old one before the new one takes memory.
-        previous = STATE._release_locked()
-    if previous:
-        clear_mlx_cache()
-        log_activity("model", previous, "info", "unloaded from memory")
-    # Before the weights are read, so the server cannot take the same room.
-    _chat_model_changed()
-    log_activity("model", repo, "running", "load started")
-    try:
-        from mlx_lm import load
-
-        model, tokenizer = load(repo)
-        with STATE.lock:
-            STATE.model = model
-            STATE.tokenizer = tokenizer
-            STATE.loaded_repo = repo
-            STATE.loading_repo = None
-        log_activity("model", repo, "success", "loaded into memory")
-    except Exception as exc:
-        with STATE.lock:
-            STATE.loading_repo = None
-            STATE.load_error = str(exc)[:500]
-        log_activity("model", repo, "failed", str(exc)[:300])
-        log_app("error", "model load failed", repo=repo, error=str(exc)[:500])
-        _chat_model_changed()
-
-
 class DownloadCancelled(Exception):
     pass
 
@@ -1456,9 +1591,22 @@ def _resident_view(pid: int | None) -> dict:
     events = data.get("events")
     sizes = ("budget_bytes", "active_bytes", "peak_bytes")
     oversize = data.get("oversize")
+    limits = data.get("prompt_limits")
+    # 0 is kept: that model accepts no prompt.
+    limits = (
+        {repo: most for repo, most in limits.items() if type(most) is int and most >= 0}
+        if isinstance(limits, dict)
+        else {}
+    )
     measured = all(isinstance(data.get(key), int) for key in sizes)
     tokens = data.get("context_tokens")
+    started = data.get("started_with")
     return {
+        "started_with": started if isinstance(started, str) else None,
+        # The longest prompt the server accepts per model (see mlx_guard.prompt_limit).
+        "prompt_limits": limits,
+        # Only for the message about a model that accepts no prompt.
+        "memory_used_percent": _guard_module().used_percent() if 0 in limits.values() else None,
         "context_tokens": tokens if isinstance(tokens, int) and tokens > 0 else None,
         "resident": _resident_models(data),
         # Loaded although it does not fit the budget.
@@ -1521,31 +1669,10 @@ def _snapshot_dir(repo: str) -> Path:
 
 
 def _server_budget() -> int:
-    """Memory the server's models may use; the app's own chat model comes off it."""
-    budget = int(SERVER_RAM_FRACTION * (hardware().get("ram_bytes") or 0))
-    chat = STATE.loaded_repo or STATE.loading_repo
-    if chat:
-        budget -= _guard_module().weights_bytes(_snapshot_dir(chat))
-    return max(budget, 0)
-
-
-def _publish_server_budget() -> None:
-    """Tell a two-model server what the Chat model leaves it, from its next load."""
-    temp = _budget_file().with_suffix(".budget.tmp")
-    # 1, not 0, when nothing is left: the guard ignores a figure below 1.
-    left = str(max(_server_budget(), 1))
-    with contextlib.suppress(OSError):
-        temp.unlink(missing_ok=True)
-        # A new private file: a link planted under this name is never written through.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        with os.fdopen(os.open(temp, flags, 0o600), "w", encoding="utf-8") as handle:
-            handle.write(left)
-        temp.replace(_budget_file())
-
-
-def _chat_model_changed() -> None:
-    if len(STATE.server_repos) > 1:
-        _publish_server_budget()
+    """Memory the server's models may use."""
+    percent = user_settings()["memory_limit_percent"]
+    share = min(SERVER_RAM_FRACTION, percent / 100) if percent else SERVER_RAM_FRACTION
+    return int(share * (hardware().get("ram_bytes") or 0))
 
 
 def free_memory(fresh: bool = False) -> int | None:
@@ -1571,11 +1698,18 @@ def _kv_per_token(models: list) -> int:
     )
 
 
+def _reply_bytes(config: dict, tokens: int, pair: bool) -> int:
+    """Memory above the weights for ``tokens``: one model's figure is the larger one."""
+    guard = _guard_module()
+    factor = guard.REPLY_FACTOR if pair else guard.ONE_MODEL_FACTOR
+    return guard.kv_reserve(config, tokens, factor)
+
+
 def _server_need(models: list, tokens: int, cache: int) -> dict:
     """What the server takes holding ``models`` with ``tokens`` of context each."""
     guard = _guard_module()
     weights = sum(size for _, _, size in models)
-    reply = max(guard.kv_reserve(config, tokens) for _, config, _ in models)
+    reply = max(_reply_bytes(config, tokens, len(models) > 1) for _, config, _ in models)
     return {
         "weights_bytes": weights,
         "reply_bytes": reply,
@@ -1617,48 +1751,6 @@ def _server_limits(asked: list[str], view: dict) -> dict:
     return limits
 
 
-def chat_load_problem(repo: str) -> str | None:
-    """Why this Chat model cannot be loaded beside a two-model API server, or None."""
-    with STATE.lock:
-        pid, asked = STATE.server_pid, list(STATE.server_repos)
-        running = STATE.server_proc is not None or _pid_alive(pid)
-    view = _resident_view(pid)
-    if not running or len(asked) < 2 or view["multi_off"] is not None:
-        return None
-    share = int(SERVER_RAM_FRACTION * (hardware().get("ram_bytes") or 0))
-    chat = _guard_module().weights_bytes(_snapshot_dir(repo))
-    # The pair asked for, which can come back, and the two loaded now.
-    needs = _running_needs(asked, view)
-    need = max(figures["total_bytes"] for figures in needs)
-    server = need
-    if view["memory"]:
-        now = needs[-1]
-        used = view["memory"]["active_bytes"] + now["reply_bytes"] + now["margin_bytes"]
-        server = max(server, used)
-    if not share or not chat:
-        return None
-    if server + chat > share:
-        return (
-            "not enough memory: the API server keeps two models (about "
-            f"{server / 1e9:.1f} GB) and this model adds {chat / 1e9:.1f} GB, over the "
-            f"{share / 1e9:.1f} GB allowed. Stop the API server or choose a smaller model."
-        )
-    free = free_memory(fresh=True)
-    if free is None:
-        return None
-    guard = _guard_module()
-    held = view["memory"]["active_bytes"] if view["memory"] else 0
-    more = max(0, need - held)
-    if chat + more <= free - guard.FREE_RESERVE:
-        return None
-    return (
-        f"not enough free memory: {free / 1e9:.1f} GB free, and this model "
-        f"({chat / 1e9:.1f} GB), what the API server may still take ({more / 1e9:.1f} GB) and "
-        f"{guard.FREE_RESERVE / 1e9:.1f} GB for macOS need more. Close apps, stop the API "
-        "server or choose a smaller model."
-    )
-
-
 def _running_server_bytes() -> int:
     """What a running server holds: a start replaces it, so that memory comes back."""
     memory = _resident_view(STATE.server_pid)["memory"]
@@ -1669,7 +1761,8 @@ def server_memory_estimate(repos: list[str], fresh: bool = False) -> dict:
     """Calculated memory for the API server holding ``repos`` together.
 
     For two, the context per model follows the smaller of the fixed share of RAM and
-    what is free now. One model is only described: nothing is read or refused.
+    what is free now. One model is never refused here: its context follows what other
+    apps leave under the memory ceiling, as in mlx_guard, and is only described.
     """
     guard = _guard_module()
     static = _server_budget()
@@ -1679,16 +1772,36 @@ def server_memory_estimate(repos: list[str], fresh: bool = False) -> dict:
     budget = static
     if free is not None:
         budget = max(0, min(static, held + free - guard.FREE_RESERVE))
+    settings = server_settings(repos)
+    ceiling = guard.memory_ceiling(settings["memory_limit_percent"])
+    others = None
+    if not pair:
+        others = _other_apps_bytes()
+        if others is not None:
+            budget = max(0, ceiling - others)
     models = _server_models(repos)
     kv = _kv_per_token(models)
     weights = sum(size for _, _, size in models)
     context = guard.context_tokens(budget, weights, kv) if pair else guard.KV_TOKENS
+    cap = settings["two_model_context_tokens"]
+    cap = cap and cap // guard.CONTEXT_STEP * guard.CONTEXT_STEP
+    capped = bool(pair and cap and cap < context)
+    if capped:
+        context = cap
     # A refused pair is described at the smallest context it would be started with.
     tokens = max(context, guard.MIN_CONTEXT)
+    chosen = None if pair else settings["max_context_tokens"]
+    alone = None  # one model's safe context
+    if not pair:
+        _, config, size = models[0]
+        if guard.kv_bytes_per_token(config):
+            alone = guard.prompt_limit(config, size, static, None, ceiling, chosen, others)
+            # Sized at what it will serve; one that serves nothing at the least it would.
+            tokens = min(guard.KV_TOKENS, alone or guard.MIN_AUTO_CONTEXT)
     cache = guard.CACHED_CONVERSATIONS * kv * tokens if pair else 0
     need = _server_need(models, tokens, cache)
     items = [
-        guard.Resident(repo, size, guard.kv_reserve(config, tokens))
+        guard.Resident(repo, size, _reply_bytes(config, tokens, pair))
         for repo, config, size in models
     ]
     # The guard's own rule, with the earlier model and a full prompt cache in memory.
@@ -1713,17 +1826,10 @@ def server_memory_estimate(repos: list[str], fresh: bool = False) -> dict:
                 f"API server, {math.ceil(least / 1e9 * 10) / 10:.1f} GB needed for 8K each. "
                 "Choose smaller models or start one model."
             )
-    free_for_one = max(budget - weights - guard.MEMORY_MARGIN, 0)
     described = []
     for repo, config, size in models:
-        per_token, limit = guard.kv_bytes_per_token(config), guard.context_limit(config)
-        if pair:
-            safe = min(context, limit or context)
-        elif per_token:
-            safe = int(free_for_one // (guard.REPLY_FACTOR * per_token))
-            safe = min(safe, limit or safe)
-        else:
-            safe = None
+        limit = guard.context_limit(config)
+        safe = min(context, limit or context) if pair else alone
         described.append(
             {
                 "repo": repo,
@@ -1738,12 +1844,72 @@ def server_memory_estimate(repos: list[str], fresh: bool = False) -> dict:
         "budget_bytes": budget,
         "free_bytes": free,
         "held_bytes": held,
-        "context_tokens": context,
+        "context_tokens": context if pair else tokens,
         "cache_cap_bytes": cache,
         "fits": fits,
         "refused": refused,
-        "free_is_limit": free is not None and held + free - guard.FREE_RESERVE < static,
+        "free_is_limit": not capped
+        and free is not None
+        and held + free - guard.FREE_RESERVE < static,
+        "capped_by_setting": capped,
+        "budget_percent": round(100 * static / ram) if (ram := hardware().get("ram_bytes")) else 52,
+        "context_warning": None
+        if pair
+        else _context_warning(models, static, settings)
+        or _low_context_warning(described[0], chosen, settings),
     }
+
+
+def _other_apps_bytes() -> int | None:
+    """What other apps hold now, without the running server's own memory."""
+    running = STATE.server_pid if _pid_alive(STATE.server_pid) else None
+    return _guard_module().other_apps_bytes(running)
+
+
+def _serving() -> bool:
+    return STATE.server_proc is not None or _pid_alive(STATE.server_pid)
+
+
+def _no_prompt_words(settings: dict) -> str:
+    return "The API server would accept no prompt for this model. " + (
+        _guard_module().low_context_words(settings["memory_limit_percent"], _serving())
+    )
+
+
+def _applied_context(models: list, budget: int, settings: dict) -> tuple[int | None, str | None]:
+    """The tokens the user's max context comes to, and why when it was lowered."""
+    chosen, percent = settings["max_context_tokens"], settings["memory_limit_percent"]
+    if not chosen:
+        return None, None
+    guard = _guard_module()
+    ceiling, others = guard.memory_ceiling(percent), _other_apps_bytes()
+    for _, config, size in models:
+        applied = guard.prompt_limit(config, size, budget, None, ceiling, chosen, others)
+        if applied is None:
+            continue
+        if applied < min(chosen, guard.context_limit(config) or chosen):
+            if applied == 0:
+                return applied, _no_prompt_words(settings)
+            share = guard.lowered(guard.MAX_RAM_FRACTION, percent)
+            return applied, (
+                f"Your max context of {chosen} tokens is more than {share:.0%} of this "
+                f"Mac's memory holds with what other apps use, so {applied} tokens apply. "
+                f"{guard.close_apps_words(_serving())}"
+            )
+        return applied, None
+    return None, None
+
+
+def _context_warning(models: list, budget: int, settings: dict) -> str | None:
+    """Said when the user's max context was lowered to fit the memory ceiling."""
+    return _applied_context(models, budget, settings)[1]
+
+
+def _low_context_warning(model: dict, chosen: int | None, settings: dict) -> str | None:
+    """Said when the automatic figure is too small to serve any prompt."""
+    if chosen or model["safe_context"] != 0:
+        return None
+    return _no_prompt_words(settings)
 
 
 def _second_model_problem(repo: str, also) -> str | None:
@@ -1849,6 +2015,47 @@ def _start_verdict(pid: int, models: int) -> str | None:
     return "failed" if failed or view["preload_done"] else None
 
 
+def _server_readiness() -> dict:
+    """``ready``: the running server can answer. ``load_failed``: it said it cannot."""
+    with STATE.lock:
+        proc, pid, count = STATE.server_proc, STATE.server_pid, len(STATE.server_repos)
+        running = proc is not None or _pid_alive(pid)
+    if not running:
+        return {"ready": False, "load_failed": False}
+    verdict = _start_verdict(pid, count)
+    # No report to wait for: an adopted server of an older build, or a guard that
+    # cannot measure loads. Its requests simply wait while it loads.
+    silent = verdict is None and (proc is None or _read_resident(pid).get("report") is False)
+    return {"ready": verdict == "ready" or silent, "load_failed": verdict == "failed"}
+
+
+def _chat_problem(repo: str) -> str | None:
+    """Why the API server cannot be asked for ``repo`` now, or None."""
+    with STATE.lock:
+        served = list(STATE.server_repos)
+        pending = bool(STATE.server_pending)
+        proc, pid = STATE.server_proc, STATE.server_pid
+        first, identity = STATE.server_repo, STATE.server_identity
+    if pending:
+        return "The API server is starting. Wait until it is ready."
+    # A pid is reused after a crash: no prompt goes to whoever has the port then.
+    running = proc.poll() is None if proc else _is_our_server(pid, first, identity)
+    if not running:
+        return "Start the API server first (API Server page)."
+    # Any other name would make the server load one more model.
+    if repo not in served:
+        return f"The API server does not serve {repo}."
+    readiness = _server_readiness()
+    if readiness["load_failed"]:
+        return (
+            "The API server could not load its model. "
+            "On the API Server page, press Stop, then Start Server."
+        )
+    if not readiness["ready"]:
+        return "The API server is starting. Wait until it is ready."
+    return None
+
+
 def _running_server() -> tuple[list[str], bool] | None:
     """``(models, background)`` of the server a new start is about to replace."""
     with STATE.lock:
@@ -1874,17 +2081,482 @@ def _last_models_file() -> Path:
     return APP_DIR / "server.last.json"
 
 
+def _read_small(path: Path, limit: int) -> bytes:
+    """A small regular file of ours, read without following a link or blocking."""
+    # Not blocking and not a link: a pipe planted here must not stall /api/state.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        # Checked before reading; the descriptor is closed whatever it is.
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            raw = handle.read(limit + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > limit:
+        raise ValueError("too large")
+    return raw
+
+
+def _write_private(path: Path, text: str) -> None:
+    # A new name, created exclusively with mode 0600: a planted link is never followed.
+    handle, temp = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(text)
+        os.replace(temp, path)
+    finally:
+        with contextlib.suppress(OSError):  # already gone after a good replace
+            os.unlink(temp)
+
+
+def _settings_file() -> Path:
+    return APP_DIR / "settings.json"
+
+
+def _valid_setting(key: str, value) -> bool:
+    if choices := CHOICE_SETTINGS.get(key):
+        return type(value) is type(choices[0]) and value in choices
+    low, high = SETTINGS[key]
+    kinds = (int, float) if key in DECIMAL_SETTINGS else (int,)
+    return type(value) in kinds and low <= value <= high
+
+
+def _valid_sizes(value, most: int, allow_none: bool = False) -> bool:
+    """A list of different whole context sizes, none above ``most``."""
+    return (
+        isinstance(value, list)
+        and (allow_none or bool(value))
+        and len(value) <= LOAD_TEST_MAX_SIZES
+        and all(type(n) is int and LOAD_TEST_SIZE_RANGE[0] <= n <= most for n in value)
+        and len(set(value)) == len(value)
+    )
+
+
+def _valid_load_test(key: str, value) -> bool:
+    if key in LOAD_TEST_LISTS:
+        return _valid_sizes(value, LOAD_TEST_SIZE_RANGE[1], allow_none=key == "last_sizes")
+    _, low, high = LOAD_TEST_NUMBERS[key]
+    return type(value) is int and low <= value <= high
+
+
+def _usable(entry: dict, keys, bad: list[str], where: str = "") -> dict[str, int]:
+    """The valid values of ``entry``; the name of each unusable one goes in ``bad``."""
+    found = {}
+    for key, value in entry.items():
+        if key in keys and _valid_setting(key, value):
+            found[key] = value
+        elif key in SETTINGS and value is not None:
+            bad.append(f"{where}{key}")
+    return found
+
+
+def _valid_repo(repo) -> bool:
+    return (
+        isinstance(repo, str)
+        and len(repo) <= MODEL_NAME_MAX
+        and bool(_guard_module().REPO_ID.fullmatch(repo))
+    )
+
+
+def _read_settings() -> tuple[dict, dict]:
+    """``(global values, {repo: values})``, only what is usable. Never raises."""
+    return _read_all_settings()[:2]
+
+
+def _read_all_settings() -> tuple[dict, dict, dict]:
+    """The global values, each model's own and the load test block. Never raises."""
+    shared, models, load_test, bad, problem = {}, {}, {}, [], ""
+    try:
+        data = json.loads(_read_small(_settings_file(), SETTINGS_MAX_BYTES).decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+        shared = _usable(data, SETTINGS, bad)
+        entries = data.get("models", {})
+        if not isinstance(entries, dict):
+            entries, bad = {}, [*bad, "models"]
+        for repo, entry in entries.items():
+            if not (_valid_repo(repo) and isinstance(entry, dict)):
+                bad.append("models entry")
+                continue
+            if own := _usable(entry, MODEL_SETTINGS, bad, "models: "):
+                models[repo] = own
+        block = data.get("load_test", {})
+        if not isinstance(block, dict):
+            block, bad = {}, [*bad, "load_test"]
+        for key, value in block.items():
+            if key in LOAD_TEST_LISTS or key in LOAD_TEST_NUMBERS:
+                if _valid_load_test(key, value):
+                    load_test[key] = value
+                else:
+                    bad.append(f"load_test: {key}")
+        if bad:
+            names = ", ".join(sorted(set(bad)))
+            problem = f"settings.json: unusable value for {names}; using the default"
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # parsing can fail in more ways than ValueError
+        problem = f"settings.json ignored, using the defaults ({type(exc).__name__})"
+    if problem and problem != STATE.settings_complaint:
+        log_app("warning", problem)
+    STATE.settings_complaint = problem  # each problem is said once
+    return shared, models, load_test
+
+
+def user_settings(repo: str | None = None) -> dict[str, int | None]:
+    """Every key of SETTINGS for ``repo``: its own value, else the global one, else None."""
+    shared, models = _read_settings()
+    return {**dict.fromkeys(SETTINGS), **shared, **models.get(repo, {})}
+
+
+def server_settings(repos: list[str]) -> dict[str, int | None]:
+    """What one server holding ``repos`` is started with: the stricter (lower) value.
+
+    The performance settings are left out: see ``performance_flags``.
+    """
+    each = [user_settings(repo) for repo in repos] or [user_settings()]
+    merged = {}
+    for key in SETTINGS:
+        values = [None if key in PERFORMANCE_SETTINGS else own[key] for own in each]
+        if key == "server_max_reply_tokens" and any(values):
+            values = [value or SERVER_MAX_TOKENS for value in values]
+        merged[key] = min((value for value in values if value is not None), default=None)
+    return merged
+
+
+def save_settings(changes: dict, repo: str | None = None) -> None:
+    """Merge checked ``changes`` into the global or one model's values; None removes."""
+    with SETTINGS_LOCK:
+        shared, models, load_test = _read_all_settings()
+        target = shared if repo is None else models.setdefault(repo, {})
+        for key, value in changes.items():
+            if value is None:
+                target.pop(key, None)
+            else:
+                target[key] = value
+        _store_settings(shared, models, load_test)
+
+
+def save_load_test(changes: dict | None) -> None:
+    """Merge checked ``changes`` into the load test block; None removes."""
+    with SETTINGS_LOCK:
+        shared, models, load_test = _read_all_settings()
+        merged = {} if changes is None else {**load_test, **changes}
+        kept = {key: value for key, value in merged.items() if value is not None}
+        _store_settings(shared, models, kept)
+
+
+def reset_settings(repo: str | None = None) -> None:
+    """Drop the global values, or one model's own; the rest is kept."""
+    with SETTINGS_LOCK:
+        shared, models, load_test = _read_all_settings()
+        if repo is None:
+            shared = {}
+        else:
+            models.pop(repo, None)
+        if shared or any(models.values()) or load_test:
+            _store_settings(shared, models, load_test)
+        else:
+            _settings_file().unlink(missing_ok=True)
+
+
+def _store_settings(shared: dict, models: dict, load_test: dict) -> None:
+    models = {repo: own for repo, own in models.items() if own}
+    data = {**shared, **({"models": models} if models else {})}
+    if load_test:
+        data["load_test"] = load_test
+    text = json.dumps(data)
+    if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
+        raise ValueError("too many model settings: reset some models first")
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    _write_private(_settings_file(), text)
+
+
+def _settings_change_problem(body: dict) -> str | None:
+    """Why a request to change or reset settings is refused, or None."""
+    repo = body.get("repo")
+    if repo is not None and not _valid_repo(repo):
+        return "repo must be a model id"
+    if body.get("reset") is True:
+        return None
+    if "load_test" in body:
+        if repo is not None:
+            return "load_test is set for the whole app, not for one model."
+        if problem := _load_test_problem(body["load_test"]):
+            return problem
+        if "values" not in body:
+            return None
+    changes = body.get("values")
+    if not isinstance(changes, dict) or not changes:
+        return "values required: an object of settings"
+    for key, value in changes.items():
+        if key not in SETTINGS:
+            return "unknown setting"
+        if repo is not None and key not in MODEL_SETTINGS:
+            return f"{key} is set for the whole app, not for one model."
+        if value is not None and not _valid_setting(key, value):
+            low, high = SETTINGS[key]
+            if choices := CHOICE_SETTINGS.get(key):
+                options = ", ".join(map(str, choices))
+                return f"{key} must be one of {options}, or empty."
+            kind = "a number" if key in DECIMAL_SETTINGS else "a whole number"
+            return f"{key} must be {kind} from {low} to {high}, or empty."
+    return _performance_problem(repo, changes) if repo is not None else None
+
+
+def _performance_problem(repo: str, changes: dict) -> str | None:
+    """Why ``repo`` cannot use the compressed memory these changes would ask for."""
+    if not any(changes.get(key) is not None for key in PERFORMANCE_SETTINGS):
+        return None
+    shared, models = _read_settings()
+    own = {**models.get(repo, {}), **changes}
+    chosen = {**shared, **{key: value for key, value in own.items() if value is not None}}
+    why = _blocked_reason(repo, _chosen_flags(chosen))
+    return why and f"{repo} cannot use compressed memory: {why}. Choose Standard."
+
+
+def _model_config(repo: str) -> dict:
+    try:
+        return _guard_module().read_config(_snapshot_dir(repo))
+    except Exception:  # not downloaded or unreadable: nothing is known
+        return {}
+
+
+def _chosen_flags(values: dict) -> dict[str, int]:
+    """The mlx_lm flags that ``values``' performance mode stands for."""
+    mode = values.get("performance_mode")
+    if mode == "save_memory":
+        return dict(SAVE_MEMORY_FLAGS)
+    if mode == "advanced":
+        return {k: values[k] for k in PERFORMANCE_FLAGS if values.get(k) is not None}
+    return {}
+
+
+def _blocked_reason(repo: str, flags: dict) -> str | None:
+    if "kv_bits" not in flags:
+        return None
+    return _guard_module().kv_problem(_model_config(repo), flags.get("kv_group_size", 64))
+
+
+def performance_flags(repo: str | None = None) -> tuple[dict, str | None]:
+    """``(flags, why a model gets none)`` for ``repo``; None: the global choice."""
+    flags = _chosen_flags(user_settings(repo))
+    why = _blocked_reason(repo, flags) if repo else None
+    return ({}, why) if why else (flags, None)
+
+
+def _model_performance(repos) -> dict[str, dict]:
+    """The models whose flags differ from the global ones (empty: Standard)."""
+    models = _read_settings()[1]
+    own = {repo for repo, values in models.items() if set(values) & set(PERFORMANCE_SETTINGS)}
+    shared = performance_flags()[0]
+    found = {repo: performance_flags(repo)[0] for repo in sorted(own | set(repos))}
+    return {repo: flags for repo, flags in found.items() if flags != shared}
+
+
+def performance_label(flags: dict) -> str:
+    chosen = {k: flags[k] for k in PERFORMANCE_FLAGS if flags.get(k) is not None}
+    if not chosen:
+        return "Standard"
+    if chosen == SAVE_MEMORY_FLAGS:
+        return "Save memory"
+    words = {
+        "kv_bits": "{}-bit memory",
+        "kv_group_size": "groups of {}",
+        "prefill_step_size": "read step {}",
+    }
+    return f"Advanced ({', '.join(words[k].format(v) for k, v in chosen.items())})"
+
+
+def _reported_performance(repo: str, pid: int | None) -> dict | None:
+    reported = _read_resident(pid).get("performance")
+    entry = reported.get(repo) if isinstance(reported, dict) else None
+    return entry if isinstance(entry, dict) else None
+
+
+def performance_in_force(repo: str) -> str | None:
+    """The mode the running server says ``repo`` has; None until it has said."""
+    entry = _reported_performance(repo, STATE.server_pid)
+    return None if entry is None else performance_label(entry)
+
+
+def _performance_view(repos: list[str], pid: int | None) -> dict:
+    """The saved mode and, per served model, the one the server reports."""
+    models = {}
+    for repo in repos:
+        flags, why = performance_flags(repo)
+        entry = _reported_performance(repo, pid)
+        note = entry.get("note") if entry else why and f"Standard is used: {why}."
+        models[repo] = {
+            "saved": performance_label(flags),
+            "in_force": None if entry is None else performance_label(entry),
+            "note": note if isinstance(note, str) else None,
+        }
+    return {"saved": performance_label(performance_flags()[0]), "models": models}
+
+
+def _load_test_problem(changes) -> str | None:
+    if changes is None:
+        return None
+    if not isinstance(changes, dict) or not changes:
+        return "load_test must be an object of values, or empty."
+    for key, value in changes.items():
+        if key not in LOAD_TEST_LISTS and key not in LOAD_TEST_NUMBERS:
+            return "unknown load test setting"
+        if value is not None and not _valid_load_test(key, value):
+            if key in LOAD_TEST_LISTS:
+                return (
+                    f"{key} must be a list of up to {LOAD_TEST_MAX_SIZES} different sizes "
+                    f"from {LOAD_TEST_SIZE_RANGE[0]}."
+                )
+            _, low, high = LOAD_TEST_NUMBERS[key]
+            return f"{key} must be a whole number from {low} to {high}, or empty."
+    return None
+
+
+def load_test_view() -> dict:
+    """Each load test value as it applies, with its default and range."""
+    saved = _read_all_settings()[2]
+    view = {}
+    for key, default in LOAD_TEST_LISTS.items():
+        low, high = LOAD_TEST_SIZE_RANGE
+        view[key] = {"value": saved.get(key, list(default)), "default": list(default)}
+        view[key].update(min=low, max=high)
+    for key, (default, low, high) in LOAD_TEST_NUMBERS.items():
+        view[key] = {"value": saved.get(key, default), "default": default, "min": low, "max": high}
+    return view
+
+
+def chat_settings(repo: str | None = None) -> dict:
+    """What a Chat request sends, with the user's values for ``repo``."""
+    own = user_settings(repo)
+    chosen = {key: own[f"chat_{key}"] for key in ("temperature", "top_p")}
+    chosen["max_tokens"] = own["chat_max_reply_tokens"]
+    return {**CHAT_SETTINGS, **{k: v for k, v in chosen.items() if v is not None}}
+
+
+def _model_settings(key: str) -> tuple[int | None, dict[str, int]]:
+    """``key``'s global value and each model's own: the guard picks by the model."""
+    shared, models = _read_settings()
+    return shared.get(key), {repo: own[key] for repo, own in models.items() if key in own}
+
+
+def _launch_stamp(settings: dict) -> str:
+    """The set values a server start depends on (Chat's values apply at once)."""
+    skipped = (*CHAT_ONLY_SETTINGS, *PER_MODEL_AT_START, *PERFORMANCE_SETTINGS)
+    used = {k: v for k, v in settings.items() if v is not None and k not in skipped}
+    if flags := performance_flags()[0]:
+        used["performance"] = flags
+    if own := _model_performance([]):
+        used["model_performance"] = own
+    for key, name in PER_MODEL_AT_START.items():
+        shared, models = _model_settings(key)
+        if shared is not None:
+            used[key] = shared
+        if models:
+            used[name] = models
+    return json.dumps(used, sort_keys=True)
+
+
+def _settings_pending(running: bool, view: dict) -> bool:
+    """Whether the running server was started with other settings than are saved."""
+    started = STATE.server_started_with
+    if started is None:  # adopted: it says itself; an older one was given none
+        started = view.get("started_with") or "{}"
+    return running and started != _launch_stamp(server_settings(list(STATE.server_repos)))
+
+
+def _memory_rule(percent: int) -> str:
+    return (
+        f"{percent}% ceiling, less what other apps use, for one model; "
+        f"{min(52, percent)}% share for two models"
+    )
+
+
+def settings_view(repo: str | None = None) -> dict:
+    """For the card and the Configuration page: each key's value, range and effect.
+
+    With ``repo``: also its own value and the one it inherits from the global values.
+    """
+    automatic = {
+        "max_context_tokens": "calculated from memory",
+        "two_model_context_tokens": "calculated, at most 32768",
+        "memory_limit_percent": _memory_rule(80),
+        "server_max_reply_tokens": str(SERVER_MAX_TOKENS),
+        "chat_max_reply_tokens": str(CHAT_SETTINGS["max_tokens"]),
+        "prompt_cache_size": str(_guard_module().CACHED_CONVERSATIONS),
+        "prompt_cache_bytes": "calculated: two conversations at the context limit",
+        "mlx_cache_limit_mb": "MLX default",
+        "chat_temperature": str(CHAT_SETTINGS["temperature"]),
+        "chat_top_p": str(CHAT_SETTINGS["top_p"]),
+        "performance_mode": "Standard",
+        "kv_bits": "off, full precision",
+        "kv_group_size": "64",
+        "prefill_step_size": "2048",
+    }
+    shared, models = _read_settings()
+    shown = {}
+    for key, value in user_settings(repo).items():
+        effective = f"automatic ({automatic[key]})" if value is None else str(value)
+        if key == "memory_limit_percent" and value is not None:
+            effective = _memory_rule(value)
+        low, high = SETTINGS[key]
+        shown[key] = {"value": value, "min": low, "max": high, "effective": effective}
+        if key in CHOICE_SETTINGS:
+            shown[key]["choices"] = list(CHOICE_SETTINGS[key])
+        if repo is not None:
+            shown[key]["own"] = models.get(repo, {}).get(key)
+            shown[key]["inherited"] = shared.get(key)
+    return shown
+
+
+def config_view(repo: str | None = None) -> dict:
+    """The Configuration page: every setting for ``repo`` (None: the global values)."""
+    settings = settings_view(repo)
+    for key, entry in settings.items():
+        entry.setdefault("own", entry["value"])
+        entry.setdefault("inherited", None)
+        entry["decimal"] = key in DECIMAL_SETTINGS
+        entry["global_only"] = key not in MODEL_SETTINGS
+    applied = message = None
+    if repo is not None and settings["max_context_tokens"]["value"]:
+        applied, message = _applied_context(
+            _server_models([repo]), _server_budget(), server_settings([repo])
+        )
+    if applied is not None and applied < settings["max_context_tokens"]["value"]:
+        settings["max_context_tokens"]["effective"] = (
+            f"{applied} (lowered from {settings['max_context_tokens']['value']})"
+            if applied
+            else "0 (no prompt accepted)"
+        )
+    return {
+        "repo": repo,
+        "settings": settings,
+        "applied_context": applied,
+        "context_message": message,
+        "load_test": load_test_view(),
+        "performance": _config_performance(repo),
+    }
+
+
+def _config_performance(repo: str | None) -> dict:
+    """The mode chosen for ``repo`` and what its model cannot do, with the reason."""
+    mode = user_settings(repo)["performance_mode"] or "standard"
+    if repo is None:
+        return {"mode": mode, "reason": None, "blocked": {}}
+    guard, config, blocked = _guard_module(), _model_config(repo), {}
+    if why := guard.kv_problem(config):
+        blocked["save_memory"] = why
+    groups = {str(g): guard.kv_problem(config, g) for g in guard.KV_GROUPS}
+    if groups := {group: why for group, why in groups.items() if why}:
+        blocked["kv_group_size"] = groups
+    return {"mode": mode, "reason": performance_flags(repo)[1], "blocked": blocked}
+
+
 def _last_models() -> list[str]:
     """The remembered ids. Anything unexpected in the file's place reads as none."""
     try:
-        # Not blocking and not a link: a pipe planted here must not stall /api/state.
-        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
-        with os.fdopen(os.open(_last_models_file(), flags), "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                return []
-            raw = handle.read(LAST_MODELS_MAX_BYTES + 1)
-        if len(raw) > LAST_MODELS_MAX_BYTES:
-            return []
+        raw = _read_small(_last_models_file(), LAST_MODELS_MAX_BYTES)
         repos = json.loads(raw.decode("utf-8"))["repos"]
         if not isinstance(repos, list) or not all(
             isinstance(name, str) and 0 < len(name) <= MODEL_NAME_MAX and name.isprintable()
@@ -1901,17 +2573,8 @@ def _remember_models(pid: int) -> None:
         repos = list(STATE.server_repos) if STATE.server_pid == pid else []
     if not repos:
         return
-    path = _last_models_file()
     with contextlib.suppress(OSError):
-        # A new name, created exclusively with mode 0600: a planted link is never followed.
-        handle, temp = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as out:
-                out.write(json.dumps({"repos": repos}))
-            os.replace(temp, path)
-        finally:
-            with contextlib.suppress(OSError):  # already gone after a good replace
-                os.unlink(temp)
+        _write_private(_last_models_file(), json.dumps({"repos": repos}))
 
 
 def _try_launch(*args) -> subprocess.Popen | None:
@@ -2069,6 +2732,75 @@ def _watch_server(
     log_app("error", "api server died", repo=repo, pid=pid, exit_code=code)
 
 
+def _server_command(
+    repo: str,
+    settings: dict,
+    port: int,
+    limits: dict | None = None,
+    performance: dict | None = None,
+) -> list[str]:
+    """The guarded server for ``repo`` on ``port``; ``limits``: the two-model plan."""
+    cmd = [
+        sys.executable,
+        str(GUARD_SCRIPT),
+        "--model",
+        repo,
+        "--host",
+        HOST,
+        "--port",
+        str(port),
+        "--max-tokens",
+        str(settings["server_max_reply_tokens"] or SERVER_MAX_TOKENS),
+        # mlx_lm defaults to "*", which lets any web page read replies.
+        "--allowed-origins",
+        f"http://{HOST}:{PORT},http://localhost:{PORT}",
+    ]
+    cache_bytes = settings["prompt_cache_bytes"]
+    if limits:
+        # The user's figure only lowers the cap the memory plan was made with.
+        planned = limits["cache_cap_bytes"]
+        cache_bytes = min(cache_bytes or planned, planned)
+    for flag, value in (
+        (
+            "--prompt-cache-size",
+            settings["prompt_cache_size"] or _guard_module().CACHED_CONVERSATIONS,
+        ),
+        ("--prompt-cache-bytes", cache_bytes),
+        ("--studio-max-context", settings["max_context_tokens"]),
+        ("--studio-memory-percent", settings["memory_limit_percent"]),
+    ):
+        if value:
+            cmd += [flag, str(value)]
+    if settings["mlx_cache_limit_mb"] is not None:  # 0 is a real value: no free cache
+        cmd += ["--studio-cache-limit-mb", str(settings["mlx_cache_limit_mb"])]
+    for key in PERFORMANCE_FLAGS:
+        if performance and key in performance:
+            cmd += [f"--{key.replace('_', '-')}", str(performance[key])]
+    return cmd
+
+
+def _server_env(
+    stamp: str,
+    served: Path,
+    resident: Path,
+    contexts: dict,
+    cache_limits: dict,
+    performance: dict | None = None,
+) -> dict:
+    return {
+        **os.environ,
+        # A request must never make the server download a model.
+        "HF_HUB_OFFLINE": "1",
+        "MLX_STUDIO_SERVED_FILE": str(served),
+        "MLX_STUDIO_RESIDENT_FILE": str(resident),
+        "MLX_STUDIO_SETTINGS": stamp,
+        # Always set, so a value from the app's own environment is never used.
+        "MLX_STUDIO_MODEL_CONTEXTS": json.dumps(contexts),
+        "MLX_STUDIO_MODEL_CACHE_LIMITS": json.dumps(cache_limits),
+        "MLX_STUDIO_MODEL_PERFORMANCE": json.dumps(performance or {}),
+    }
+
+
 def worker_server_start(
     repo: str, background: bool = False, ticket: int | None = None, also: list[str] | None = None
 ) -> None:
@@ -2113,6 +2845,9 @@ def _launch_server(
     previous: tuple[list[str], bool] | None = None,
 ) -> subprocess.Popen | None:
     """Replace any running API server. The caller holds ``STATE.server_lock``."""
+    if STATE.testing():
+        STATE.server_down_notice = f"The API server did not start: {LOADTEST_BUSY}."
+        return None
     stop_server()
     STATE.server_lines = []
     STATE.server_down_notice = None
@@ -2128,27 +2863,22 @@ def _launch_server(
         STATE.server_lines.append(limits["refused"])
         log_activity("server", repo, "failed", limits["refused"])
         return None
-    cmd = [
-        sys.executable,
-        str(GUARD_SCRIPT),
-        "--model",
-        repo,
-        "--host",
-        HOST,
-        "--port",
-        str(SERVER_PORT),
-        "--max-tokens",
-        str(SERVER_MAX_TOKENS),
-        # mlx_lm defaults to "*", which lets any web page read replies.
-        "--allowed-origins",
-        f"http://{HOST}:{PORT},http://localhost:{PORT}",
-    ]
+    settings = server_settings(repos)
+    shared, own = _model_settings("max_context_tokens")
+    cache_shared, cache_own = _model_settings("mlx_cache_limit_mb")
+    # The global figure is the fallback; a model with its own is in the map. Two models
+    # share one MLX cache, so they get the lower of their own figures.
+    sent = {
+        **settings,
+        "max_context_tokens": shared,
+        "mlx_cache_limit_mb": settings["mlx_cache_limit_mb"] if limits else cache_shared,
+    }
+    # The global flags go on the command line; a model that differs gets its own at load.
+    cmd = _server_command(repo, sent, SERVER_PORT, limits, performance_flags()[0])
     if limits:
         STATE.server_context = limits["context_tokens"]
         # Last on the line: the identity check reads from --model onwards.
         cmd += [
-            "--prompt-cache-bytes",
-            str(limits["cache_cap_bytes"]),
             "--studio-also-model",
             repos[1],
             "--studio-max-models",
@@ -2158,19 +2888,18 @@ def _launch_server(
             "--studio-kv-tokens",
             str(limits["context_tokens"]),
         ]
-    # A request must never make the server download a model.
-    env = {
-        **os.environ,
-        "HF_HUB_OFFLINE": "1",
-        "MLX_STUDIO_SERVED_FILE": str(_served_file()),
-        "MLX_STUDIO_RESIDENT_FILE": str(_resident_file()),
-        "MLX_STUDIO_BUDGET_FILE": str(_budget_file()),
-    }
+    env = _server_env(
+        _launch_stamp(settings),
+        _served_file(),
+        _resident_file(),
+        own,
+        cache_own,
+        _model_performance(repos),
+    )
+    STATE.server_started_with = env["MLX_STUDIO_SETTINGS"]
     for stale in (_served_file(), _resident_file(), _budget_file()):
         with contextlib.suppress(OSError):
             stale.unlink(missing_ok=True)
-    if len(repos) > 1:
-        _publish_server_budget()
     try:
         if background:
             # Detached: survives the app window closing, output goes to a file
@@ -2308,7 +3037,9 @@ def restore_server_state() -> None:
     STATE.server_background = bool(data.get("background"))
     STATE.server_started_at = data.get("started_at")
     STATE.server_stopping = False
-    _chat_model_changed()  # no Chat model yet: drops what the last session took off
+    # A 2.0.12 session lowered it for its Chat model; none can be loaded now.
+    with contextlib.suppress(OSError):
+        _budget_file().unlink(missing_ok=True)
     # A build without the guard may have left it. Restarting is the user's call.
     STATE.server_unguarded = not _is_guarded(pid)
     if STATE.server_unguarded:
@@ -2332,18 +3063,474 @@ def restore_server_state() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Load test (ADR-012): mlx_loadtest.py runs it; only the app writes its files
+# --------------------------------------------------------------------------- #
+LOADTEST_BUSY = "a load test is running; cancel it first"
+
+
+def _loadtest_file() -> Path:
+    return APP_DIR / "loadtest.json"
+
+
+def _loadtest_pidfile() -> Path:
+    return APP_DIR / "loadtest.pid"
+
+
+def _loadtest_command() -> list[str]:
+    return [sys.executable, str(LOADTEST_SCRIPT)]
+
+
+def _loadtest_complain(message: str) -> None:
+    if message not in STATE.loadtest_complaints:
+        STATE.loadtest_complaints.add(message)
+        log_app("warning", message)
+
+
+def _read_loadtest() -> list[dict]:
+    """The stored runs, oldest first. Never raises."""
+    try:
+        raw = _read_small(_loadtest_file(), LOADTEST_RESULT_BYTES)
+        runs = json.loads(raw.decode("utf-8"))["runs"]
+        return [
+            run
+            for run in runs
+            if isinstance(run, dict)
+            and isinstance(run.get("id"), str)
+            and isinstance(run.get("repo"), str)
+            and isinstance(run.get("rows"), list)
+            and all(isinstance(row, dict) for row in run["rows"])
+        ]
+    except FileNotFoundError:
+        return []
+    except Exception as exc:  # parsing can fail in more ways than ValueError
+        _loadtest_complain(f"loadtest.json cannot be read ({type(exc).__name__})")
+        return []
+
+
+def _save_loadtest(record: dict) -> None:
+    """Store one run, keeping the last few of each model."""
+    runs = _read_loadtest()
+    for at, run in enumerate(runs):
+        if run["id"] == record["id"]:
+            runs[at] = record
+            break
+    else:
+        runs.append(record)
+    kept, seen = [], {}
+    for run in reversed(runs):
+        seen[run["repo"]] = seen.get(run["repo"], 0) + 1
+        if seen[run["repo"]] <= LOADTEST_RUNS_KEPT:
+            kept.insert(0, run)
+    text = json.dumps({"runs": kept})
+    while kept and len(text.encode("utf-8")) > LOADTEST_RESULT_BYTES:
+        del kept[0]
+        text = json.dumps({"runs": kept})
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        _write_private(_loadtest_file(), text)
+    except OSError as exc:
+        _loadtest_complain(f"loadtest.json cannot be written ({type(exc).__name__})")
+
+
+def _stored_runs(repo: str) -> list[dict]:
+    """The runs of ``repo``, with the last one from memory if it could not be stored."""
+    runs = [run for run in _read_loadtest() if run["repo"] == repo]
+    last = STATE.loadtest
+    ended = last and not last["active"] and last["repo"] == repo
+    if ended and all(run["id"] != last["record"]["id"] for run in runs):
+        runs.append(last["record"])
+    return runs
+
+
+def _loadtest_fingerprint(repo: str) -> dict:
+    """What a result depends on; the max context is left out, as Apply changes it."""
+    unused = (*CHAT_ONLY_SETTINGS, "max_context_tokens", "two_model_context_tokens")
+    settings = {
+        k: v
+        for k, v in server_settings([repo]).items()
+        if k not in (*unused, *PERFORMANCE_SETTINGS)
+    }
+    return {
+        "revision": _snapshot_dir(repo).name,
+        "mlx": pkg_version("mlx"),
+        "mlx_lm": pkg_version("mlx-lm"),
+        "ram_bytes": hardware().get("ram_bytes"),
+        # Standard adds nothing, so results made without a mode stay current.
+        "settings": {**settings, **performance_flags(repo)[0]},
+    }
+
+
+def _model_max_size(repo: str) -> int:
+    guard = _guard_module()
+    limit = guard.context_limit(guard.read_config(_snapshot_dir(repo)))
+    return min(limit or LOAD_TEST_SIZE_RANGE[1], LOAD_TEST_SIZE_RANGE[1])
+
+
+def _loadtest_blocked_locked(repo: str) -> str | None:
+    """Why no load test of ``repo`` may start now. The caller holds ``STATE.lock``."""
+    if STATE.testing():
+        return "a load test is already running"
+    if STATE.server_pending or STATE.server_proc is not None or _pid_alive(STATE.server_pid):
+        return "stop the API server first"
+    if STATE.install["running"]:
+        return "an install is running"
+    if STATE.downloads.get(repo, {}).get("status") == "running":
+        return "the model is downloading"
+    if repo in STATE.deleting:
+        return "the model is being deleted"
+    return None
+
+
+def _loadtest_job(repo: str, sizes: list[int], run_id: str, workdir: Path) -> tuple[dict, dict]:
+    """The runner's job and the environment its server inherits."""
+    guard = _guard_module()
+    values = {key: entry["value"] for key, entry in load_test_view().items()}
+    settings = server_settings([repo])
+    # The largest size asked for, plus room for its follow-up reply; the guard still
+    # lowers it to the memory ceiling and the model's own limit.
+    room = max(sizes) + values["reply_tokens"]
+    command = _server_command(
+        repo,
+        {**settings, "max_context_tokens": room},
+        0,
+        performance=performance_flags(repo)[0],
+    )
+    command.append("--studio-exit-with-parent")
+    resident = workdir / "resident.json"
+    env = _server_env(_launch_stamp(settings), workdir / "served.models", resident, {}, {})
+    env["PYTHONDONTWRITEBYTECODE"] = "1"  # nothing is written into the app bundle
+    snapshot = _snapshot_dir(repo)
+    fingerprint = _loadtest_fingerprint(repo)
+    priors = [
+        [row["size"], row["server_peak_bytes"], row.get("status") == "passed"]
+        for run in _stored_runs(repo)
+        if run.get("fingerprint") == fingerprint
+        for row in run["rows"]
+        if type(row.get("size")) is int and type(row.get("server_peak_bytes")) is int
+    ]
+    config = guard.read_config(snapshot)
+    job = {
+        "run_id": run_id,
+        "repo": repo,
+        "sizes": sorted(sizes),
+        **{key: values[key] for key in LOAD_TEST_NUMBERS},
+        "limit_percent": settings["memory_limit_percent"],
+        "ram_bytes": hardware().get("ram_bytes"),
+        "model": {
+            "weights_bytes": guard.weights_bytes(snapshot),
+            "kv_per_token": guard.kv_bytes_per_token(config) or guard.UNKNOWN_KV_PER_TOKEN,
+            "margin_bytes": guard.MEMORY_MARGIN,
+        },
+        "snapshot": str(snapshot),
+        "command": command,
+        "resident_file": str(resident),
+        "workdir": str(workdir),
+        "priors": priors,
+    }
+    return job, env
+
+
+def start_loadtest(repo: str, sizes) -> tuple[int, dict]:
+    """``(HTTP status, reply)``. Starts nothing while a server or other work runs."""
+    if repo not in _complete_models():
+        return 400, {"error": f"{repo} is not installed completely"}
+    most = _model_max_size(repo)
+    if not _valid_sizes(sizes, most):
+        return 400, {
+            "error": f"sizes: 1 to {LOAD_TEST_MAX_SIZES} different whole numbers "
+            f"from {LOAD_TEST_SIZE_RANGE[0]} to {most}"
+        }
+    if not hardware().get("ram_bytes"):
+        return 500, {"error": "this Mac's memory size cannot be read"}
+    run_id = secrets.token_hex(8)
+    with STATE.server_lock:
+        with STATE.lock:
+            if blocked := _loadtest_blocked_locked(repo):
+                return 409, {"error": blocked}
+            # No queued start or restore may follow.
+            STATE.server_stops += 1
+            STATE.server_fallback = None
+            record = {
+                "id": run_id,
+                "repo": repo,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "running",
+                "reason": "",
+                "sizes": sorted(sizes),
+                "rows": [],
+            }
+            run = {"active": True, "repo": repo, "record": record, "status": "running"}
+            run.update(progress={}, cancel=False, proc=None, server_pid=None)
+            previous, STATE.loadtest = STATE.loadtest, run
+        workdir = None
+        try:
+            APP_DIR.mkdir(parents=True, exist_ok=True)
+            workdir = Path(tempfile.mkdtemp(prefix="loadtest-run-", dir=APP_DIR))
+            job, env = _loadtest_job(repo, sizes, run_id, workdir)
+            record.update(
+                fingerprint=_loadtest_fingerprint(repo),
+                limit_percent=job["limit_percent"] or 80,
+                flags=job["command"][job["command"].index("--max-tokens") :],
+                values={key: job[key] for key in LOAD_TEST_NUMBERS},
+            )
+            with open(workdir / "runner.log", "wb") as errors:
+                proc = subprocess.Popen(
+                    _loadtest_command(),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=errors,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
+            run["proc"] = proc
+            _write_loadtest_pidfile(run, runner=proc.pid)
+            proc.stdin.write(json.dumps(job) + "\n")
+            proc.stdin.flush()
+        except Exception as exc:
+            if run["proc"]:
+                _kill_runner(run["proc"])
+            if workdir:
+                shutil.rmtree(workdir, ignore_errors=True)
+            _loadtest_pidfile().unlink(missing_ok=True)
+            STATE.loadtest = previous
+            log_app("error", "load test failed to start", repo=repo, error=repr(exc)[:500])
+            return 500, {"error": f"the load test could not start ({type(exc).__name__})"}
+    _save_loadtest(record)
+    log_activity("loadtest", repo, "running", f"load test started: {record['sizes']}")
+    run["thread"] = threading.Thread(target=_watch_loadtest, args=(run, workdir), daemon=True)
+    run["thread"].start()
+    return 200, {"ok": True, "run_id": run_id}
+
+
+def _write_loadtest_pidfile(run: dict, **pids) -> None:
+    """Who to end if this app dies: each pid with its start time."""
+    saved = run.setdefault("pids", {"repo": run["repo"]})
+    for name, pid in pids.items():
+        saved[name], saved[f"{name}_started"] = pid, _ps_field(pid, "lstart")
+    with contextlib.suppress(OSError):
+        _write_private(_loadtest_pidfile(), json.dumps(saved))
+
+
+def _loadtest_event(run: dict, event: dict) -> None:
+    record, kind = run["record"], event.get("event")
+    if kind == "progress":
+        fields = {key: value for key, value in event.items() if key != "event"}
+        last = run["progress"]
+        if fields.get("size") == last.get("size"):
+            fields = {**last, **fields}
+            if "done" not in event and "step" in event:
+                fields.pop("done", None)
+                fields.pop("total", None)
+        run["progress"] = fields
+    elif kind == "server" and type(event.get("pid")) is int:
+        run["server_pid"] = event["pid"]
+        _write_loadtest_pidfile(run, server=event["pid"])
+    elif kind == "row" and isinstance(event.get("row"), dict):
+        record["rows"] = [*record["rows"], event["row"]]
+        _save_loadtest(record)
+    elif kind == "done":
+        record["status"] = str(event.get("status"))
+        record["reason"] = str(event.get("reason") or "")[:500]
+
+
+def _log_tail(path: Path) -> list[str]:
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(max(0, os.fstat(handle.fileno()).st_size - 64 * 1024))
+            text = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    return text.splitlines()[-LOADTEST_LOG_LINES:]
+
+
+def _watch_loadtest(run: dict, workdir: Path) -> None:
+    """Follow the runner to its end, then remove its files."""
+    proc, record = run["proc"], run["record"]
+    try:
+        while line := proc.stdout.readline(LOADTEST_LINE_BYTES):
+            try:
+                _loadtest_event(run, json.loads(line))
+            except Exception as exc:  # one bad line must not end the watch
+                log_app("warning", "load test: unusable event", error=type(exc).__name__)
+        proc.wait(timeout=LOADTEST_WAIT_SECONDS)
+    except Exception as exc:
+        log_app("error", "load test watch failed", error=repr(exc)[:300])
+    finally:
+        _kill_runner(proc)
+        if record["status"] == "running":
+            if run["cancel"]:
+                record["status"], record["reason"] = "cancelled", "cancelled by you"
+            else:
+                record["status"] = "failed"
+                record["reason"] = "the test runner stopped unexpectedly"
+        if record["status"] == "failed":
+            lines = _log_tail(workdir / "runner.log") + _log_tail(workdir / "server.log")
+            log_app(
+                "error",
+                "load test failed",
+                repo=record["repo"],
+                reason=record["reason"],
+                log=lines[-LOADTEST_LOG_LINES:],
+            )
+        shutil.rmtree(workdir, ignore_errors=True)
+        _loadtest_pidfile().unlink(missing_ok=True)
+        _save_loadtest(record)
+        log_activity("loadtest", record["repo"], record["status"], record["reason"])
+        with STATE.lock:
+            run["status"], run["active"] = record["status"], False
+
+
+def _kill_runner(proc: subprocess.Popen) -> None:
+    """End the runner's process group; its server exits when the runner is gone."""
+    if proc.poll() is None:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def cancel_loadtest() -> bool:
+    """Ask the runner to stop; False when no test runs."""
+    with STATE.lock:
+        run = STATE.loadtest
+        if not (run and run["active"] and run["proc"]):
+            return False
+        run["cancel"], run["status"] = True, "cancelling"
+    proc = run["proc"]
+    with contextlib.suppress(OSError, ValueError):
+        proc.stdin.write("cancel\n")
+        proc.stdin.flush()
+    timer = threading.Timer(LOADTEST_CANCEL_SECONDS, _kill_runner, args=(proc,))
+    timer.daemon = True
+    timer.start()
+    return True
+
+
+def shutdown_loadtest() -> None:
+    """Quitting the app: end the test and wait until its files are cleared."""
+    if not cancel_loadtest():
+        return
+    run = STATE.loadtest
+    if thread := run.get("thread"):
+        thread.join(timeout=LOADTEST_CANCEL_SECONDS)
+        _kill_runner(run["proc"])
+        thread.join(timeout=5)
+
+
+def restore_loadtest() -> None:
+    """Clear what a killed app left: end only processes that are still ours."""
+    try:
+        saved = json.loads(_read_small(_loadtest_pidfile(), LAST_MODELS_MAX_BYTES))
+        repo = saved["repo"]
+    except Exception:  # missing or unusable: nothing is signalled
+        saved, repo = {}, None
+    ours = {
+        "runner": (str(LOADTEST_SCRIPT),),
+        "server": (f"/{GUARD_SCRIPT.name} --model {repo} ", "--studio-exit-with-parent"),
+    }
+    for name, marks in ours.items():
+        pid, started = saved.get(name), saved.get(f"{name}_started")
+        if type(pid) is not int or not started or not _pid_alive(pid):
+            continue
+        command = f"{_ps_field(pid, 'command')} "
+        if _ps_field(pid, "lstart") == started and all(mark in command for mark in marks):
+            with contextlib.suppress(OSError):
+                if os.getpgid(pid) == pid:
+                    os.killpg(pid, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            log_app("info", "ended a left over load test process", pid=pid, kind=name)
+    for record in _read_loadtest():
+        if record.get("status") == "running":
+            record["status"] = "interrupted"
+            record["reason"] = "MLX Studio stopped during the test"
+            _save_loadtest(record)
+    for left in APP_DIR.glob("loadtest-run-*"):
+        if left.is_dir() and not left.is_symlink():
+            shutil.rmtree(left, ignore_errors=True)
+    with contextlib.suppress(OSError):
+        _loadtest_pidfile().unlink(missing_ok=True)
+
+
+def loadtest_summary() -> dict | None:
+    """The short form for polling."""
+    run = STATE.loadtest
+    if not run:
+        return None
+    record = run["record"]
+    return {
+        **run["progress"],
+        "active": run["active"],
+        "repo": run["repo"],
+        "run_id": record["id"],
+        "status": run["status"],
+        "reason": record["reason"],
+    }
+
+
+def loadtest_view(repo: str) -> dict:
+    """The Load Test page for ``repo``."""
+    current = _loadtest_fingerprint(repo)
+    most = _model_max_size(repo)
+    values = load_test_view()
+    with STATE.lock:
+        blocked = _loadtest_blocked_locked(repo)
+    run = STATE.loadtest
+    return {
+        "repo": repo,
+        "status": loadtest_summary(),
+        "rows": list(run["record"]["rows"]) if run and run["repo"] == repo else [],
+        "results": [
+            {**record, "stale": record.get("fingerprint") != current}
+            for record in _stored_runs(repo)
+        ],
+        "sizes": {
+            "min": LOAD_TEST_SIZE_RANGE[0],
+            "max": most,
+            "offered": [
+                {"size": size, "allowed": size <= most} for size in values["sizes"]["value"]
+            ],
+        },
+        "load_test": values,
+        "blocked": blocked,
+    }
+
+
+def apply_loadtest(repo: str, run_id, size) -> tuple[int, dict]:
+    """Save a size as ``repo``'s max context, only from a stored, passed, current run."""
+    if STATE.testing():
+        return 409, {"error": LOADTEST_BUSY}
+    record = next((r for r in _stored_runs(repo) if r["id"] == run_id), None)
+    if record is None:
+        return 404, {"error": "no such load test result for this model"}
+    passed = any(
+        row.get("status") == "passed" and row.get("size") == size for row in record["rows"]
+    )
+    if type(size) is not int or not passed:
+        return 400, {"error": "that size did not pass in this test"}
+    if record.get("fingerprint") != _loadtest_fingerprint(repo):
+        return 409, {"error": "this result is out of date; run the test again"}
+    save_settings({"max_context_tokens": size}, repo)
+    return 200, {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
 # HTTP handler
 # --------------------------------------------------------------------------- #
 # POST routes that act on a model named by the "repo" field.
 REPO_ROUTES = frozenset(
     {
-        "/api/load",
+        "/api/chat",
         "/api/download",
         "/api/download/cancel",
         "/api/delete",
         "/api/reveal",
         "/api/server/start",
         "/api/server/estimate",
+        "/api/loadtest/start",
+        "/api/loadtest/apply",
     }
 )
 
@@ -2563,6 +3750,17 @@ class Handler(BaseHTTPRequestHandler):
             worker_check_versions()
             self._json(STATE.snapshot()["versions"])
             return
+        if path in ("/api/config", "/api/loadtest"):
+            repo = (query.get("repo") or [""])[0]
+            if path == "/api/config" and not repo:
+                self._json(config_view())
+            elif not _valid_repo(repo):
+                self._json({"error": "repo must be a model id"}, 400)
+            elif path == "/api/config":
+                self._json(config_view(repo))
+            else:
+                self._json(loadtest_view(repo))
+            return
         if path == "/api/ping":
             self._json({"ok": True, "app": APP_VERSION})
             return
@@ -2593,54 +3791,6 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "repo required (a string)"}, 400)
             return
 
-        if path == "/api/load":
-            if STATE.loaded_repo != repo:
-                # Any other name would be read as a folder path, or downloaded.
-                if repo not in _complete_models():
-                    self._json({"error": f"{repo} is not installed completely"}, 400)
-                    return
-                problem = chat_load_problem(repo)
-                if problem:
-                    log_activity("model", repo, "failed", problem)
-                    self._json({"error": problem}, 409)
-                    return
-            with STATE.lock:
-                already = STATE.loaded_repo == repo
-                if already:
-                    busy = None
-                elif STATE.loading_repo:
-                    busy = "another model is loading"
-                elif STATE.generating:
-                    busy = "wait for the reply to finish, or stop it"
-                elif repo in STATE.deleting:
-                    busy = "the model is being deleted"
-                else:
-                    busy = None
-                    STATE.loading_repo = repo  # reserved before the worker runs
-                    STATE.load_error = None
-            if already:
-                self._json({"ok": True, "already": True})
-            elif busy:
-                self._json({"error": busy}, 409)
-            else:
-                threading.Thread(target=worker_load, args=(repo,), daemon=True).start()
-                self._json({"ok": True, "loading": repo})
-            return
-
-        if path == "/api/unload":
-            with STATE.lock:
-                generating = STATE.generating
-                previous = None if generating else STATE._release_locked()
-            if generating:
-                self._json({"error": "wait for the reply to finish, or stop it"}, 409)
-                return
-            if previous:
-                clear_mlx_cache()
-                log_activity("model", previous, "info", "unloaded from memory")
-                _chat_model_changed()
-            self._json({"ok": True})
-            return
-
         if path == "/api/chat":
             messages = body.get("messages")
             if not (
@@ -2655,7 +3805,7 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 self._json({"error": "messages required: a list of {role, content}"}, 400)
                 return
-            self._stream_chat(messages)
+            self._stream_chat(repo, messages)
             return
 
         if path == "/api/chat/stop":
@@ -2664,7 +3814,30 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             return
 
+        if path in ("/api/loadtest/start", "/api/loadtest/apply"):
+            if path == "/api/loadtest/start":
+                code, answer = start_loadtest(repo, body.get("sizes"))
+            elif not _valid_repo(repo):
+                code, answer = 400, {"error": "repo must be a model id"}
+            else:
+                try:
+                    code, answer = apply_loadtest(repo, body.get("run_id"), body.get("size"))
+                except (ValueError, OSError) as exc:
+                    code, answer = 500, {"error": f"could not save the setting: {exc}"[:300]}
+            self._json(answer, code)
+            return
+
+        if path == "/api/loadtest/cancel":
+            if cancel_loadtest():
+                self._json({"ok": True})
+            else:
+                self._json({"error": "no load test is running"}, 404)
+            return
+
         if path == "/api/download":
+            if STATE.testing(repo):
+                self._json({"error": LOADTEST_BUSY}, 409)
+                return
             if STATE.reserve_download(repo) is None:
                 self._json({"error": "already downloading"}, 409)
                 return
@@ -2717,11 +3890,13 @@ class Handler(BaseHTTPRequestHandler):
             background = bool(body.get("background"))
             with STATE.lock:
                 deleting = any(name in STATE.deleting for name in repos)
-                if not deleting:
+                testing = STATE.testing()
+                if not (deleting or testing):
                     STATE.server_pending.extend(repos)
                     ticket = STATE.server_stops
-            if deleting:
-                self._json({"error": "the model is being deleted"}, 409)
+            if deleting or testing:
+                why = "the model is being deleted" if deleting else LOADTEST_BUSY
+                self._json({"error": why}, 409)
                 return
             threading.Thread(
                 target=worker_server_start, args=(repo, background, ticket, also), daemon=True
@@ -2736,6 +3911,28 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             return
 
+        if path == "/api/server/settings":
+            problem = _settings_change_problem(body)
+            if problem:
+                self._json({"error": problem}, 400)
+                return
+            try:
+                if body.get("reset") is True:
+                    reset_settings(body.get("repo"))
+                else:
+                    if "load_test" in body:
+                        save_load_test(body["load_test"])
+                    if "values" in body:
+                        save_settings(body["values"], body.get("repo"))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            except OSError as exc:
+                self._json({"error": f"could not save the settings: {exc.strerror}"}, 500)
+                return
+            self._json({"ok": True})
+            return
+
         if path == "/api/server/notice/clear":
             STATE.server_down_notice = None
             STATE.server_apply_notice = None
@@ -2746,7 +3943,8 @@ class Handler(BaseHTTPRequestHandler):
             kind = body.get("kind")
             kind = kind if isinstance(kind, str) and kind else "install"
             if not STATE.reserve_install(kind):
-                self._json({"error": "install already running"}, 409)
+                why = LOADTEST_BUSY if STATE.testing() else "install already running"
+                self._json({"error": why}, 409)
                 return
             threading.Thread(target=worker_install, args=(kind,), daemon=True).start()
             self._json({"ok": True})
@@ -2795,20 +3993,15 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.deleting.discard(repo)
 
     # -- SSE chat -------------------------------------------------------- #
-    def _stream_chat(self, messages: list[dict]) -> None:
+    def _stream_chat(self, repo: str, messages: list[dict]) -> None:
         stop = threading.Event()
+        busy = _chat_problem(repo)
         with STATE.lock:
-            if STATE.generating:
+            if not busy and STATE.generating:
                 busy = "a reply is already being generated"
-            elif STATE.loading_repo:
-                busy = "a model is loading"
-            elif STATE.model is None:
-                busy = "no model loaded"
-            else:
-                busy = None
+            elif not busy:
                 STATE.generating = True
                 STATE.stop_event = stop
-                repo = STATE.loaded_repo or "?"
         if busy:
             self._json({"error": busy}, 409)
             return
@@ -2824,29 +4017,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
-            for kind, payload in stream_chat(messages, stop):
-                if kind == "token":
-                    emit("token", payload)
-                elif kind == "done":
-                    emit("done", payload)
-                    log_activity(
-                        "chat",
-                        repo,
-                        "success",
-                        f"{payload.get('tokens', 0)} tokens @ {payload.get('tps', 0)} tok/s",
-                    )
-                else:
-                    emit("error", payload)
-                    log_activity("chat", repo, "failed", str(payload)[:300])
+            with contextlib.closing(stream_chat(repo, messages, stop)) as reply:
+                for kind, payload in reply:
+                    emit(kind, payload)
+                    if kind == "done":
+                        log_activity(
+                            "chat",
+                            repo,
+                            "success",
+                            f"{payload['tokens']} tokens @ {payload['tps']} tok/s",
+                        )
+                    elif kind == "error":
+                        log_activity("chat", repo, "failed", str(payload)[:300])
         except (BrokenPipeError, ConnectionResetError):
             log_activity("chat", repo, "failed", "client disconnected")
         finally:
             with STATE.lock:
                 STATE.generating = False
-            try:
-                self.close_connection = True
-            except Exception as exc:
-                print(f"close_connection skipped: {exc}")
+            self.close_connection = True
 
 
 def launch_url() -> str:
@@ -3032,6 +4220,7 @@ def main() -> None:
     threading.Thread(target=worker_check_versions, daemon=True).start()
     log_activity("app", "-", "info", f"{APP_NAME} {APP_VERSION} launched")
     restore_server_state()
+    restore_loadtest()
 
     # At debug level pywebview logs the window address, which holds the token.
     os.environ.pop("PYWEBVIEW_LOG", None)
@@ -3063,6 +4252,7 @@ def main() -> None:
             pass
     finally:
         STATE.window = None
+        shutdown_loadtest()  # also when a background API server is kept
         # A background server is meant to outlive the window; leave it running
         # and let the pidfile adopt it on the next launch.
         if STATE.server_background:

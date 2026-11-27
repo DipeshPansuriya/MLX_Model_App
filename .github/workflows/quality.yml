@@ -51,7 +51,7 @@ jobs:
 
       - name: Python compiles
         run: |
-          python3 -m py_compile app.py mlx_guard.py
+          python3 -m py_compile app.py mlx_guard.py mlx_loadtest.py
           python3 -m py_compile scripts/check_secrets.py
           python3 -m py_compile packaging/release_manifest.py
 
@@ -137,6 +137,8 @@ jobs:
           python3 .github/scripts/require_no_skips.py "$RUNNER_TEMP/macos-tests.xml"
           tests/test_guard.py
           tests/test_guard_null_args.py
+          tests/test_row838_prompt_limit.py
+          tests/test_prerelease_2013.py
           tests/test_app_robustness.py
           tests/test_packaging.py
 

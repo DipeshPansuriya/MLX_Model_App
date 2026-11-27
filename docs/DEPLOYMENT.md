@@ -36,6 +36,7 @@ MLX Studio.app/
     ├── Resources/
     │   ├── app.py               # backend
     │   ├── mlx_guard.py         # API server request guard
+    │   ├── mlx_loadtest.py      # Load Test runner
     │   ├── AppIcon.icns
     │   └── ui/                  # index.html, style.css, app.js
     └── _CodeSignature/          # ad-hoc signature
@@ -64,7 +65,7 @@ Needs `clang` (Xcode command line tools), on a Mac.
 | Step | Detail |
 |---|---|
 | 1 | Read `APP_VERSION`; abort if absent (unreleased: needs exactly one line `APP_VERSION = "X.Y.Z"`, else it stops before writing anything). Remove the old app and build record |
-| 2 | Copy `app.py`, `mlx_guard.py`, the three UI files and the icon; write `Info.plist` |
+| 2 | Copy `app.py`, `mlx_guard.py`, `mlx_loadtest.py`, the three UI files and the icon; write `Info.plist` |
 | 3 | Compile the launcher for arm64; fail if its `minos` differs from `LSMinimumSystemVersion` |
 | 4 | Ad-hoc `codesign`. In 2.0.9 the script does not stop if this fails; the unreleased script exits with `error: codesign failed` and packages nothing |
 | 5 | `dist/MLX.Studio-<version>.dmg` with an `Applications` shortcut and `Read Me.txt` |

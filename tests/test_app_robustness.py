@@ -15,6 +15,7 @@ from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import portguard
 import pytest
 from test_security import good_headers, request
 
@@ -99,6 +100,8 @@ class TestServerStartLock:
             alive = [p for p in procs if p.poll() is None]
             assert [p.pid for p in alive] == [app_module.STATE.server_pid]
         finally:
+            # First: else the watcher brings a "failed" server back once Popen is real again.
+            portguard.shut_down(app_module)
             for proc in procs:
                 proc.kill()
                 proc.wait()
@@ -106,15 +109,11 @@ class TestServerStartLock:
 
 # M3 ------------------------------------------------------------------------- #
 class TestDeleteGuard:
-    @pytest.mark.parametrize("state", ["loaded", "loading", "serving", "starting", "downloading"])
+    @pytest.mark.parametrize("state", ["serving", "starting", "downloading"])
     def test_model_in_use_is_not_deleted(self, server, app_module, state):
         root = make_model(app_module)
         s = app_module.STATE
-        if state == "loaded":
-            s.loaded_repo = "org/model"
-        elif state == "loading":
-            s.loading_repo = "org/model"
-        elif state == "serving":
+        if state == "serving":
             s.server_repo, s.server_pid = "org/model", os.getpid()
         elif state == "starting":
             s.server_pending.append("org/model")
@@ -143,35 +142,6 @@ class TestDeleteGuard:
 
 
 # M4 ------------------------------------------------------------------------- #
-class TestSingleModelSlot:
-    def test_two_quick_loads_start_one_worker(self, server, app_module, monkeypatch):
-        worker = Recorder()
-        monkeypatch.setattr(app_module, "worker_load", worker)
-        make_model(app_module, "org/m")
-        results = race(6, lambda: post(server, app_module, "/api/load", {"repo": "org/m"})[0])
-        assert sorted(results) == [200] + [409] * 5
-        assert len(worker.calls) == 1
-
-    def test_old_model_is_released_before_the_new_one_loads(self, app_module, monkeypatch):
-        seen = []
-
-        def load(repo):
-            seen.append((app_module.STATE.model, app_module.STATE.loaded_repo))
-            return "model", "tokenizer"
-
-        monkeypatch.setitem(sys.modules, "mlx_lm", types.SimpleNamespace(load=load))
-        app_module.STATE.model, app_module.STATE.loaded_repo = "old", "org/old"
-        app_module.worker_load("org/new")
-        assert seen == [(None, None)]
-        assert app_module.STATE.loaded_repo == "org/new"
-
-    @pytest.mark.parametrize("path", ["/api/load", "/api/unload"])
-    def test_model_cannot_change_during_a_reply(self, server, app_module, path):
-        app_module.STATE.model, app_module.STATE.loaded_repo = "old", "org/old"
-        app_module.STATE.generating = True
-        make_model(app_module, "org/new")
-        assert post(server, app_module, path, {"repo": "org/new"})[0] == 409
-        assert app_module.STATE.model == "old"
 
 
 # M5 ------------------------------------------------------------------------- #
@@ -182,15 +152,15 @@ class TestSingleGeneration:
         started, release = threading.Event(), threading.Event()
         stops = []
 
-        def fake_stream(messages, stop):
+        def fake_stream(repo, messages, stop):
             stops.append(stop)
             started.set()
             release.wait(5)
             yield ("done", {"tokens": 0, "tps": 0})
 
         monkeypatch.setattr(app_module, "stream_chat", fake_stream)
-        app_module.STATE.model = "model"
-        chat = {"messages": [{"role": "user", "content": "hi"}]}
+        monkeypatch.setattr(app_module, "_chat_problem", lambda repo: None)
+        chat = {"repo": "org/m", "messages": [{"role": "user", "content": "hi"}]}
         body = json.dumps(chat).encode()
         headers = good_headers(app_module)
         first = threading.Thread(

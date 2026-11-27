@@ -584,59 +584,6 @@ def small_pair(app, monkeypatch, **resident):
     return need(8192, 8 * GB)
 
 
-class TestChatLoad:
-    def test_refused_when_free_memory_is_short(
-        self, app_module, base_url, monkeypatch, ram, free_memory, loads
-    ):
-        small_pair(app_module, monkeypatch, resident=[A, B], **measured(9 * GB))
-        free_memory.bytes = 5 * GB
-        status, body = load_chat(app_module, base_url, 2 * GB)
-        assert status == 409 and "free memory" in body["error"]
-        assert "5.0 GB free" in body["error"] and loads[0] == []
-
-    def test_the_edge_counts_what_the_server_may_still_take(
-        self, app_module, monkeypatch, ram, free_memory
-    ):
-        total = small_pair(app_module, monkeypatch, resident=[A, B], **measured(9 * GB))
-        cache_model(app_module, CHAT, weights=2 * GB)
-        free_memory.bytes = 2 * GB + (total - 9 * GB) + 2 * GB
-        assert app_module.chat_load_problem(CHAT) is None
-        free_memory.bytes -= 1
-        assert app_module.chat_load_problem(CHAT)
-
-    def test_without_a_measurement_the_whole_need_counts(
-        self, app_module, monkeypatch, ram, free_memory
-    ):
-        total = small_pair(app_module, monkeypatch)
-        cache_model(app_module, CHAT, weights=2 * GB)
-        free_memory.bytes = 2 * GB + total + 2 * GB
-        assert app_module.chat_load_problem(CHAT) is None
-        free_memory.bytes -= 1
-        assert app_module.chat_load_problem(CHAT)
-
-    def test_unreadable_free_memory_leaves_the_fixed_rule(
-        self, app_module, monkeypatch, ram, free_memory
-    ):
-        small_pair(app_module, monkeypatch)
-        cache_model(app_module, CHAT, weights=2 * GB)
-        free_memory.bytes = None
-        assert app_module.chat_load_problem(CHAT) is None
-        weigh(app_module, CHAT, 8 * GB)
-        assert "allowed" in app_module.chat_load_problem(CHAT)
-
-    def test_the_context_the_server_reports_counts(self, app_module, monkeypatch, ram):
-        small_pair(app_module, monkeypatch, context_tokens=32768, resident=[A, B])
-        cache_model(app_module, CHAT, weights=2 * GB)
-        assert app_module.chat_load_problem(CHAT)
-
-    def test_a_one_model_server_is_never_refused(self, app_module, monkeypatch, ram, free_memory):
-        serving(app_module, monkeypatch, (A,))
-        cache_model(app_module, CHAT, weights=30 * GB)
-        free_memory.bytes = 0
-        assert app_module.chat_load_problem(CHAT) is None
-        assert free_memory.reads == 0
-
-
 # 12. free memory drops after the start --------------------------------------- #
 class TestMemoryLow:
     def run_server(self, app, monkeypatch, **resident):

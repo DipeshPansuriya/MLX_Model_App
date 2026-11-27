@@ -22,7 +22,7 @@ duplicating them.
 |---|---|---|---|
 | 1 | Runtime view | [runtime.md](runtime.md) | Processes, ports, threads, child server |
 | 2 | Chat request path | [chat-flow.md](chat-flow.md) | Send → SSE → metrics → log |
-| 3 | Model lifecycle | [model-lifecycle.md](model-lifecycle.md) | Cache → load → chat → unload → delete |
+| 3 | Model lifecycle | [model-lifecycle.md](model-lifecycle.md) | Cache → served → chat → delete |
 | 4 | Release flow | [release-flow.md](release-flow.md) | Version bump → DMG → manifest → installed copies |
 | 5 | Update decision | [update-decision.md](update-decision.md) | How the app decides to show an update |
 | 6 | State model | [state-model.md](state-model.md) | The `/api/state` snapshot shape |

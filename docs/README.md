@@ -48,7 +48,7 @@ code, it says so.
 | 5d | [REPO-HARDENING-CHECKLIST.md](REPO-HARDENING-CHECKLIST.md) | Reusable 79-item checklist: 11 areas, verify commands, cost, scorecard |
 | 6 | [TESTING.md](TESTING.md) | What was verified, how, and what remains unverified |
 | 7 | [RUNBOOK.md](RUNBOOK.md) | Operator procedures: start, stop, recover, rotate a release |
-| 8 | [adr/README.md](adr/README.md) | The decisions behind the design (up to [ADR-010](adr/ADR-010-two-models-one-process.md)), with alternatives rejected |
+| 8 | [adr/README.md](adr/README.md) | The decisions behind the design (up to [ADR-012](adr/ADR-012-load-test.md)), with alternatives rejected |
 | 9 | [diagrams/README.md](diagrams/README.md) | Rendered views of the runtime, request paths and release flow |
 | 10 | [API.md](API.md) | Endpoints, request rules, chat stream |
 | 11 | [DATABASE.md](DATABASE.md) | Stored files (there is no database) |
@@ -72,7 +72,7 @@ code, it says so.
 | Area | State | Evidence |
 |---|---|---|
 | Chat with streaming inference | Built | [TESTING.md](TESTING.md) §7 |
-| Model load / unload with cache release | Built | [TESTING.md](TESTING.md) §7 |
+| Model load / unload with cache release (released builds; replaced in 2.0.13, ADR-011) | Built | [TESTING.md](TESTING.md) §7 |
 | Model download and delete | Built | [TESTING.md](TESTING.md) §7 |
 | OpenAI-compatible server | Built | [TESTING.md](TESTING.md) §7 |
 | Activity log | Built | [TESTING.md](TESTING.md) §7 |

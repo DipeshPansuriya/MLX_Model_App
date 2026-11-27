@@ -22,7 +22,6 @@ classDiagram
         python: string
         versions: Versions
         models: Model[]
-        loaded: Loaded
         server: Server
         downloads: Download[]
         install: Install
@@ -71,12 +70,6 @@ classDiagram
         size_h: "4.0 GB"
     }
 
-    class Loaded {
-        repo: string or null
-        loading: string or null
-        error: string or null
-    }
-
     class Server {
         running: bool
         repo: string or null
@@ -92,6 +85,10 @@ classDiagram
         memory_low: object or null (unreleased)
         context_tokens: int or null (unreleased)
         preload_done: bool (unreleased)
+        starting: bool
+        ready: bool (unreleased)
+        load_failed: bool (unreleased)
+        prompt_limits: object (unreleased)
     }
 
     class Download {
@@ -111,7 +108,6 @@ classDiagram
     Snapshot --> Hardware
     Snapshot --> Versions
     Snapshot --> Model
-    Snapshot --> Loaded
     Snapshot --> Server
     Snapshot --> Download
     Snapshot --> Install
@@ -127,12 +123,13 @@ classDiagram
 | `app.update` | `latest > version` | Nav badge, update panel |
 | `versions.mlx_update` | PyPI newer than installed | Setup pill, nav badge |
 | `versions.mlx_missing` | Not importable | Setup pill, install button label |
-| `models[]` | Cached repos with true size | Models cards, both selects |
-| `loaded.repo` | Resident model, or null | Pill, chat header, load button |
-| `loaded.loading` | Repo currently loading | Pill pulse, button disabled |
-| `loaded.error` | Last load failure text | Chat header |
+| `models[]` | Cached repos with true size | Models cards, API Server selects |
 | `server.running` | Child process alive | Server pill, nav dot |
 | `server.lines` | Last 400 stdout lines | Server console |
+| `server.starting` | A start is under way | Chat state line |
+| `server.ready` (unreleased) | The server reported that it can answer | Chat model select, input and Send |
+| `server.load_failed` (unreleased) | The server reported that it could not load its model | Chat **Model not loaded** |
+| `server.prompt_limits` (unreleased) | Longest prompt accepted per served model, in tokens | **Prompt limit** line on API Server |
 | `server.repos`, `server.resident` (unreleased) | Models started with; models in memory, current first | Server pill |
 | `server.memory` (unreleased) | Measured bytes at the last load or switch; with two models also refreshed about every 10 s | Memory line on API Server |
 | `server.events` (unreleased) | Recent load, trim and eviction events; refresh events not recorded | Notice on API Server, server console |
@@ -149,7 +146,7 @@ classDiagram
 
 | Invariant | Enforced by |
 |---|---|
-| `loaded.repo` and `loaded.loading` are never both set | `worker_load` sets one, clears the other |
+| `server.ready` and `server.load_failed` are never both true | `_server_readiness` takes both from one report |
 | `server.running` is true only while `server_proc` is not None | `worker_server_start`, `stop_server` |
 | `app.update` is false when `app.latest` is null | `is_newer` returns false for a null candidate |
 | `versions.mlx_update` is false when the latest is unknown | same |

@@ -65,7 +65,7 @@ PY
 }
 
 # Python files that ship inside the app; every source check covers all of them.
-SOURCES=(app.py mlx_guard.py)
+SOURCES=(app.py mlx_guard.py mlx_loadtest.py)
 
 # ── SA-01 static patterns ────────────────────────────────────────────────────
 section "SA-01  Dangerous code patterns"
@@ -118,8 +118,8 @@ if grep -q '"/api/quit"' app.py; then
 else
     ok SA-05 "no unauthenticated quit endpoint"
 fi
-if grep -q 'unload the model first' app.py; then
-    ok SA-05 "delete refuses a loaded model"
+if grep -q 'stop the API server first' app.py; then
+    ok SA-05 "delete refuses a model the server holds"
 else
     warn SA-05 "loaded-model delete guard not found"
 fi

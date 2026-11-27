@@ -160,20 +160,30 @@ The double-clicked app does not look in that folder.
 ## Features
 
 ### Chat
-- Load and unload one model inside the app, with a live state pill.
-- Search installed models by name (also on API Server): Up and Down to move,
-  Enter to choose, Escape to close. The x clears the search and keeps your choice.
-- Token-by-token streaming; each turn reports `tokens · tok/s · GB peak`.
-- **Stop** cancels generation, **New chat** resets history.
+2.0.13 source (unreleased). Chat asks the running API server; the app loads no
+model of its own. Released builds load a second copy for Chat.
+
+- Start the API server first. While it is stopped, Chat says so and offers
+  **Go to API Server**; while it starts or restarts, typing is off.
+- The **Model** list holds only the served models. One model is selected already;
+  with two, your choice is kept while it is served.
+- Streaming replies. A reply's reasoning sits in a collapsed **Thinking** block
+  above the answer.
+- Under each reply, a small line: reply size, time to the first answer, writing
+  speed, prompt size and the performance mode. The counts come from the API
+  server, the times from this app. A figure that is not known is left out.
+- The top of the page names the mode in force, with a link to **Configuration**.
+- A server busy with another client shows a waiting line.
+- **Stop** cancels the request on the server, **New chat** resets history.
 - `Enter` sends, `Shift+Enter` inserts a newline.
-- One reply at a time. Load and Unload are refused while a reply is running. A
-  failed turn is removed from the history.
+- One reply at a time. A failed turn, or a reply that is only thinking, is removed
+  from the history.
 
 ### Models
 - Card per cached model with its size on disk, repo id and folder path.
-- **Load**, **Unload**, **Reveal** (opens the folder in Finder), **Copy model
+- **Reveal** (opens the folder in Finder), **Copy model
   name** (full repo id) and **Delete**.
-- Delete is refused while the model is loaded, loading, served, starting or
+- Delete is refused while the model is served, starting or
   downloading.
 - A partial download shows **incomplete** with **Resume download**.
 
@@ -195,6 +205,8 @@ The double-clicked app does not look in that folder.
 - Unreleased (2.0.12 source): one card, **Models (max 2)**. **+ Add model** opens
   the searchable list; **×** removes a model. See
   [the API Server card](#the-api-server-card).
+- Context, reply limits, cache and memory settings are on the
+  [Configuration page](#configuration) (2.0.13, unreleased).
 - Warns when the chosen model is marked as unable to call tools.
 - **Background**: the server keeps running after the window closes. Its process
   id is saved in `~/.mlx_studio/server.pid` and adopted on the next launch only if
@@ -202,6 +214,53 @@ The double-clicked app does not look in that folder.
 - If the server dies, the view shows a banner with **Restart** and records the
   event.
 - Since 2.0.10: can keep [two models loaded](#one-or-two-models) at once.
+
+### Configuration
+2.0.13 source (unreleased). Replaces the Settings box on the API Server card.
+
+- Pick **All models (defaults)** or an installed model. Fields: max context,
+  server reply cap, Chat reply cap, temperature, top-p, prompt cache size and
+  bytes, two-model context cap, and the memory limit (All models only).
+- Each field shows the value that applies; empty means automatic, or under a model
+  the All models value. **Save** stores only what you changed; **Reset this
+  entry** clears one entry.
+- A max context lowered to fit memory is said on the page. Server limits apply at
+  the next start or **Apply changes**; Chat values apply to the next message.
+- [Keys and ranges](docs/API.md#6b-user-settings).
+
+#### Performance mode (no commands needed)
+
+| Choice | What it does |
+|---|---|
+| **Standard (recommended)** | Nothing changes |
+| **Save memory** | Uses less memory but reads new prompts about half as fast (measured on one model and one Mac). Compression starts after 5,000 tokens; requests are answered one at a time |
+| **Advanced** | Three raw settings. 4-bit produced broken answers in testing |
+
+To try a mode:
+
+1. Open **Configuration**. Keep **All models (defaults)**, or pick one model.
+2. Choose a **Performance mode**, then press **Save**.
+3. Open **API Server** and press **Stop**, then **Start Server** (or **Apply changes**).
+4. Open **Chat**, check the mode named at the top, and ask a question. The line
+   under the reply shows the speed.
+5. To compare memory too, stop the API server, run **Load Test** once in each
+   mode, and read the results: each one lists the settings it ran with.
+
+A model that cannot use compressed memory has the choice switched off, with the
+reason, and runs in Standard. The automatic prompt limit is the same in every mode.
+
+### Load Test
+2.0.13 source (unreleased). Measures one model on this Mac. **Not yet run with a
+real model.** [How to run it safely](docs/RUNBOOK.md#37a-run-a-load-test-safely).
+
+- Tick context sizes or type your own (up to 8 in one test). The API server must
+  be stopped; the page says so and offers **Stop API server**.
+- Shows live progress and memory, and **Cancel test**. A size is not sent when
+  memory is projected over the gate (75%), and the test server is ended at 77%.
+  Memory is sampled, so staying under 80% cannot be guaranteed.
+- Results: size, read speed, first-token time, write speed, peak memory and the
+  settings used, with earlier runs. **Apply this size to config** saves a passed
+  size as that model's max context. Old results are tagged **stale**.
 
 ### Activity
 - Filterable log of chats, loads, downloads, deletes, installs and server events.
@@ -337,6 +396,10 @@ token, not load-tested**. They include the reply. 500K or 1M context is not
 proven and is not recommended here. They are for one model; with two models
 loaded, use the safe context the API Server view shows.
 
+In the unreleased 2.0.13 source the one-model limit also follows the memory other
+apps hold, and can be much lower than these figures:
+[prompt limit](docs/ARCHITECTURE.md#62-prompt-limit).
+
 ### The API Server card
 
 **Unreleased (2.0.12 source).**
@@ -361,7 +424,7 @@ a server still running after 10 minutes counts as started.
 
 In the released 2.0.9 the API server holds one model. A request naming another
 downloaded model makes it swap, after the running work finishes, which adds load
-time. The model loaded in the **Chat** tab is separate and uses its own memory;
+time. In released builds the model loaded in the **Chat** tab is separate and uses its own memory;
 unload it if you only need the server.
 
 Since 2.0.10, add a second model on the API Server card to keep both loaded.
@@ -372,14 +435,13 @@ Since 2.0.10, add a second model on the API Server card to keep both loaded.
 | Turns | One model replies at a time. A request for the other waits for the running replies, then the server switches |
 | Third model | Naming another downloaded model evicts the least recently used one. If memory is still short, the server trims the prompt cache when that is enough; otherwise it evicts the other model too |
 | Context per model | Called **T** below. At most 32,768 tokens, rounded down to a multiple of 1,024, and never above a model's own limit. It is set at start and stays until the server is restarted |
-| Memory the pair may use | The smaller of 0.52 × RAM (less the Chat model's weights) and what is free now: the free, speculative, purgeable and file-backed pages reported by `/usr/bin/vm_stat`, minus 2 GB left for macOS and other apps. A running server's own memory counts as free, because a restart gives it back. If `vm_stat` cannot be read, only the 52% rule is used and the view says so |
+| Memory the pair may use | The smaller of 0.52 × RAM and what is free now: the free, speculative, purgeable and file-backed pages reported by `/usr/bin/vm_stat`, minus 2 GB left for macOS and other apps. A running server's own memory counts as free, because a restart gives it back. If `vm_stat` cannot be read, only the 52% rule is used and the view says so |
 | How T is worked out | (budget − weights of both models − 1.4 GB margin) ÷ (5.1 × cache bytes per token), rounded down and capped. 5.1 is 2 for the prompt cache plus 3.1 for one reply. The larger of the two models' cache bytes per token is used |
 | Shrink or refuse | From 8,192 up to 32,767 the server starts with that smaller T and the estimate says so. Below 8,192 two models are refused: **Start Server** or **Apply changes** is disabled, or the start is refused (`409`), with the figures. Close other apps or start one model |
 | Prompt cache | Capped at 2 × cache bytes per token × T, room for about one conversation of T tokens per model. **Keep prompts to T tokens or fewer. The prompt cache holds about 2T tokens in total; above that, older prompts are dropped and read again.** Treat T as the safe limit: by the cap arithmetic a conversation up to about 2 × T can still be cached, but it pushes out the other one, and above that it is read again every turn (not tested with real models) |
 | After start | Each load of a model that is not in memory checks free memory again and may trim the cache, evict, or load alone. A switch between the two loaded models is not checked. Nothing is unloaded just because free memory drops |
-| Chat tab | A Chat model loads only if it passes both the 52% check and the live free-memory check beside the two models. Otherwise the load is refused (`409`) with the figures |
-| Refused Load | The reason stays in a panel at the bottom right until **Dismiss** or the next load |
-| One model chosen | One model, started with the same command as 2.0.9: no prompt cache byte cap, no live memory check and no memory refusal. The view adds a measured memory line |
+| Prompt limit (2.0.13, unreleased) | A prompt over the limit is refused at once: `400`, code `context_length_exceeded` (`insufficient_memory` when no prompt is accepted). A reply is capped to what the prompt leaves. Never above the model's own limit. Two models: **T**. One model: what fits in 0.80 × RAM after taking off what other apps hold when the server starts; if that cannot be read, what fits in 0.52 × RAM, at least 32,768 (or the model's smaller limit), within 0.80 × RAM. Your own max context follows the same rule; there is no override. Below 4,096 every prompt is refused and the message says what to close. The API Server card shows the limit. Unknown model figures leave the model's limit. Calculated from measurements of one model on one Mac: [figures](docs/ARCHITECTURE.md#62-prompt-limit). Your own limit and other caps: [Settings](docs/API.md#6b-user-settings) |
+| One model chosen | One model: the prompt cache holds 2 conversations by default and has a calculated byte cap (2.0.13); no live memory check after the start. The view adds a measured memory line |
 | Older or changed `mlx-lm` hooks | The server keeps one model and the app says why |
 
 What the card says about memory (the longer lines are under **Details**):
@@ -414,11 +476,7 @@ factor (one data point) and the `vm_stat` free figure are not proven.
 Known limits: real two-model memory use, cache trim, eviction, switch time and
 swap with the new limits are **not measured**. The memory budget never rises
 above the figure set at start, so restart the server to get a larger context
-after closing apps; a server started while a Chat model was loaded keeps the
-lower budget too, and a background server left running after you quit keeps a
-lowered budget until the app opens again. The Chat tab check counts the new
-model's weights, not its reply cache, and does not count the memory of the Chat
-model it replaces, so a swap may be refused until you **Unload**. If memory runs
+after closing apps. If memory runs
 short between stopping the old server and starting the new one, the app tries once
 to start the previous models again (unreleased) and shows the reason. Right after a server is killed, free
 memory may be read before macOS has returned it. A model whose own context limit
@@ -467,7 +525,7 @@ Full product, architecture and operational documentation lives in [`docs/`](docs
 | [docs/AGENTS.md](docs/AGENTS.md) | Who owns which area |
 | [docs/AI-PROMPTS.md](docs/AI-PROMPTS.md) | Suggested prompts for AI coding assistants |
 | [docs/Project_Summary.md](docs/Project_Summary.md) | One-page system summary and open risks |
-| [docs/adr/](docs/adr/README.md) | 9 architecture decision records with rejected alternatives |
+| [docs/adr/](docs/adr/README.md) | 12 architecture decision records with rejected alternatives |
 | [docs/diagrams/](docs/diagrams/README.md) | 6 Mermaid diagrams: runtime, chat flow, lifecycle, release, updates, state |
 
 ---
@@ -578,9 +636,7 @@ unreleased source the page no longer holds it.
 | GET | `/api/logs/files` | Files in the log folder |
 | GET | `/api/logs/export` | Zip of the log folder + `environment.json` |
 | POST | `/api/focus` | Raise the window (used by a second launch) |
-| POST | `/api/load` `{repo}` | Load a model. Unreleased: `400` if not installed completely, `409` if it does not fit beside a two-model server |
-| POST | `/api/unload` | Unload the model |
-| POST | `/api/chat` `{messages}` | SSE stream: `token`, `done`, `error` |
+| POST | `/api/chat` `{repo, messages}` | Asks the running API server. SSE stream: `status`, `reasoning`, `token`, `done` (with the reply's `stats`), `error` |
 | POST | `/api/chat/stop` | Cancel generation |
 | POST | `/api/download` `{repo}` | Start or resume a download |
 | POST | `/api/download/cancel` `{repo}` | Cancel a running download |
@@ -606,9 +662,10 @@ unreleased source the page no longer holds it.
 | Launch log | `~/.mlx_studio/logs/launch.log` |
 | Background server output | `~/.mlx_studio/logs/server.log` |
 | Background server pid | `~/.mlx_studio/server.pid` |
+| User settings (unreleased) | `~/.mlx_studio/settings.json` |
+| Load test results (unreleased) | `~/.mlx_studio/loadtest.json` |
 | Last models that started (unreleased) | `~/.mlx_studio/server.last.json` |
 | Loaded models and memory (unreleased) | `~/.mlx_studio/server.resident.json`, removed on stop |
-| Two-model memory budget (unreleased) | `~/.mlx_studio/server.budget`, removed on stop |
 
 Logs rotate at 2 MB with three backups (`server.log` before a background start).
 The folder is `0700`. The activity, application, launch and server logs are
@@ -676,7 +733,7 @@ first.
 
 **Update check says "unknown"**: the request failed; check network or proxy.
 
-**Delete refused**: unload the model, stop the API server or wait for the
+**Delete refused**: stop the API server or wait for the
 download. While the server runs, any model a client has asked it for since it
 started is also protected.
 

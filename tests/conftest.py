@@ -19,9 +19,27 @@ import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import portguard
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+portguard.install()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    problems = [*portguard.VIOLATIONS, *portguard.kill_leftovers()]
+    if problems:
+        print("\nThe run used a reserved port or left a process behind:")
+        print("\n".join(problems))
+        session.exitstatus = 1
+
+
+@pytest.fixture(autouse=True)
+def reserved_ports():
+    """The test that touches 8765 or 8080 is the one that fails."""
+    before = len(portguard.VIOLATIONS)
+    yield
+    assert portguard.VIOLATIONS[before:] == []
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +64,25 @@ def free_memory(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, text, "")
 
     monkeypatch.setattr(subprocess, "run", run)
+    return fake
+
+
+@pytest.fixture(autouse=True)
+def other_apps(monkeypatch):
+    """No test reads what other apps hold: the guard's memory reading answers this.
+
+    Set ``.percent`` (None: it cannot be read) and ``.footprint``; ``.pids`` lists
+    the calls. A test of ``mac_probe`` itself loads mlx_loadtest under another name.
+    """
+    fake = types.SimpleNamespace(percent=None, footprint=0, pids=[])
+
+    def mac_probe(pid):
+        fake.pids.append(pid)
+        if fake.percent is None:
+            raise OSError("memory cannot be read in a test")
+        return types.SimpleNamespace(percent=fake.percent, footprint=fake.footprint)
+
+    monkeypatch.setitem(sys.modules, "mlx_loadtest", types.SimpleNamespace(mac_probe=mac_probe))
     return fake
 
 
@@ -74,6 +111,7 @@ def app_module(tmp_path, monkeypatch):
         assert cache == module.CACHE_DIR
         yield module
     finally:
+        portguard.shut_down(module)
         sys.modules.pop(name, None)
 
 

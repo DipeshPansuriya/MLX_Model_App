@@ -155,7 +155,7 @@ class TestNewChatDuringReply:
             " await gate; return i < frames.length"
             " ? { done: false, value: new TextEncoder().encode(frames[i++]) }"
             " : { done: true }; } }) } });"
-            " state.snapshot = snap({ loaded: { repo: 'org/custom' } });"
+            " state.chatStatus = 'ready';"
             " document.querySelector('#input').value = 'q'; wire();"
             " const sending = sendMessage();"
             " document.querySelector('#newChatBtn').listeners.click();"
@@ -333,23 +333,6 @@ class TestAccessibility:
             'aria-label="Download progress for org/d"',
         ):
             assert part in bar
-
-    def test_focus_follows_load_when_it_becomes_unload(self, tmp_path):
-        out = run(
-            tmp_path,
-            "render(snap()); const wrap = document.querySelector('#modelCards');"
-            ' const tag = (h) => h.match(/<button[^>]*data-act="(un)?load"[^>]*>/)[0];'
-            " const attrs = (t) => Object.fromEntries("
-            '[...t.matchAll(/data-([a-z-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));'
-            " document.activeElement = { dataset: attrs(tag(wrap.innerHTML)) };"
-            " wrap.contains = () => true; let selector = '';"
-            " wrap.querySelector = (s) => { selector = s; return { focus() {} }; };"
-            " render(snap({ loaded: { repo: 'org/custom' } }));"
-            " return { selector, after: attrs(tag(wrap.innerHTML)) };",
-        )
-        wanted = dict(re.findall(r'\[data-([a-z-]+)="([^"]*)"\]', out["selector"]))
-        assert wanted and wanted.items() <= out["after"].items()
-        assert out["after"]["act"] == "unload" and wanted["repo"] == "org/custom"
 
 
 # V13 ------------------------------------------------------------------------ #

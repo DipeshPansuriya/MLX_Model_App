@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "ADR-003 — Inference in-process, API server as a child process"
-status: "Accepted"
+status: "Superseded"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -12,6 +12,9 @@ related:
 ---
 
 # ADR-003 — Inference in-process, API server as a child process
+
+> **Superseded** by [ADR-011](ADR-011-chat-through-the-api-server.md) in the
+> 2.0.13 source (unreleased). Released builds still follow this record.
 
 ## 1. Decision
 

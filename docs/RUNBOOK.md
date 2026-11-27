@@ -31,7 +31,8 @@ cd "/Users/dipesh/Desktop/Dipesh/Project Idea/MLX_Model_App"
 ./run.sh
 ```
 
-Expected: a 1360×900 window, sidebar pill `● No model loaded`, Setup reporting the
+Expected: a 1360×900 window on the API Server page (2.0.13), sidebar pill
+`● No model served` (released: `● No model loaded`), Setup reporting the
 installed MLX versions.
 
 ### 1.2 Normal stop
@@ -60,16 +61,12 @@ curl -s http://127.0.0.1:8765/api/ping
 
 ## 3. Common tasks
 
-### 3.1 Load and chat
+### 3.2 Chat with a model
 
-1. Chat tab → select a model → **Load**. Pill turns green.
-2. Type, press Enter. Tokens stream; metrics appear under the answer.
-3. **Stop** cancels; **New chat** clears history.
-
-### 3.2 Free memory
-
-Chat tab → **Unload**. This drops the model reference and calls
-`mx.clear_cache()`. Verify with the pill returning to `● No model loaded`.
+2.0.13 source (unreleased): start the API server (API Server page), wait for
+**Ready** on the Chat tab, then type. **Stop** on the API Server page frees the
+memory. Released builds load a model on the Chat tab instead (**Load**,
+**Unload**).
 
 ### 3.3 Download a model
 
@@ -97,21 +94,30 @@ line, any warning and **Details** before **Start Server**. Set the client's cont
 window to the shown safe context or lower. The limits are
 calculated and have not been re-tested with real models, so watch memory pressure.
 
+2.0.13 source (unreleased), one model: the safe context follows the memory other
+apps hold. Below 4096 tokens the server refuses every prompt and the card and
+server log say so, with the memory in use. Close other apps (web browsers, code
+editors, virtual machines, other model apps), then on the API Server page press
+**Stop**, then **Start Server** (the figure is read at start only). Or choose a
+smaller model. A **Max context** set on the Configuration page follows the same
+80% rule, other apps included: it is lowered to what fits, and below 4096 tokens
+nothing is accepted. There is no override.
+
 | You see | Meaning and what to do |
 |---|---|
 | **Shorter context: about …K tokens per model** | The pair starts, or runs, with a context shorter than 32,768. If **Close other apps for more** follows, free memory is the limit: close apps, then **Start Server** |
 | **This model may not fit** or **Shorter context: about …K tokens** (one model) | A warning only; the model can still be started. Choose a smaller one if the server stops |
 | **Not enough free memory for two models** | Less than 8,192 tokens each would fit. Close apps until the "needed" figure is free, or start one model |
-| **Not enough memory for two models** | The 52% rule is the limit, or free memory could not be read. Choose smaller models or start one model; **Unload** a Chat model if one is loaded |
+| **Not enough memory for two models** | The 52% rule is the limit, or free memory could not be read. Choose smaller models or start one model |
 | **Free memory could not be read** | `/usr/bin/vm_stat` failed; only the fixed 52% rule applies. Watch memory pressure |
 | **Free memory is low** | Other apps took memory the server counted on. Close apps, or restart the server for a smaller context. Nothing is unloaded just for this; the next model load may trim or evict |
 | **Loaded without enough memory** | A model was loaded on its own although it does not fit. Free memory or choose a smaller model |
 | **Keep prompts to … tokens or fewer** | Set the client's context to that figure or lower. The prompt cache holds about 2T tokens in total; above that, older prompts are dropped and read again. A longer conversation may push the other model's cache out, or be read again on every turn |
-| Chat load refused (`not enough memory` or `not enough free memory`) | Close apps, **Unload** the current Chat model, stop the API server or choose a smaller model |
+| A client gets `insufficient_memory` (2.0.13) | The server accepts no prompt: close other apps, then **Stop**, then **Start Server**, or choose a smaller model |
+| A client gets `context_length_exceeded` (2.0.13) | The prompt is over the limit on the API Server card (set it on **Configuration**). Start a new chat or let the client compact |
 
 The context and the budget are set at start. After closing apps, restart the
-server to get more. A server started while a Chat model was loaded keeps the lower
-budget until it is restarted.
+server to get more.
 
 **Changing a running server** (unreleased, 2.0.12 source): edit the list or
 **Background**, then **Apply changes**. The server restarts, so a reply in progress
@@ -146,6 +152,44 @@ manifest shows the update panel with notes and a **Download installer** button
 If the app shows **server unprotected**, open API Server and press **Restart now**.
 The older background server then restarts with the same model and mode, behind
 the request guard.
+
+### 3.7a Run a load test safely
+
+2.0.13 source (unreleased). Tested with fakes only; treat the first real run as a
+trial.
+
+1. Save your work and close apps you do not need. Their memory counts: more free
+   memory means more sizes run.
+2. Keep the Mac awake, plugged in and otherwise idle. Sleep ends the test as
+   interrupted.
+3. **API Server** page: **Stop**. On **Load Test** the **Stop API server** button
+   does the same. The app never stops it for you.
+4. Pick the model. Tick the smallest size first; add larger ones after it passes.
+   Leave the run values and the 5% margin as they are.
+5. **Start test**. Watch **Memory now**; open Activity Monitor's Memory tab too.
+6. Stop at once with **Cancel test** if the Mac slows or memory pressure turns
+   yellow or red.
+7. Apply only a size that **passed**. A pass covers one model, this configuration
+   and a short run, not two models or hours of use.
+
+| You see | Meaning and what to do |
+|---|---|
+| **Stopped for memory safety**, row **skipped** | Nothing was sent: the projection was over the gate. Close apps or use a smaller size or model |
+| Row **stopped**, memory reached N% | The test server was killed at the kill line. Do not retry that size now |
+| **Test failed** | One reason is shown; the last log lines are in the app log |
+| **Test interrupted** | The app quit, the Mac slept or memory sampling gapped. Run again |
+| **stale** | Settings, software or the model changed. Run again before applying |
+| Start is off | The line above it says why: server running, install, download or delete |
+
+Sampling cannot guarantee memory stays under 80%: a sudden jump can pass the kill
+line before the next sample. Results are in `~/.mlx_studio/loadtest.json`.
+
+### 3.7b Compare performance modes (not yet run on a real model)
+
+Set the mode on **Configuration**, **Save**, then **Stop** and **Start Server**
+(or **Apply changes**). Chat names the mode in force. If replies are garbled or
+fail, choose **Standard (recommended)**, save and apply again. The server log line
+`mlx_guard: <model>: Standard is used, ...` means that model cannot compress.
 
 ## 4. Recovery procedures
 
@@ -207,7 +251,7 @@ killed hard (`kill -9`).
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Load failed`, pill red | Weights incomplete | Re-download the model |
-| Out of memory | Model too large for free RAM | Unload, close apps, choose a smaller model |
+| Out of memory | Model too large for free RAM | Stop the API server, close apps, choose a smaller model |
 | `409 another model is loading` | A load is in flight | Wait for the poll to settle |
 | Missing tokenizer files | Partial snapshot | Delete the model and download again |
 

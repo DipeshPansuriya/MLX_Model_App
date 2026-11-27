@@ -2,7 +2,7 @@
 type: Index
 title: "Architecture decision records — index"
 date: 2026-11-24
-updated: "2026-11-26 — ADR-010 added (unreleased, 2.0.10 source)"
+updated: "2026-11-28 — ADR-012 added (unreleased, 2.0.13 source)"
 author: "Dipesh Pansuriya"
 project: mlx-studio
 related:
@@ -21,14 +21,16 @@ change of mind is a new record that supersedes the old one.
 |---|---|---|---|
 | [ADR-001](ADR-001-no-web-framework.md) | No web framework: stdlib `ThreadingHTTPServer` | Accepted | — |
 | [ADR-002](ADR-002-web-ui-native-window.md) | Web UI hosted in a native `pywebview` window | Accepted | — |
-| [ADR-003](ADR-003-in-process-inference.md) | Inference in-process, API server as a child process | Accepted | — |
+| [ADR-003](ADR-003-in-process-inference.md) | Inference in-process, API server as a child process | Superseded | ADR-011 |
 | [ADR-004](ADR-004-sse-streaming.md) | SSE for chat, polling for state | Accepted | — |
 | [ADR-005](ADR-005-jsonl-activity-log.md) | JSON-lines activity log instead of a database | Accepted | — |
 | [ADR-006](ADR-006-manifest-updates.md) | Manifest-based app updates, PyPI for packages | Accepted | — |
 | [ADR-007](ADR-007-adhoc-signing.md) | Ad-hoc code signature for distribution | Accepted, revisit | — |
-| [ADR-008](ADR-008-single-model-slot.md) | One resident model at a time | Accepted | — |
+| [ADR-008](ADR-008-single-model-slot.md) | One resident model at a time | Superseded | ADR-011 |
 | [ADR-009](ADR-009-api-server-guard.md) | Request guard on the API server | Accepted | — |
 | [ADR-010](ADR-010-two-models-one-process.md) | API server keeps two models in one process (unreleased, 2.0.10) | Accepted, revisit | — |
+| [ADR-011](ADR-011-chat-through-the-api-server.md) | Chat asks the running API server (unreleased, 2.0.13) | Accepted | — |
+| [ADR-012](ADR-012-load-test.md) | Load test in a supervisor process (unreleased, 2.0.13) | Accepted | — |
 
 ## Decision map
 
@@ -44,6 +46,7 @@ change of mind is a new record that supersedes the old one.
 | How many models are resident | ADR-008 |
 | What the API server accepts | ADR-009 |
 | How many models the API server keeps | ADR-010 |
+| Where Chat replies come from | ADR-011 |
 
 ## Status words
 

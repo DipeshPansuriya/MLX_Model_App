@@ -46,7 +46,6 @@ class TestMeta:
             "python",
             "versions",
             "models",
-            "loaded",
             "server",
             "downloads",
             "install",
@@ -68,10 +67,6 @@ class TestMeta:
         assert server["running"] is False
         assert server["background"] is False
         assert server["down_notice"] is None
-
-    def test_state_loaded_block_is_empty_initially(self, base_url):
-        _, body = get_json(f"{base_url}/api/state")
-        assert body["loaded"] == {"repo": None, "loading": None, "error": None}
 
     def test_versions_block(self, base_url):
         _, body = get_json(f"{base_url}/api/state")
@@ -162,16 +157,6 @@ class TestModelsEndpoints:
         status, body = get_json(f"{base_url}/api/models")
         assert status == 200
         assert body == {"models": []}
-
-    def test_load_requires_repo(self, base_url):
-        status, body = post(f"{base_url}/api/load", {})
-        assert status == 400
-        assert "repo" in body["error"]
-
-    def test_unload_when_nothing_loaded(self, base_url):
-        status, body = post(f"{base_url}/api/unload")
-        assert status == 200
-        assert body["ok"] is True
 
     def test_delete_requires_repo(self, base_url):
         status, body = post(f"{base_url}/api/delete", {})
@@ -308,7 +293,7 @@ class TestBodyHandling:
 
     def test_zero_content_length(self, base_url):
         req = urllib.request.Request(
-            f"{base_url}/api/unload",
+            f"{base_url}/api/chat/stop",
             data=b"",
             headers={"Content-Type": "application/json"},
             method="POST",

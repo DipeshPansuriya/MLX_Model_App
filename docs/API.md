@@ -73,9 +73,7 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | Path | Body | Errors |
 |---|---|---|
 | `/api/focus` | - | no token needed. Unreleased: in browser mode it opens a new tab, at most once every 3 seconds |
-| `/api/load` | `repo` (required) | 409 busy or being deleted; unreleased: 400, 409 (section 5) |
-| `/api/unload` | - | 409 while generating |
-| `/api/chat` | `messages`: non-empty list of `{role, content}` strings | 400, 409 |
+| `/api/chat` | `repo` (a served model), `messages`: non-empty list of `{role, content}` strings | 400, 409 (section 6) |
 | `/api/chat/stop` | - | - |
 | `/api/download` | `repo` (required) | 409 already downloading |
 | `/api/download/cancel` | `repo` (required) | 404 not downloading |
@@ -85,6 +83,7 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/server/estimate` | unreleased: `repo` (required), `also` | 400 |
 | `/api/server/stop` | - (also cancels a start that has not launched yet) | - |
 | `/api/server/notice/clear` | - (unreleased: clears `down_notice` and `apply_notice`) | - |
+| `/api/server/settings` | unreleased: `values` or `reset`; optional `repo` ([6b](#6b-user-settings)) | 400, 500 |
 | `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running |
 | `/api/logs/clear` | - | 500 |
 | other paths | - | 404 |
@@ -103,7 +102,8 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | 409 | `/api/server/start`: a model is being deleted |
 | 400 | 2.0.12 source: `/api/server/start` with one model: it is not installed completely. Nothing is launched, and a running server is left alone |
 
-A start with one model is never refused for memory. The app stops the running
+A start with one model is never refused for memory (in the 2.0.13 source its
+prompts can be, [6a](#6a-api-server-prompt-limit)). The app stops the running
 server before the new one starts and then checks memory again. If the pair is
 refused at that point, the call has already answered 200 and `/api/state` tells
 the outcome.
@@ -144,34 +144,15 @@ removed; the page leaves those out of the card and of **Restart**, and
 `/api/server/start` refuses them. Reading it starts nothing. Anything but a regular
 file of at most 4 KB holding printable ids of at most 200 characters reads as `[]`.
 
-### `/api/load`
-
-| Answer | When |
-|---|---|
-| 400 | `repo` is not installed completely: for example an unknown name, a folder path or a partial download. This is checked before the busy checks |
-| 409 | A two-model server is running and either check below fails. The message gives the figures. The loaded Chat model stays; there is no override |
-| 200 `already` | `repo` is the Chat model already loaded; neither check above applies |
-
-The memory 409 does not apply when the server is stopped, serves one model, or
-reports `multi_off`. The two checks, in order:
-
-| Check | Refused when | Message starts |
-|---|---|---|
-| Fixed share | server memory + Chat weights > 0.52 × RAM. Server memory is the larger of the pair's calculated need and the measured use plus reply room and margin | `not enough memory: the API server keeps two models` |
-| Live free memory | Chat weights + max(0, need − server `active_bytes`) > free − 2 GB. Free memory is read afresh; without a measurement, `active_bytes` counts as 0. Skipped if free memory cannot be read | `not enough free memory:` |
-
-The old Chat model's memory is not counted as free, so replacing one Chat model
-with another may be refused until `/api/unload`.
-
 ### Estimate reply
 
 All values are calculated, not measured.
 
 | Field | Meaning |
 |---|---|
-| `models[]` | `repo`, `weights_bytes`, `safe_context` (tokens, `null` if unknown), `context_limit`. For a pair, `safe_context` is the smaller of `context_tokens` and the model's limit |
-| `weights_bytes`, `reply_bytes`, `cache_bytes`, `margin_bytes`, `total_bytes` | the memory sum; `total_bytes` is the need. Reply room is 3.1 × cache bytes per token × context, largest model only; margin is 1.4 GB; `cache_bytes` is 0 for one model. A pair below 8,192 is summed at 8,192 |
-| `budget_bytes` | static = 0.52 × RAM, less the Chat model's weights if one is loaded or loading. For a pair with readable free memory: max(0, min(static, `held_bytes` + `free_bytes` − 2 GB)). Otherwise static |
+| `models[]` | `repo`, `weights_bytes`, `safe_context` (tokens, `null` if unknown), `context_limit`. For a pair, `safe_context` is the smaller of `context_tokens` and the model's limit. 2.0.13 source, one model: the limit a server started now would apply ([6a](#6a-api-server-prompt-limit)); 0 means every prompt would be refused, and `context_warning` says so |
+| `weights_bytes`, `reply_bytes`, `cache_bytes`, `margin_bytes`, `total_bytes` | the memory sum; `total_bytes` is the need. Reply room is cache bytes per token × context × 6.4 for one model, or × 3.1 for two (largest model only); margin is 1.4 GB; `cache_bytes` is 0 for one model. A pair below 8,192 is summed at 8,192 |
+| `budget_bytes` | static = 0.52 × RAM. For a pair with readable free memory: max(0, min(static, `held_bytes` + `free_bytes` − 2 GB)). 2.0.13 source, one model with other apps' memory readable: max(0, 0.80 × RAM − what all but the running server holds). Otherwise static |
 | `free_bytes` | free memory in bytes (cached up to 10 s for this route, read afresh for a start). `null` if `vm_stat` cannot be read, and always for one model, where it is not read |
 | `held_bytes` | measured `active_bytes` of the running server, which a restart gives back; 0 if there is none, for one model, or without `free_bytes` |
 | `context_tokens` | pair: context per model T, a multiple of 1,024, at most 32,768; below 8,192 (down to 0) means refused. One model: 32,768 |
@@ -210,7 +191,7 @@ because of this field.
 
 The app adds these to the server command only when a second model is chosen. The
 guard reads them and does not pass them to `mlx_lm`; a bad or repeated flag stops
-the start.
+the start (an unusable `--studio-cache-limit-mb` value is ignored instead).
 
 | Flag | Value |
 |---|---|
@@ -219,11 +200,14 @@ the start.
 | `--studio-budget-bytes` | the estimate's `budget_bytes` at start, at least 1 |
 | `--studio-kv-tokens` | context per model T, in tokens |
 
+A set user setting adds `--studio-max-context` (ignored while two models run),
+`--studio-memory-percent` or `--studio-cache-limit-mb`, with one model too ([6b](#6b-user-settings)).
+
 The app also passes `--prompt-cache-bytes` (`cache_cap_bytes`) then. `mlx_lm`
 trims to it only on its batch path, so in two-model mode the guard also sets the
 cache's own byte limit, which covers requests run one at a time (for example with
-`seed`). A one-model start passes none of these flags, so it has no byte cap from
-the app. If the guard falls back to one model (`multi_off`), the flags were still
+`seed`). A one-model start passes none of the four flags in the table, and has a byte cap
+only if `prompt_cache_bytes` is set. If the guard falls back to one model (`multi_off`), the flags were still
 passed, so `mlx_lm` receives the cache cap but the guard sets no byte limit.
 
 At each load of a model that is not in memory, at the preload of the second model
@@ -237,8 +221,185 @@ Models take turns.
 
 ## 6. Chat stream
 
-`/api/chat` answers with server-sent events named `token`, `done` and `error`, each with JSON
-data. See [ADR-004](adr/ADR-004-sse-streaming.md).
+2.0.13 source (unreleased). `/api/chat` asks the running API server
+(`POST /v1/chat/completions` on 8080, no `Origin`, no token) with `stream`,
+`max_tokens` 2048, `temperature` 0.7 and `top_p` 0.95. The app loads no model.
+
+409 before the stream: the server is stopped, starting or restarting, could not
+load its model, does not serve `repo`, or a reply is already running.
+
+| Event | Data |
+|---|---|
+| `status` | `{"state": "waiting"}` about once a second while nothing arrives; `{"state": "prompt", "done", "total"}` from the server's keepalive |
+| `reasoning` | text from the server's `delta.reasoning` |
+| `token` | text from `delta.content` |
+| `done` | `tokens`, `tps`, `elapsed`, `stopped`, `truncated` (length limit), `repo`, `stats` |
+| `error` | the reason, including the server's own refusal text |
+
+`stats` holds `first_s` (request sent to the first reply or thinking text, this
+app's clock), `reply_tokens` and `prompt_tokens` (the server's `usage`), `tps`
+(`reply_tokens` over the seconds from the first text to the end) and `mode` (what
+the server reports for the model). Each is `null` when unknown, for example after
+**Stop**, when the server sends no counts. The browser sends only `role` and
+`content` back as history.
+
+Stop, or a browser that goes away, shuts the connection to the server.
+See [ADR-011](adr/ADR-011-chat-through-the-api-server.md) and
+[ADR-004](adr/ADR-004-sse-streaming.md).
+
+## 6a. API server prompt limit
+
+2.0.13 source (unreleased). A prompt longer than the model's limit on this server
+(counted after the chat template, tools included) is answered `400` before
+generation:
+
+```json
+{"error": {"message": "This model's maximum context length is 8192 tokens on this server. However, your prompt is 9000 tokens. Start a new chat, or let your client compact the conversation to fit.",
+  "type": "invalid_request_error", "param": "messages", "code": "context_length_exceeded"}}
+```
+
+The limit is calculated, never above the model's own
+([formula and figures](ARCHITECTURE.md#62-prompt-limit)). The one-model automatic
+figure and a set max context take off the memory other apps held when the server
+started. When the result is below 4096 tokens the code is `insufficient_memory`
+(`param` stays `messages`), so a client should not compact and retry; the server
+log says so once, and `message` is: "This server accepts no prompt for this model.
+Its safe context is below 4096 tokens: with it the whole Mac would use more than
+80% of this Mac's memory. Memory in use now: 82%. Close other apps (web browsers,
+code editors, virtual machines, other model apps), then on the API Server page
+press Stop, then Start Server. Or choose a smaller model." An accepted request's
+`max_tokens` is lowered to what the prompt leaves of the limit, at least 1.
+The percentage is `memory_limit_percent` when that is set. A set
+`max_context_tokens` replaces the calculated one-model limit ([6b](#6b-user-settings)).
+
+## 6b. User settings
+
+2.0.13 source (unreleased). Optional limits in `~/.mlx_studio/settings.json`, a
+JSON object, also edited on the **Configuration** page. An absent, `null`
+or empty key is automatic: the behaviour without the file. All values are whole
+numbers except `chat_temperature` and `chat_top_p`, which also take decimals.
+
+| Key | Default when absent | Range | Effect when set |
+|---|---|---|---|
+| `max_context_tokens` | Calculated from memory ([6a](#6a-api-server-prompt-limit)) | 4096 to 100000000 | One model: the refusal limit, never above the model's own. It may be above the automatic figure, but never above what fits in the memory ceiling (80% of RAM, or the memory percent) by the same formula: a larger value is lowered to that figure, and the card says which figure applies. It does not count other apps' memory, so it does not by itself keep use under 80% |
+| `two_model_context_tokens` | Calculated, at most 32768 | 8192 to 32768 | Two models: a cap on the context for each, rounded down to a step of 1024. It only lowers it |
+| `memory_limit_percent` | 52% share for models, 80% ceiling | 30 to 80 | Share becomes the lower of 52 and this; ceiling becomes this. It only lowers them. A low figure can leave no room, and then every prompt is refused, also with `max_context_tokens` set |
+| `server_max_reply_tokens` | 8192 | 64 to 131072 | `--max-tokens`: the reply cap for a request that sends none |
+| `chat_max_reply_tokens` | 2048 | 64 to 131072 | `max_tokens` of a Chat request. Applies to the next message. A request value, so it can be above the server's default |
+| `chat_temperature` | 0.7 | 0 to 2 | `temperature` of a Chat request. Applies to the next message |
+| `chat_top_p` | 0.95 | 0.05 to 1 | `top_p` of a Chat request. Applies to the next message |
+| `prompt_cache_size` | 2 | 1 to 100 | `--prompt-cache-size` |
+| `prompt_cache_bytes` | Calculated: 2 × cache bytes per token × the context limit | 100000000 to 100000000000 | `--prompt-cache-bytes`. Only lowers the calculated cap. With one model the guard sets the cache's own byte limit |
+| `mlx_cache_limit_mb` | MLX default (nothing is set) | 0 to 1000000 | `--studio-cache-limit-mb`: `mx.set_cache_limit`, the free buffer memory MLX keeps for reuse, in decimal MB (10^6 bytes). 0 keeps none. It is not a limit on the model or its cache. One model: a model's own figure applies each time that model is loaded, else the global one, else MLX's default comes back. Two models: one process-wide figure, the lower of the pair's, set at start. An unusable flag value is ignored; if MLX has no such call, the server log says so and the server starts. Also used by the load test's server. Effect on speed and memory is UNVERIFIED |
+| `performance_mode` | Standard: no flag | `standard`, `save_memory`, `advanced` | `save_memory` passes `--kv-bits 8 --prefill-step-size 256`; `advanced` passes whichever of the next three are set; `standard` passes none and ignores them |
+| `kv_bits` | off | 4 or 8 | `--kv-bits`, Advanced only. 4 gave broken replies in testing. MLX also knows 1, 2, 3, 5, 6: in mlx_lm 0.32.2 a 5 or 6 bit cache fails, and 1 to 3 are coarser than 4, so none is offered. Compression starts at 5,000 tokens; requests are not batched |
+| `kv_group_size` | 64 | 32, 64, 128 | `--kv-group-size`, Advanced only. The model's head size must divide by it |
+| `prefill_step_size` | 2048 | 64 to 2048 | `--prefill-step-size`, Advanced only. Not above the default: the automatic prompt limit was measured there |
+
+### Performance flags
+
+The global flags are on the server's command line; a model that differs is sent in
+`MLX_STUDIO_MODEL_PERFORMANCE` and applied when it is loaded, in one or two model
+mode. A model with a sliding-window cache, or whose head size does not divide by
+the group size, gets none: the app checks `config.json`, the guard checks the
+loaded model as well, runs it in Standard and says so. `GET /api/config` returns
+`performance` (`mode`, `reason`, `blocked`); saving a blocked choice for a model
+is refused. `/api/state` has `server.performance`: `saved`, and per served model
+`saved`, `in_force` (from the server, `null` until it says) and `note`. Memory
+limits are the same in every mode.
+
+### Per model
+
+`models` holds overrides for one model id. For each key the value that applies is
+the model's own, else the global one, else automatic. `memory_limit_percent` is
+global only.
+
+```json
+{"memory_limit_percent": 70, "chat_max_reply_tokens": 1024,
+ "models": {"org/name": {"max_context_tokens": 8192}}}
+```
+
+A model's values apply to a server started with that model; the Chat cap follows
+the model asked. A server with two models takes one value for each key: the
+stricter (lower) one. A model without a value does not loosen the other's, except
+the server reply cap, where it counts as 8192 once either model sets one.
+`max_context_tokens` is the exception: the server is given the global value
+(`--studio-max-context`) and every model's own (`MLX_STUDIO_MODEL_CONTEXTS`, JSON
+`{repo: tokens}`), and the guard applies the one of the model that is loaded, also
+after a request switches models. It is not applied while two models run; in the
+fallback to one model it is. `mlx_cache_limit_mb` is sent the same way
+(`MLX_STUDIO_MODEL_CACHE_LIMITS`), except that two models get the lower of their
+own figures as the flag. The card edits and shows the global values only.
+
+Except the Chat values, a change applies at the next server start or **Apply changes**.
+
+The file is read only if it is a regular file of at most 65536 bytes (a link is not
+followed). A bad value falls back to its default, and a bad file to all defaults,
+with one `warning` line in `app.log`. Unknown keys are ignored. Saving writes the
+valid keys with mode `0600`, so unusable and unknown entries are dropped.
+
+Not configurable, on purpose: ports, hosts, the token, the Origin, Host,
+Content-Type and CSP checks, file paths and every other security check.
+
+`POST /api/server/settings` takes `{"values": {key: number or null}}` (merged into
+the global values), or `{"reset": true}` (drops the global values and keeps
+`models`). With `"repo": "org/name"` both act on that model's overrides. 400 names the key and its range, 500
+means the file could not be written. `/api/state` adds under `server`: `settings`
+(`value`, `min`, `max`, `effective` for each key) and `settings_pending` (the
+running server was started with other values) and `model_settings` (the
+overrides by model id). The estimate adds
+`context_warning`, `capped_by_setting` and `budget_percent`.
+
+The same route takes `{"load_test": {key: value or null}}` (merged; `null` for the
+whole block removes it). Saving and resetting other settings keep the block.
+
+| `load_test` key | Default | Range |
+|---|---|---|
+| `sizes` (offered) | 4096, 8192, 16384, 32768 | 1 to 8 different sizes from 4096 |
+| `last_sizes` | empty | as `sizes`, may be empty |
+| `reply_tokens` | 256 | 32 to 1024 |
+| `rounds` | 2 | 1 to 3 |
+| `margin_percent` | 5 | 5 to 20 |
+| `timeout_seconds` (per size) | 900 | 60 to 3600 |
+
+## 6c. Configuration and Load Test
+
+2.0.13 source (unreleased); used by the Configuration and Load Test pages. Same token, Host,
+Origin and Content-Type rules as every other route.
+
+| Route | Body, reply |
+|---|---|
+| `GET /api/config?repo=` | `settings` (for each key `value`, `own`, `inherited`, `effective`, `min`, `max`, `decimal`, `global_only`), `applied_context`, `context_message`, `load_test`. Without `repo`: the global values |
+| `GET /api/loadtest?repo=` | `status`, `rows`, `results` (stored runs, each with `stale`), `sizes` the model allows, `load_test`, `blocked` |
+| `POST /api/loadtest/start` | `{"repo", "sizes"}`: 1 to 8 different sizes from 4096 to the model's limit. 400 bad input or model not installed completely; 409 while the API server is running, starting or adopted, a test runs, an install runs, or the model is downloading or being deleted |
+| `POST /api/loadtest/cancel` | `{}`; 404 when no test runs |
+| `POST /api/loadtest/apply` | `{"repo", "run_id", "size"}`: saves `max_context_tokens` for the model, only from a stored, passed size of a run that is not stale. 400, 404 or 409 otherwise |
+
+While a test runs, server start, install, and download or delete of that model
+answer 409. `/api/state` adds `loadtest` (`active`, `repo`, `run_id`, `status`,
+`reason`, `size`, `index`, `of`, `step`, `done`, `total`, `memory_percent`).
+
+`mlx_loadtest.py` starts one guarded server for each size on a free port (never
+8765 or 8080), sends generated filler prompts (cold and follow-up, twice by
+default) and reports figures. The server of a test is started with a max context
+of the largest size plus `reply_tokens`, which the guard lowers to the model's own
+limit and the 80% memory ceiling. When the limit the server reports leaves a
+follow-up prompt less than `reply_tokens` for its reply, that size is `skipped`
+(the run ends as `memory`), not `passed`; this includes a size at the model's own
+limit. A run is `done`, `cancelled`, `memory`, `failed` or
+`interrupted`; a row is `passed`, `skipped`, `stopped`, `failed`, `cancelled` or
+`interrupted`. A size that does not pass ends the run. Results are in
+`~/.mlx_studio/loadtest.json` (mode `0600`, the last 5 runs for each model, no
+prompt or reply text).
+
+**Memory limits of a test.** The limit L is 80% of RAM, or the lower memory
+percent. A load or request is sent only if the projected use is at most L - 5 (75%,
+or lower with a wider `margin_percent`). The server is killed at L - 3 (77%), on
+critical memory pressure, on swap growth over 0.5 GB, when memory cannot be read,
+or when samples (every 0.1 s) are more than 1 s apart. Sampling **cannot guarantee**
+that use never passes 80%: a jump between two samples cannot be stopped (one
+measured jump was 5 points in 0.54 s). A passed size is evidence for the Mac as it
+was during the test, not a promise.
 
 ## 7. Not applicable
 

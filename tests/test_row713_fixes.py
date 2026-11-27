@@ -64,68 +64,6 @@ def load_chat(app, base_url, weights):
     return post(base_url, "/api/load", {"repo": CHAT})
 
 
-class TestChatLoadBesideTwoModels:
-    def test_too_big_is_refused_with_the_numbers(
-        self, app_module, base_url, monkeypatch, ram, loads
-    ):
-        serving(app_module, monkeypatch)
-        status, body = load_chat(app_module, base_url, 12 * GB)
-        assert status == 409
-        assert "two models" in body["error"] and "GB" in body["error"]
-        assert "Stop the API server" in body["error"]
-        assert loads[0] == [] and app_module.STATE.loading_repo is None
-
-    def test_one_that_fits_loads(self, app_module, base_url, monkeypatch, ram, loads):
-        serving(app_module, monkeypatch)
-        assert load_chat(app_module, base_url, GB)[0] == 200
-        assert loads[1].wait(5) and loads[0] == [CHAT]
-
-    def test_the_edge_is_the_share_of_ram(self, app_module, monkeypatch, ram):
-        serving(app_module, monkeypatch)
-        # 4 GB each, the cache for two conversations, one reply and the margin.
-        server = 8 * GB + 2 * 57_344 * 8192 + int(3.1 * 57_344 * 8192) + 14 * GB // 10
-        room = SHARE - server
-        cache_model(app_module, CHAT, weights=room)
-        assert app_module.chat_load_problem(CHAT) is None
-        cache_model(app_module, "org/chat2", weights=room + 1)
-        assert app_module.chat_load_problem("org/chat2")
-
-    @pytest.mark.parametrize("repos", [(A,), ()])
-    def test_no_two_model_server_no_limit(
-        self, app_module, base_url, monkeypatch, ram, loads, repos
-    ):
-        if repos:
-            serving(app_module, monkeypatch, repos)
-        assert load_chat(app_module, base_url, 30 * GB)[0] == 200
-
-    def test_a_server_keeping_only_one_has_no_limit(self, app_module, monkeypatch, ram):
-        serving(app_module, monkeypatch, multi=False, reason="moved")
-        cache_model(app_module, CHAT, weights=30 * GB)
-        assert app_module.chat_load_problem(CHAT) is None
-
-    def test_measured_memory_counts_when_it_is_higher(self, app_module, monkeypatch, ram):
-        serving(
-            app_module, monkeypatch,
-            resident=[A, B], active_bytes=15 * GB, peak_bytes=15 * GB, budget_bytes=SHARE,
-        )  # fmt: skip
-        cache_model(app_module, CHAT, weights=2 * GB)
-        assert app_module.chat_load_problem(CHAT)
-
-    def test_a_third_model_now_loaded_counts(self, app_module, monkeypatch, ram):
-        serving(app_module, monkeypatch, resident=["org/c", A])
-        cache_model(app_module, "org/c", weights=11 * GB)
-        cache_model(app_module, CHAT, weights=2 * GB)
-        assert app_module.chat_load_problem(CHAT)
-
-    def test_the_model_already_loaded_is_not_refused(
-        self, app_module, base_url, monkeypatch, ram, loads
-    ):
-        serving(app_module, monkeypatch)
-        app_module.STATE.loaded_repo = CHAT
-        status, body = load_chat(app_module, base_url, 30 * GB)
-        assert (status, body.get("already")) == (200, True)
-
-
 def fake_mlx_load(monkeypatch, load):
     module = types.ModuleType("mlx_lm")
     module.load = load
@@ -134,73 +72,6 @@ def fake_mlx_load(monkeypatch, load):
 
 def budget_in_file(app) -> int:
     return int(app._budget_file().read_text("utf-8"))
-
-
-class TestServerBudgetFollowsTheChatModel:
-    def test_start_names_the_file_and_writes_it(self, app_module, monkeypatch, ram):
-        cache_model(app_module, A)
-        cache_model(app_module, B)
-        seen = apps.launched(app_module, monkeypatch, [B])
-        assert seen["env"]["MLX_STUDIO_BUDGET_FILE"] == str(app_module._budget_file())
-        assert budget_in_file(app_module) == SHARE
-
-    def test_load_and_unload_rewrite_it(self, app_module, server, monkeypatch, ram):
-        serving(app_module, monkeypatch)
-        cache_model(app_module, CHAT, weights=5000)
-        during = []
-        fake_mlx_load(
-            monkeypatch,
-            lambda repo: during.append(budget_in_file(app_module)) or (object(), object()),
-        )
-        app_module.worker_load(CHAT)
-        # Written before the weights are read, so the server cannot take that room.
-        assert during == [SHARE - 5000] and budget_in_file(app_module) == SHARE - 5000
-        port = server.server_address[1]
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request(
-            "POST", "/api/unload", b"{}",
-            {"Content-Type": "application/json", "X-MLX-Token": app_module.API_TOKEN},
-        )  # fmt: skip
-        assert conn.getresponse().status == 200
-        conn.close()
-        assert budget_in_file(app_module) == SHARE
-
-    def test_a_failed_load_gives_the_room_back(self, app_module, monkeypatch, ram):
-        serving(app_module, monkeypatch)
-        cache_model(app_module, CHAT, weights=5000)
-
-        def broken(repo):
-            raise ValueError("no")
-
-        fake_mlx_load(monkeypatch, broken)
-        app_module.worker_load(CHAT)
-        assert budget_in_file(app_module) == SHARE
-
-    def test_stop_removes_it(self, app_module, monkeypatch, ram):
-        app_module._budget_file().write_text("1", "utf-8")
-        app_module._clear_server_pidfile()
-        assert not app_module._budget_file().exists()
-
-    def test_guard_uses_a_lower_budget_at_the_next_load(self, tmp_path, monkeypatch):
-        budget = tmp_path / "server.budget"
-        monkeypatch.setenv("MLX_STUDIO_BUDGET_FILE", str(budget))
-        rig = Rig(tmp_path, sizes={"org/a": 6 * GB, "org/b": 6 * GB})
-        rig.provider.load("org/a")
-        rig.server.mx.active = 6 * GB
-        budget.write_text(str(10 * GB), "utf-8")
-        rig.provider.load("org/b")
-        assert rig.status()["resident"] == ["org/b"]
-        assert rig.status()["budget_bytes"] == 10 * GB
-
-    @pytest.mark.parametrize("content", [None, "junk", "", str(99 * GB)])
-    def test_the_file_never_raises_the_budget(self, tmp_path, monkeypatch, content):
-        budget = tmp_path / "server.budget"
-        if content is not None:
-            budget.write_text(content, "utf-8")
-        monkeypatch.setenv("MLX_STUDIO_BUDGET_FILE", str(budget))
-        rig = Rig(tmp_path)
-        rig.provider.load("org/a")
-        assert rig.status()["budget_bytes"] == 18 * GB
 
 
 # F3: the prompt cache cap holds on every insert ----------------------------- #
@@ -471,7 +342,7 @@ MEMORY = "memory: { active_bytes: 22e9, peak_bytes: 23e9, budget_bytes: 17.9e9 }
 )
 def test_one_model_shows_no_budget(tmp_path, over):
     out = ui(tmp_path, f'await show(running({over})); return text("#serverMemory");')
-    assert "22.0 GB" in out and "budget" not in out and "Chat tab" in out
+    assert "22.0 GB" in out and "budget" not in out and "Chat tab" not in out
 
 
 @needs_node
@@ -481,21 +352,6 @@ def test_two_models_show_the_budget(tmp_path):
 
 
 # F2: the Chat tab ------------------------------------------------------------ #
-@needs_node
-def test_the_chat_tab_says_the_server_holds_two_models(tmp_path):
-    out = ui(
-        tmp_path,
-        'const note = () => [$("#chatServerNote").hidden, text("#chatServerNote")];'
-        " await show(running()); const two = note();"
-        ' await show(running({ repos: ["org/a"] })); const one = note()[0];'
-        ' await show(running({ multi_off: "x" })); const off = note()[0];'
-        " await show(view()); return [two, one, off, note()[0]];",
-    )
-    (hidden, words), one, off, stopped = out
-    assert not hidden and "only if it fits" in words
-    assert one and off and stopped
-    chat = HTML[HTML.index('id="view-chat"') : HTML.index('id="view-models"')]
-    assert 'id="chatServerNote"' in chat
 
 
 # F10, F11: markup ------------------------------------------------------------ #

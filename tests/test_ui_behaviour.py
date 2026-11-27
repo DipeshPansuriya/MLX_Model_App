@@ -347,7 +347,7 @@ class TestSessionToken:
         assert out["sent"] and set(out["sent"]) == {TOKEN}
         assert out["stored"] == TOKEN
         assert out["replaced"] == ["/"]
-        assert out["hash"].endswith("chat") and TOKEN not in out["hash"]
+        assert out["hash"].endswith("server") and TOKEN not in out["hash"]
 
     def test_a_new_fragment_replaces_the_token_of_an_earlier_launch(self, tmp_path):
         out = run(tmp_path, SESSION, hash=f"#t={TOKEN}", storage={"mlx-token": "old" * 12})

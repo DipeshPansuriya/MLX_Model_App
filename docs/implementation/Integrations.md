@@ -21,6 +21,7 @@ from the macOS tool `/usr/bin/vm_stat` (local, no network). If it fails, the fix
 
 ## Details
 
+- Chat is a client of the API server (2.0.13 source).
 - The API server is started with `HF_HUB_OFFLINE=1`, so a request cannot make it download a model.
 - Client settings and server rules: [README](../../README.md).
 - Update manifest design: [ADR-006](../adr/ADR-006-manifest-updates.md); release steps:

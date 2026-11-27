@@ -427,3 +427,16 @@ class TestInstallerRun:
         assert not machine.mark.exists()
         urls = (tmp_path / "urls.log").read_text(encoding="utf-8").split()
         assert urls == [LATEST, DOWNLOAD, SUMS]
+
+
+def test_the_load_test_runner_is_shipped_bundled_and_scanned():
+    root = Path(__file__).resolve().parent.parent
+    for name in (
+        "packaging/release_manifest.py",
+        "packaging/build_app.sh",
+        "scripts/security_audit.sh",
+        ".github/workflows/quality.yml",
+        ".github/workflows/pr-review.yml",
+        ".github/CODEOWNERS",
+    ):
+        assert "mlx_loadtest.py" in (root / name).read_text("utf-8"), name

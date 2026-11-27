@@ -80,7 +80,8 @@ def focus_dom(wrap: str, draw: str) -> str:
         " if (v && document.activeElement === b) document.activeElement = body; } });"
         " document.activeElement = b; return b; };"
         " const focused = () => document.activeElement === body ? 'page'"
-        " : document.activeElement.dataset.catLoad ? 'load'"
+        " : document.activeElement.dataset.slot && !document.activeElement.dataset.catDownload"
+        " ? 'installed'"
         " : document.activeElement.dataset.catDownload ? 'download' : 'other';"
         # The boot request never settles in the stub; let later refreshes run.
         " state.refreshing = null;"
@@ -115,7 +116,7 @@ class TestDownloadKeepsKeyboardFocus:
             + scenario,
         )
 
-    def test_focus_stays_from_click_to_load(self, tmp_path, where):
+    def test_focus_stays_from_click_to_installed(self, tmp_path, where):
         out = self.go(
             tmp_path,
             where,
@@ -124,7 +125,7 @@ class TestDownloadKeepsKeyboardFocus:
             " server.downloads = []; server.models = [{ repo: 'org/n', complete: true }];"
             " await refreshState(); seen.push(focused()); return seen;",
         )
-        assert out == ["download", "download", "load"]
+        assert out == ["download", "download", "installed"]
 
     @pytest.mark.parametrize("ending", ["failed", "cancelled"])
     def test_focus_stays_when_the_download_ends_badly(self, tmp_path, where, ending):
@@ -165,16 +166,14 @@ class TestInstalledFollowsTheSnapshot:
         )
 
     @pytest.mark.parametrize("models", ["[]", "[{ repo: 'org/n', complete: false }]"])
-    def test_a_model_removed_outside_the_app_offers_download_not_load(
-        self, tmp_path, where, models
-    ):
+    def test_a_model_removed_outside_the_app_offers_download(self, tmp_path, where, models):
         out = self.card(tmp_path, where, models)
         assert "data-cat-download" in out
         assert "data-cat-load" not in out and "Installed" not in out
 
-    def test_a_model_still_on_disk_offers_load(self, tmp_path, where):
+    def test_a_model_still_on_disk_says_installed(self, tmp_path, where):
         out = self.card(tmp_path, where, "[{ repo: 'org/n', complete: true }]")
-        assert "data-cat-load" in out and "Installed" in out
+        assert "data-cat-load" not in out and "Installed" in out
 
 
 # V27 ------------------------------------------------------------------------ #

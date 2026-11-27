@@ -83,15 +83,15 @@ def test_start_is_off_over_budget_and_back_with_one_model(tmp_path):
 
 
 @needs_node
-def test_polls_do_not_ask_again_but_a_chat_model_change_does(tmp_path):
+def test_polls_do_not_ask_again(tmp_path):
     out = ui(
         tmp_path,
         'await pick("org/a", "org/b"); await show(current); await show(current);'
         ' const before = sent("/api/server/estimate").length;'
-        ' await show(view({}, { loaded: { repo: "org/c" } }));'
+        " await show(view({}));"
         ' return [before, sent("/api/server/estimate").length];',
     )
-    assert out == [1, 2]
+    assert out == [1, 1]
 
 
 @needs_node

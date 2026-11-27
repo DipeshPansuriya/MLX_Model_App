@@ -77,7 +77,8 @@ returns only `ok` and the version.
 | Origin | Every `Origin` header must be one of the two app origins, not only the first |
 | Content type | A POST needs exactly one `Content-Type` header, and it must be `application/json` |
 | Window library logging | `PYWEBVIEW_LOG` is removed from the environment before `pywebview` is loaded |
-| Model load | `/api/load` accepts a completely installed model, or the one already loaded; any other name gets 400 |
+| Chat (2.0.13) | `/api/chat` keeps the token and Origin checks and only names a model the running server serves; the browser never calls 8080. Only role and content are sent on |
+| Prompt length (2.0.13) | The guard refuses a prompt over the server's limit before generation (`400 context_length_exceeded`). The one-model automatic limit is calculated to keep the whole Mac within 80% of RAM, from the memory other apps held when the server started; no guarantee. A set max context follows the same rule. A reply is capped to the limit; the prompt cache has a byte cap; the load test sends requests only to a port its own server holds |
 | Content-Security-Policy | Sent from `end_headers` on every reply: `default-src 'self'; script-src 'self'; style-src 'self'` plus one hash for the style `pywebview` 6.2.1 adds; `style-src-attr 'unsafe-inline'` (progress bar); `img-src 'self' data:`; `object-src`, `base-uri`, `form-action` and `frame-ancestors` set to `'none'` |
 | UI rule | No inline script, event handler or `eval`. A `pywebview` upgrade needs the style hash and the window rechecked; `tests/test_row603_csp.py` fails on purpose |
 
@@ -119,10 +120,9 @@ POST, and name a model that is already downloaded. See
 |---|---|
 | New route | `POST /api/server/estimate` is read-only and has the same token, Host, Origin and JSON checks as the other POST routes |
 | Second model | The `also` field accepts one other model that is installed completely; anything else gets 400. A one-model estimate also needs an installed model. The guard checks the preload name by the same rules as a request's model name |
-| Chat model | A Chat load that does not fit beside the two-model server, by the 52% rule or by live free memory, is refused (409). A model that does not fit the budget is loaded alone and the view warns |
 | Memory limits | Context per model is at most 32,768 tokens and follows the smaller of 0.52 × RAM and live free memory; below 8,192 a pair is refused. The prompt cache is capped at 2 × cache bytes per token × context. This limits availability risk; it is not an access control. One-model servers have no such check |
 | Free memory read | `/usr/bin/vm_stat`, called by absolute path with no arguments and no shell, 2 s timeout; only its text is parsed. On any failure the fixed 52% rule is used. The check then refuses nothing for that reason alone |
-| Budget file | `server.budget` is written with mode `0600` to a new file, never through a link. The guard reads only a plain file with a number above 0, and the file can only lower the budget, never raise it above the start figure |
+| Budget file | 2.0.13 no longer writes `server.budget`; it deletes an old one when it adopts a server |
 | Served-names file | The guard does not open it through a link |
 | Request checks | The model, draft, adapter and image rules above are unchanged. The server stays offline and downloads nothing |
 | Status file | `server.resident.json` is written with mode `0600`; the app uses it only when its process id is the running server's |
@@ -175,11 +175,10 @@ diagnostic bundle before sharing: it includes the logs, local paths, model names
 | Unreleased source: programs running as the same user are still not shut out of the app | Accepted | Same advice |
 | Unreleased, browser mode (L1): the token could reach the `/usr/bin/open` command line if `osascript` failed | Fixed in the unreleased source (section 4.1); checked with stubs, not live | Not in any released build |
 | Unreleased, browser mode (L2): the browser may keep `/#t=<token>` in history, stored before the page removes it from the address bar | Known limit, documented; the security re-check rated it acceptable for a 2.0.10 pre-release. Not checked in a live browser | The token is new per launch and stops working when the app quits. The native window is the default |
-| Unreleased, two models (L3): a model that does not fit the budget is still loaded on its own, and any local program using 8080 can switch among downloaded models. The Chat check counts weights only | Warning and Chat-load refusal added; the rest is a limit by design (availability, local). Real memory effect not measured | Stop the server when not in use |
+| Unreleased, two models (L3): a model that does not fit the budget is still loaded on its own, and any local program using 8080 can switch among downloaded models. | Warning and Chat-load refusal added; the rest is a limit by design (availability, local). Real memory effect not measured | Stop the server when not in use |
 | Unreleased, two models: the memory limits (2 GB reserve, 3.1 reply factor from one data point, 0.4 GB process overhead, whether `vm_stat` free memory is available without swapping) rest on calculation. An earlier real run, before these limits, had system swap rise from 0 to 4.60 GB | Open: the real two-model re-test has not run | Watch memory pressure; start one model if it rises |
 | Unreleased, two models: after a killed server, free memory may be read before macOS returns it; a model with a context limit below 8,192 can make the "needed" figure too small; the status figures can be about 10 s old, or older during a reply served one at a time | Known limits (availability) | Start again after a moment; stop the server if memory pressure rises |
 | Unreleased, two models: a switch between loaded models does no memory check. The prompt cache byte limit now covers requests run one at a time | Open limit; real growth not measured | Stop the server if memory pressure rises |
-| Unreleased source: the app process does not set `HF_HUB_OFFLINE` (only the API server does), so loading an installed model on the Chat tab may contact the Hub, and `mlx_lm.load` may prefer a local folder with the same relative name in the app's working folder | UNVERIFIED: neither was tested | None yet |
 | No authentication on 8080; local processes can generate and switch between downloaded models | Accepted | Stop the server when not in use |
 | App bundle is ad-hoc signed, the `.pkg` is unsigned, nothing is notarised | Accepted | No Apple Developer account, [ADR-007](adr/ADR-007-adhoc-signing.md) |
 | One-line installer runs a script from `main` and takes checksums from the same repository | Accepted | Proves the download is intact, not who published it. Read the script first |
@@ -198,6 +197,7 @@ diagnostic bundle before sharing: it includes the logs, local paths, model names
 | Need the API from another machine | Use an SSH tunnel, `ssh -L 8080:127.0.0.1:8080 you@mac`, and call it as `127.0.0.1` |
 | Need the server on the LAN | Not supported; the bind is fixed |
 | Want to check a download | Compare `shasum -a 256 <file>` with the checksum published for that release |
+| Change a limit (2.0.13, unreleased) | `~/.mlx_studio/settings.json` holds whole-number limits only, read as a regular file without following a link. Ports, hosts, the token, Origin/CSP and other checks cannot be set there. A max context is lowered to the memory ceiling by a formula that can be too low, so memory can still pass the limit ([keys](API.md#6b-user-settings)). The Load Test samples memory and cannot guarantee 80% ([limits](API.md#6c-configuration-and-load-test)) |
 | Share diagnostics | Open the zip and remove anything private |
 
 ## 7. What would change the model
