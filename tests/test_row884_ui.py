@@ -94,3 +94,44 @@ class TestConfigurationNamesWhatOptiqChanges:
             "measured with MLX only",
         ):
             assert words in note
+
+
+THINK = """
+const view = (thinking) => ({ blocked: null, thinking, sizes: { min: 4096, max: 9000,
+  offered: [] }, load_test: { sizes: { value: [] }, last_sizes: { value: [] } }, results: [] });
+const box = () => document.querySelector("#ltThinking");
+const note = () => document.querySelector("#ltThinkingNote").textContent;
+render(snap({ server }));
+state.readyModels = ["org/a"];
+state.lt.repo = "org/a";
+const seen = () => [box().disabled, box().checked, note(), ltRequest("org/a", [4096])];
+"""
+
+
+@needs_node
+def test_thinking_is_offered_only_with_a_switch(tmp_path):
+    on, off, none = run(
+        tmp_path,
+        SERVER
+        + THINK
+        + """
+        state.lt.view = view({ supported: true, reason: null });
+        paintThinking(false);
+        const first = seen();
+        state.lt.thinking = false;
+        paintThinking(false);
+        const second = seen();
+        state.lt.view = view({ supported: false, reason: "No switch." });
+        paintThinking(false);
+        return [first, second, seen()];
+        """,
+    )
+    assert on[:2] == [False, True] and on[3]["thinking"] is True
+    assert "reply token budget" in on[2]
+    assert off[:2] == [False, False] and off[3]["thinking"] is False
+    assert none[:3] == [True, False, "No switch."] and "thinking" not in none[3]
+
+
+def test_the_page_says_large_sizes_take_long():
+    page = (UI / "index.html").read_text("utf-8")
+    assert "Large sizes take long" in page and "3600 seconds" in page

@@ -149,9 +149,9 @@ PER_MODEL_AT_START = {
 CHAT_ONLY_SETTINGS = ("chat_max_reply_tokens", *DECIMAL_SETTINGS)
 # The "load_test" block of settings.json. The offered sizes are only test sizes, none
 # of them a chosen limit. margin_percent: see also mlx_loadtest.GATE_MARGIN_PERCENT.
-LOAD_TEST_SIZES = (4096, 8192, 16384, 32768)
+LOAD_TEST_SIZES = tuple(4096 << step for step in range(9))  # 4096 to 1,048,576
 LOAD_TEST_SIZE_RANGE = (4096, 100_000_000)
-LOAD_TEST_MAX_SIZES = 8
+LOAD_TEST_MAX_SIZES = 12  # every offered size and a few typed ones
 LOAD_TEST_NUMBERS = {  # key: (default, lowest, highest)
     "reply_tokens": (256, 32, 1024),
     "rounds": (2, 1, 3),
@@ -160,6 +160,7 @@ LOAD_TEST_NUMBERS = {  # key: (default, lowest, highest)
 }
 LOAD_TEST_LISTS = {"sizes": LOAD_TEST_SIZES, "last_sizes": ()}
 LOADTEST_RESULT_BYTES = 256 * 1024
+TEMPLATE_BYTES = 8 * 1024 * 1024
 LOADTEST_RUNS_KEPT = 5  # for each model
 LOADTEST_CANCEL_SECONDS = 10  # then the runner's process group is killed
 LOADTEST_LINE_BYTES = 64 * 1024
@@ -3660,8 +3661,38 @@ def _direct_test_launch(engine, repo: str, settings: dict) -> tuple[list[str], d
     return command, env, fields
 
 
+def _chat_template(snapshot: Path) -> str:
+    """The model's chat template text, from the first file that holds one."""
+    for name in ("chat_template.jinja", "chat_template.json", "tokenizer_config.json"):
+        try:
+            with open(snapshot / name, "rb") as handle:
+                text = handle.read(TEMPLATE_BYTES).decode("utf-8")
+            if name.endswith(".json"):
+                text = json.loads(text)["chat_template"]
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            continue
+        if text:
+            return str(text)  # a list of named templates is searched as a whole
+    return ""
+
+
+def thinking_support(repo: str) -> dict:
+    """Whether a request can switch thinking on and off (``enable_thinking``).
+
+    Both engines hand ``chat_template_kwargs`` to the template, so it decides.
+    """
+    found = "enable_thinking" in _chat_template(_snapshot_dir(repo))
+    reason = None if found else "This model's chat template has no enable_thinking switch."
+    return {"supported": found, "reason": reason}
+
+
 def _loadtest_job(
-    repo: str, sizes: list[int], run_id: str, workdir: Path, engine_id: str = "mlx"
+    repo: str,
+    sizes: list[int],
+    run_id: str,
+    workdir: Path,
+    engine_id: str = "mlx",
+    thinking: bool | None = None,
 ) -> tuple[dict, dict]:
     """The runner's job and the environment its server inherits."""
     engine = engines.get(engine_id)
@@ -3686,11 +3717,13 @@ def _loadtest_job(
     priors = [
         [row["size"], row["server_peak_bytes"], row.get("status") == "passed"]
         for run in _stored_runs(repo)
-        if run.get("fingerprint") == fingerprint
+        if run.get("fingerprint") == fingerprint and run.get("thinking") == thinking
         for row in run["rows"]
         if type(row.get("size")) is int and type(row.get("server_peak_bytes")) is int
     ]
     config = guard.read_config(snapshot)
+    if thinking is not None:
+        fields["thinking"] = thinking
     job = {
         "run_id": run_id,
         "repo": repo,
@@ -3698,6 +3731,7 @@ def _loadtest_job(
         **{key: values[key] for key in LOAD_TEST_NUMBERS},
         "limit_percent": settings["memory_limit_percent"],
         "ram_bytes": hardware().get("ram_bytes"),
+        "context_limit": guard.context_limit(config),
         "model": {
             "weights_bytes": guard.weights_bytes(snapshot),
             "kv_per_token": guard.kv_bytes_per_token(config) or guard.UNKNOWN_KV_PER_TOKEN,
@@ -3713,7 +3747,9 @@ def _loadtest_job(
     return job, env
 
 
-def start_loadtest(repo: str, sizes, engine_id: str = "mlx") -> tuple[int, dict]:
+def start_loadtest(
+    repo: str, sizes, engine_id: str = "mlx", thinking: bool | None = None
+) -> tuple[int, dict]:
     """``(HTTP status, reply)``. Starts nothing while a server or other work runs."""
     engine = engines.get(engine_id)
     if engine is None or not engine.selectable:
@@ -3726,6 +3762,13 @@ def start_loadtest(repo: str, sizes, engine_id: str = "mlx") -> tuple[int, dict]
             "error": f"sizes: 1 to {LOAD_TEST_MAX_SIZES} different whole numbers "
             f"from {LOAD_TEST_SIZE_RANGE[0]} to {most}"
         }
+    if thinking is not None and type(thinking) is not bool:
+        return 400, {"error": "thinking must be true or false"}
+    support = thinking_support(repo)
+    if thinking and not support["supported"]:
+        return 400, {"error": support["reason"]}
+    # Named in every request where the model has the switch; not given means on.
+    thinking = thinking is not False if support["supported"] else None
     if not hardware().get("ram_bytes"):
         return 500, {"error": "this Mac's memory size cannot be read"}
     if engine.direct and (why := _engine_refusal(engine.id, [repo], port_too=False)):
@@ -3749,6 +3792,8 @@ def start_loadtest(repo: str, sizes, engine_id: str = "mlx") -> tuple[int, dict]
             }
             if engine.direct:
                 record["engine"] = engine.id
+            if thinking is not None:
+                record["thinking"] = thinking
             run = {"active": True, "repo": repo, "record": record, "status": "running"}
             run.update(progress={}, cancel=False, proc=None, server_pid=None)
             previous, STATE.loadtest = STATE.loadtest, run
@@ -3756,7 +3801,7 @@ def start_loadtest(repo: str, sizes, engine_id: str = "mlx") -> tuple[int, dict]
         try:
             APP_DIR.mkdir(parents=True, exist_ok=True)
             workdir = Path(tempfile.mkdtemp(prefix="loadtest-run-", dir=APP_DIR))
-            job, env = _loadtest_job(repo, sizes, run_id, workdir, engine.id)
+            job, env = _loadtest_job(repo, sizes, run_id, workdir, engine.id, thinking)
             where, after = {}, "--max-tokens"
             if engine.direct:
                 where = {"cwd": job["server_dir"]}
@@ -4010,6 +4055,7 @@ def loadtest_view(repo: str) -> dict:
             ],
         },
         "load_test": values,
+        "thinking": thinking_support(repo),
         "blocked": blocked,
     }
 
@@ -4345,7 +4391,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(engine, str):
                     code, answer = 400, {"error": "engine must be a name"}
                 else:
-                    code, answer = start_loadtest(repo, body.get("sizes"), engine)
+                    code, answer = start_loadtest(
+                        repo, body.get("sizes"), engine, body.get("thinking")
+                    )
             elif not _valid_repo(repo):
                 code, answer = 400, {"error": "repo must be a model id"}
             else:

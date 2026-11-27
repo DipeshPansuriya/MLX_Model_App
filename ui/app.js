@@ -922,7 +922,7 @@ async function resetConfig() {
 
 /* ───────────── load test page ───────────── */
 const LT_NUMBERS = ["reply_tokens", "rounds", "margin_percent", "timeout_seconds"];
-const LT_MAX_SIZES = 8;
+const LT_MAX_SIZES = 12;
 const LT_ENDED = { done: "finished", memory: "stopped for memory safety",
   cancelled: "cancelled", failed: "failed", interrupted: "interrupted" };
 const LT_PILL = { passed: "ok", skipped: "warn", cancelled: "warn", interrupted: "warn",
@@ -1029,10 +1029,21 @@ function paintLoadTestControls() {
     $(id).disabled = none || testing;
   }
   paintSizes(testing);
+  paintThinking(none || testing);
   // Focus follows Start to Cancel and back.
   if (held === start && testing) cancel.focus();
   const gone = (held === cancel && !testing) || (held === stopServing && stopServing.hidden);
   if (gone) (start.disabled ? $("#ltModelSelectSearch") : start).focus();
+}
+
+// Offered only where the model's chat template has the switch.
+function paintThinking(off) {
+  const found = state.lt.view?.thinking;
+  const box = $("#ltThinking");
+  box.disabled = off || !found?.supported;
+  box.checked = !!found?.supported && state.lt.thinking !== false;
+  setText($("#ltThinkingNote"), found && !found.supported ? found.reason
+    : "Thinking uses the reply token budget (Reply tokens per request).");
 }
 
 // Only a new step is read out; the counts that move with every poll are not.
@@ -1112,7 +1123,9 @@ function resultRun(run, testing) {
   const ended = LT_ENDED[run.status] || run.status;
   const heads = ["Size", "Status", "Read tok/s", "First token", "Write tok/s",
     "Peak memory", "Settings used"].map((h) => `<th scope="col">${h}</th>`).join("");
-  const engine = run.engine ? ` (${esc(run.engine)})` : " (MLX)";
+  const thinking = typeof run.thinking === "boolean"
+    ? `, thinking ${run.thinking ? "on" : "off"}` : "";
+  const engine = (run.engine ? ` (${esc(run.engine)})` : " (MLX)") + thinking;
   return `<section class="panel lt-run"><h2>${esc(name)}${engine}: ${esc(ended)}` +
     `${run.stale ? ' <span class="pill warn">stale</span>' : ""}</h2>` +
     (run.stale ? '<p class="hint">Settings, software or the model changed since this run. ' +
@@ -1202,7 +1215,9 @@ function addCustomSize() {
 // No engine named means MLX.
 function ltRequest(repo, sizes) {
   const engine = $("#ltEngine").value;
-  return engine && engine !== "mlx" ? { repo, sizes, engine } : { repo, sizes };
+  const request = engine && engine !== "mlx" ? { repo, sizes, engine } : { repo, sizes };
+  if (state.lt.view?.thinking?.supported) request.thinking = state.lt.thinking !== false;
+  return request;
 }
 
 async function startLoadTest() {
@@ -2567,6 +2582,7 @@ function wire() {
     addCustomSize();
   });
   $("#ltStartBtn").addEventListener("click", startLoadTest);
+  $("#ltThinking").addEventListener("change", (e) => { state.lt.thinking = e.target.checked; });
   $("#ltCancelBtn").addEventListener("click", cancelLoadTest);
   $("#ltStopServerBtn").addEventListener("click", stopServer);
   $("#serverBackground").addEventListener("change", () => {

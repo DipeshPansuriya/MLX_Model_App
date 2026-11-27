@@ -40,6 +40,8 @@ MAX_GAP_SECONDS = 1.0  # a longer gap between samples: the Mac slept or stalled
 SWAP_GROWTH_BYTES = 500_000_000
 PRESSURE_CRITICAL = 4
 STALL_SECONDS = 120  # no byte of a reply
+LONG_SIZE = 32_768  # a larger size takes long: it gets the longest time limit
+LONG_TIMEOUT_SECONDS = 3600  # the top of the "timeout_seconds" setting
 STOP_GRACE_SECONDS = 5
 GONE_SECONDS = 30
 PORT_ATTEMPTS = 3
@@ -307,8 +309,9 @@ def make_prompt(tokens: int, run_id: str, label: str, count) -> str:
         lines.append(text)
         total, number = total + max(size, 1), number + 1
     # Counted whole: joined text can differ from the sum of its parts.
-    while len(lines) > 1 and count("\n".join(lines)) > tokens:
-        lines.pop()
+    # Dropped in one go: a recount for every line would take hours near 1M tokens.
+    while len(lines) > 1 and (over := count("\n".join(lines)) - tokens) > 0:
+        del lines[max(len(lines) - max(over // max(size, 1), 1), 1) :]
     return "\n".join(lines)
 
 
@@ -448,6 +451,10 @@ class Runner:
         self.base_swap = 0
         self.accepts: int | None = None  # the server's prompt limit, as it reports it
         self.taken = False  # another program holds the server's port
+        self.seconds = job.get("timeout_seconds")  # of the size being run
+
+    def time_limit(self, size: int) -> int:
+        return LONG_TIMEOUT_SECONDS if size > LONG_SIZE else self.job["timeout_seconds"]
 
     def run(self) -> tuple[str, str]:
         try:
@@ -512,7 +519,8 @@ class Runner:
         self.allow(row, None, estimate_bytes(size, self.job["model"], self.measured), "loading")
         log_path = Path(self.job["workdir"]) / "server.log"
         monitor = proc = None
-        deadline = self.clock() + self.job["timeout_seconds"]
+        self.seconds = self.time_limit(size)
+        deadline = self.clock() + self.seconds
         finished = False
         try:
             for attempt in range(1, PORT_ATTEMPTS + 1):
@@ -590,7 +598,7 @@ class Runner:
                 if state == "open":
                     raise Stop("failed", "the server answered without the key")
                 if state == "ready" and runtime.listener_is(port, proc.pid):
-                    model, wait = self.job["request_model"], self.job["timeout_seconds"]
+                    model, wait = self.job["request_model"], self.seconds
                     if not runtime.warm_up(port, self.key(), model, wait):
                         self.check(monitor)
                         raise Stop("failed", "the model could not be loaded")
@@ -649,8 +657,12 @@ class Runner:
                 follow_up_first_token_s=round(max(follow_first), 3) if follow_first else None,
             )
 
+        # At the model's own limit the prompts stop short, so the last reply still fits.
+        limit = self.job.get("context_limit")
+        top = min(size, limit - reply_tokens) if limit else size
+        thinking = self.job.get("thinking")
         for number in range(1, rounds + 1):
-            first = max(size - reply_tokens - PROMPT_SPARE_TOKENS, 1)
+            first = max(top - reply_tokens - PROMPT_SPARE_TOKENS, 1)
             label = f"{size}-{number}"
             prompt = make_prompt(first, self.job["run_id"], label, self.count)
             messages = [{"role": "user", "content": prompt}]
@@ -673,6 +685,8 @@ class Runner:
                     "max_tokens": reply_tokens,
                     "temperature": 0,
                 }
+                if thinking is not None:
+                    body["chat_template_kwargs"] = {"enable_thinking": thinking}
                 keyed = self.headers()
                 if keyed:
                     import engine_runtime as runtime

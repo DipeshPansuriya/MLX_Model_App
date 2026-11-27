@@ -542,7 +542,7 @@ class TestRouteChecks:
     @pytest.mark.parametrize(
         "sizes",
         [None, [], "4096", [4095], [32768], [4096, 4096], [4096.0], [True], [4096] * 9,
-         list(range(4096, 4105))],
+         list(range(4096, 4109))],
     )  # fmt: skip
     def test_bad_sizes(self, api, sizes):
         assert api.post("/api/loadtest/start", {"repo": REPO, "sizes": sizes})[0] == 400

@@ -440,7 +440,7 @@ class TestLoadTestControls:
             pick(4096); el("#lt-rounds").value = "9"; await startLoadTest();
             const rounds = el("#ltError").textContent;
             el("#lt-rounds").value = "2";
-            for (let n = 0; n < 9; n += 1) { el("#ltCustom").value = String(5000 + n);
+            for (let n = 0; n < 13; n += 1) { el("#ltCustom").value = String(5000 + n);
               addCustomSize(); }
             await startLoadTest();
             return { tried, boxes, rounds, many: el("#ltError").textContent, sent: sent.length };
@@ -449,7 +449,7 @@ class TestLoadTestControls:
         assert all("from 4096 to 16384" in text for text in out["tried"])
         assert "20000" not in out["boxes"]
         assert "from 1 to 3" in out["rounds"]
-        assert "8 sizes" in out["many"]
+        assert "12 sizes" in out["many"]
         assert out["sent"] == 0
 
     def test_a_refused_start_is_explained(self, tmp_path):

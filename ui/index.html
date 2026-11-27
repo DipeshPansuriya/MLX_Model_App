@@ -529,7 +529,12 @@
               <button type="button" class="btn btn-ghost" id="ltAddBtn">Add size</button>
             </div>
             <p class="hint" id="ltRange"></p>
+            <p class="hint">Large sizes take long: 1M can take an hour or more. A size above 32768 tokens is stopped after 3600 seconds; fewer rounds make it shorter.</p>
           </fieldset>
+          <div class="server-row">
+            <label class="check"><input type="checkbox" id="ltThinking" aria-describedby="ltThinkingNote" disabled /><span>Thinking</span></label>
+            <span class="hint" id="ltThinkingNote"></span>
+          </div>
           <details class="server-details">
             <summary>Run values (saved when a test starts)</summary>
             <div class="settings-grid">
@@ -551,7 +556,7 @@
               <div class="setting">
                 <label for="lt-timeout_seconds">Time limit per size (seconds)</label>
                 <input type="number" step="1" inputmode="numeric" class="input" id="lt-timeout_seconds" aria-describedby="lt-timeout_seconds-note" />
-                <span class="hint" id="lt-timeout_seconds-note">The size is stopped after this.</span>
+                <span class="hint" id="lt-timeout_seconds-note">The size is stopped after this. Sizes above 32768 tokens always get 3600.</span>
               </div>
             </div>
           </details>

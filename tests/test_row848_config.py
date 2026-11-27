@@ -153,7 +153,7 @@ class TestLoadTestBlock:
         view = app_module.load_test_view()
         values = {key: entry["value"] for key, entry in view.items()}
         assert values == {
-            "sizes": [4096, 8192, 16384, 32768],
+            "sizes": [4096 << step for step in range(9)],
             "last_sizes": [],
             "reply_tokens": 256,
             "rounds": 2,
