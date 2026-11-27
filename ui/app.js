@@ -377,6 +377,7 @@ function render(snap) {
   renderSearch();
   renderConfigPage(server);
   renderLoadTest(snap);
+  paintEngineCards(install);
 }
 
 // target is the version the Install button would apply, if newer than current.
@@ -421,13 +422,167 @@ function serverSet() {
 function serverPending() {
   const server = state.server;
   return !!server?.running && (!sameSet(serverSet(), runningSet(server)) ||
-    $("#serverBackground").checked !== !!server.background || !!server.settings_pending);
+    engineChanged() || $("#serverBackground").checked !== !!server.background || !!server.settings_pending);
 }
 
 // The model fields of a start request.
 function serverChoice(set = serverSet()) {
   const [repo = "", second] = set;
-  return second ? { repo, also: [second] } : { repo };
+  const models = second ? { repo, also: [second] } : { repo };
+  const engine = engineId();
+  // No engine named means MLX.
+  return engine === "mlx" ? models : { ...models, engine, anthropic: anthropicWanted() };
+}
+
+/* ───────────── engines ───────────── */
+const engineList = () => state.server?.engines || [];
+const runningEngine = () => state.server?.engine || "mlx";
+const engineId = () => state.engine ||
+  (state.server?.running ? runningEngine() : state.server?.last_engine) || "mlx";
+const engineInfo = (id = engineId()) => engineList().find((engine) => engine.id === id);
+// On unless switched off here.
+const anthropicWanted = () => state.anthropic !== false;
+
+function engineChanged() {
+  const server = state.server;
+  if (!server?.running) return false;
+  if (engineId() !== runningEngine()) return true;
+  return !!engineInfo()?.anthropic && anthropicWanted() !== !!server.anthropic;
+}
+
+// Whether the chosen engine can serve the first model, as the app says.
+async function loadEligibility(engine, repo) {
+  const install = engineInfo(engine)?.state;
+  const key = `${engine} ${repo} ${install}`;
+  if (state.eligibilityKey === key) return;
+  state.eligibilityKey = key;
+  state.eligibility = null;
+  try {
+    const { engines } = await api(`/api/engines${repoQuery(repo)}`);
+    if (state.eligibilityKey !== key) return;
+    state.eligibility = engines.find((entry) => entry.id === engine) || null;
+    paintServerCard();
+  } catch (_) {
+    state.eligibilityKey = "";
+  }
+}
+
+function engineReason(set) {
+  const engine = engineInfo();
+  if (!engine?.direct) return "";
+  if (set.length > 1) return `${engine.name} serves one model. Remove the second one.`;
+  if (!set.length) return "";
+  loadEligibility(engine.id, set[0]);
+  const found = state.eligibility;
+  return found && found.id === engine.id && !found.eligible ? found.reason : "";
+}
+
+function paintEngine(set) {
+  const select = $("#engineSelect");
+  setHTML(select, engineList().map((engine) =>
+    `<option value="${esc(engine.id)}"${engine.selectable ? "" : " disabled"}>` +
+    `${esc(engine.name)}${engine.selectable ? "" : ` (${esc(engine.reason)})`}</option>`).join(""));
+  const engine = engineInfo();
+  select.value = engineId();
+  $("#anthropicBox").hidden = !engine?.anthropic;
+  $("#engineAnthropic").checked = anthropicWanted();
+  showLine("#engineWhy", engineReason(set));
+  const missing = engine?.missing || [];
+  const box = $("#engineMissing");
+  if (box.hidden && missing.length) box.open = true;
+  box.hidden = !missing.length;
+  setText($("#engineMissingTitle"), `Not available with this engine (${missing.length})`);
+  setHTML($("#engineMissingList"), missing.map(([what, why]) =>
+    `<li>${esc(what)}: ${esc(why)}</li>`).join(""));
+  paintClientSettings(set, engine);
+}
+
+function paintClientSettings(set, engine) {
+  const server = state.server;
+  const direct = !!engine?.direct;
+  const base = `http://127.0.0.1:${(direct ? engine.port : 8080) || 8080}`;
+  const model = direct ? "default_model" : set[0] || "(choose a model)";
+  const keyed = direct && server.running && runningEngine() === engine.id && server.ready;
+  $("#copyKey").hidden = !keyed;
+  $("#curlExample").hidden = direct;
+  setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
+    (direct ? "press Copy key (new at every start)" : "not needed"));
+  const claude = direct && anthropicWanted();
+  setText($("#claudeSettings"), claude
+    ? [`export ANTHROPIC_BASE_URL=${base}`,
+      "export ANTHROPIC_AUTH_TOKEN=<paste the copied key>",
+      `export ANTHROPIC_MODEL=${model}`,
+      `export ANTHROPIC_DEFAULT_HAIKU_MODEL=${model}`,
+      "claude"].join("\n")
+    : direct ? "Switch on the Anthropic route, then apply, to use Claude Code."
+      : "Not available: the MLX engine has no Anthropic route. Choose OptiQ.");
+  $("#copyClaude").hidden = !claude;
+}
+
+const ENGINE_STATES = { installed: "installed", not_installed: "not installed",
+  update: "update ready", broken: "broken: remove, or install again",
+  unsupported: "not supported on this Mac", unavailable: "not available yet" };
+
+function paintEngineCards(install) {
+  setHTML($("#engineCards"), engineList().filter((engine) => engine.id !== "mlx").map((engine) => {
+    const busy = !!install?.running && String(install.kind).startsWith(engine.id);
+    const off = install?.running ? " disabled" : "";
+    const button = (action, words, disabled = "") =>
+      `<button type="button" class="btn btn-mini" data-engine="${esc(engine.id)}" ` +
+      `data-action="${action}" aria-label="${words} ${esc(engine.name)}"${off || disabled}>` +
+      `${words}</button>`;
+    const unsupported = engine.state === "unsupported";
+    const note = !engine.installable ? engine.reason : unsupported ? engine.unsupported : "";
+    const buttons = !engine.installable ? "" :
+      button("install", "Install / Update", unsupported ? " disabled" : "") +
+      (["installed", "update", "broken"].includes(engine.state) ? button("remove", "Remove") : "");
+    return `<div class="kv-row"><span>${esc(engine.name)}</span>` +
+      `<span class="mono">${esc(engine.version || "—")}</span>` +
+      `<span class="pill">${busy ? "working…" : ENGINE_STATES[engine.state] || ""}</span>` +
+      `<span>${buttons}</span></div>` + (note ? `<p class="hint">${esc(note)}</p>` : "");
+  }).join(""));
+}
+
+async function changeEngine(engine, action) {
+  if (action === "remove" && !confirm("Remove this engine? Your models stay.")) return;
+  try {
+    await api(`/api/engines/${action}`, { method: "POST", body: JSON.stringify({ engine }) });
+    toast(action === "remove" ? "Engine removed" : "Install started");
+  } catch (err) { toast(err.message, true); }
+  state.eligibilityKey = "";
+  refreshState();
+}
+
+async function copyServerKey() {
+  try {
+    const { key } = await api("/api/server/key", { method: "POST", body: "{}" });
+    await navigator.clipboard.writeText(key);
+    toast("Key copied. It changes at every start.");
+  } catch (err) { toast(err.message || "Copy failed", true); }
+}
+
+function wireEngines() {
+  $("#engineSelect").addEventListener("change", () => {
+    state.engine = $("#engineSelect").value;
+    state.serverStartError = "";
+    serverCardChanged();
+  });
+  $("#engineAnthropic").addEventListener("change", () => {
+    state.anthropic = $("#engineAnthropic").checked;
+    serverCardChanged();
+  });
+  $("#engineCards").addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-engine]");
+    if (button) changeEngine(button.dataset.engine, button.dataset.action);
+  });
+  $("#copyKey").addEventListener("click", copyServerKey);
+  for (const [button, box] of [["#copyOpenai", "#openaiSettings"],
+    ["#copyClaude", "#claudeSettings"]]) {
+    $(button).addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText($(box).textContent); toast("Settings copied"); }
+      catch (_) { toast("Copy failed", true); }
+    });
+  }
 }
 
 function runningNames(server) {
@@ -914,7 +1069,8 @@ function paintOutcome(last) {
 function resultRow(run, row, testing) {
   const used = run.values || {};
   const note = (text) => (text ? `<span class="lt-note">${esc(text)}</span>` : "");
-  const apply = row.status === "passed" && !run.stale && run.status !== "running"
+  // A saved size is MLX's own setting.
+  const apply = row.status === "passed" && !run.stale && run.status !== "running" && !run.engine
     ? `<button type="button" class="btn btn-mini" data-apply="${esc(row.size)}" ` +
       `data-run="${esc(run.id)}" aria-label="Apply this size to config: ${esc(row.size)} ` +
       `tokens"${testing ? " disabled" : ""}>Apply this size to config</button>`
@@ -940,7 +1096,8 @@ function resultRun(run, testing) {
   const ended = LT_ENDED[run.status] || run.status;
   const heads = ["Size", "Status", "Read tok/s", "First token", "Write tok/s",
     "Peak memory", "Settings used"].map((h) => `<th scope="col">${h}</th>`).join("");
-  return `<section class="panel lt-run"><h2>${esc(name)}: ${esc(ended)}` +
+  const engine = run.engine ? ` (${esc(run.engine)})` : " (MLX)";
+  return `<section class="panel lt-run"><h2>${esc(name)}${engine}: ${esc(ended)}` +
     `${run.stale ? ' <span class="pill warn">stale</span>' : ""}</h2>` +
     (run.stale ? '<p class="hint">Settings, software or the model changed since this run. ' +
       "Run it again before applying a size.</p>" : "") +
@@ -1026,6 +1183,12 @@ function addCustomSize() {
   keepSize(size);
 }
 
+// No engine named means MLX.
+function ltRequest(repo, sizes) {
+  const engine = $("#ltEngine").value;
+  return engine && engine !== "mlx" ? { repo, sizes, engine } : { repo, sizes };
+}
+
 async function startLoadTest() {
   const lt = state.lt;
   if (!lt.view || lt.sending || $("#ltStartBtn").disabled) return;
@@ -1057,7 +1220,7 @@ async function startLoadTest() {
   try {
     await postSettings({ load_test: { ...values, last_sizes: sizes } });
     await api("/api/loadtest/start",
-      { method: "POST", body: JSON.stringify({ repo: lt.repo, sizes }) });
+      { method: "POST", body: JSON.stringify(ltRequest(lt.repo, sizes)) });
     lt.loaded = {};
     toast("Load test started");
   } catch (err) {
@@ -1328,14 +1491,25 @@ function paintServerCard() {
   // The status region is always in the page, so a screen reader hears its changes.
   setText($("#serverStartWhy"), reason);
 
+  paintEngine(set);
+  // The built-in server's memory figures say nothing about another engine.
+  if (engineInfo()?.direct) {
+    showLine("#serverMemoryLine", set.length ? "Memory limit: not available with this engine." : "");
+    for (const id of ["#serverMemoryHint", "#serverWhy", "#serverEstimate", "#serverContextHint"]) {
+      showLine(id, "");
+    }
+    setText($("#serverStartWhy"), "");
+  }
+
   // A refusal is already on screen; a running server is not described as refused.
   const details = !set.length || !estimate || (two && estimate.fits === false) ? ""
     : two ? estimateWords(estimate)
       : `Needs about ${gb(estimate.total_bytes)} GB with a ` +
         `${Math.floor(estimate.context_tokens / 1000)}K-token reply; the API server may use ` +
         `${gb(estimate.budget_bytes)} GB.`;
-  showLine("#serverEstimate", details);
-  showLine("#serverContextHint", !two || !estimate || estimate.fits === false ? "" :
+  showLine("#serverEstimate", engineInfo()?.direct ? "" : details);
+  showLine("#serverContextHint",
+    engineInfo()?.direct || !two || !estimate || estimate.fits === false ? "" :
     "Safe context while both are loaded (estimate): " +
     estimate.models.map((m) => {
       if (m.safe_context == null) return `${shortName(m.repo)} unknown`;
@@ -1349,7 +1523,9 @@ function paintServerCard() {
   const stop = $("#serverStopBtn");
   const focused = document.activeElement;
   setText(start, server.starting ? "Starting…" : server.running ? "Apply changes" : "Start Server");
-  start.disabled = !!server.starting || !set.length || (server.running && !pending) || refused;
+  const blocked = engineInfo()?.direct ? !!engineReason(set) : refused;
+  start.disabled = !!server.starting || !set.length || (server.running && !pending) || blocked;
+  if (engineInfo()?.direct && state.serverStartError) showLine("#serverWhy", state.serverStartError);
   stop.hidden = !server.running && !server.starting;
   // Focus must not stay on a button that can no longer be used, nor move from Start
   // to Stop, where a second Enter would stop the server.
@@ -2279,6 +2455,7 @@ async function stopServer() {
 
 /* ───────────── wiring ───────────── */
 function wire() {
+  wireEngines();
   createPicker("#serverModelSelect", {
     onLeave(escaped) {
       showAddPicker(false);

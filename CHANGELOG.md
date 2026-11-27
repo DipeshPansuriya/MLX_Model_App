@@ -8,8 +8,19 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Checked with automated tests and the screen served against a fake API server. No
 model was loaded.
 
+### Added
+
+- **Engines** ([docs/ENGINES.md](docs/ENGINES.md)): the API Server and Load Test can use
+  OptiQ 0.8.6 beside MLX (default). Setup installs, updates and removes it from a hashed
+  package lock. It has a key, an Anthropic route and fewer protections than MLX; the
+  card lists them. Splash and Rapid-MLX are shown as not available yet. Not tried with
+  a real engine from the app.
+
 ### Changed
 
+- The MLX server and load test processes no longer inherit the app's whole environment:
+  only paths, locale, Python, Hugging Face cache and offline variables and
+  `MLX_STUDIO_*`. Keys and tokens are not passed on.
 - **API Server is first in the menu, Chat second**, and the app opens on the API
   Server page.
 - **Chat uses the running API server.** No second copy of a model is loaded, and

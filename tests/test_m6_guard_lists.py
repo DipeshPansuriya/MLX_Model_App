@@ -90,9 +90,13 @@ class Tree:
             "app.py",
             GUARD,
             "mlx_loadtest.py",
+            "optiq_engine.py",
+            "engine_runtime.py",
+            "engines.py",
             "ui/index.html",
             "ui/style.css",
             "ui/app.js",
+            "packaging/optiq-lock.txt",
         ):
             (self.root / name).write_text(f"# {name}\n", encoding="utf-8")
         (self.root / "app.py").write_text('APP_VERSION = "3.1.0"\n', encoding="utf-8")
@@ -121,10 +125,15 @@ def fake_pkgutil(tree: Tree, monkeypatch, change) -> list[str]:
             "app.py",
             GUARD,
             "mlx_loadtest.py",
+            "optiq_engine.py",
+            "engine_runtime.py",
+            "engines.py",
             "ui/index.html",
             "ui/style.css",
             "ui/app.js",
+            "packaging/optiq-lock.txt",
         ):
+            (resources / name).parent.mkdir(exist_ok=True)
             shutil.copy(tree.root / name, resources / name)
         (contents / "Info.plist").write_text(
             '<plist version="1.0"><dict><key>CFBundleShortVersionString</key>'
@@ -175,14 +184,20 @@ def audit(tmp_path: Path, guard: str | None, bundled: str | None = "same") -> st
     shutil.copy(ROOT / "scripts" / "security_audit.sh", root / "scripts")
     (root / "app.py").write_text('HOST = "127.0.0.1"\n', encoding="utf-8")
     (root / "ui" / "app.js").write_text("// ui\n", encoding="utf-8")
+    (root / "optiq_engine.py").write_text("# engine\n", encoding="utf-8")
+    (root / "engine_runtime.py").write_text("# runtime\n", encoding="utf-8")
+    (root / "engines.py").write_text("# engines\n", encoding="utf-8")
+    (root / "packaging" / "optiq-lock.txt").write_text("# lock\n", encoding="utf-8")
     (root / "mlx_loadtest.py").write_text("# load test\n", encoding="utf-8")
     if guard is not None:
         (root / GUARD).write_text(guard, encoding="utf-8")
     resources = root / "dist" / "MLX Studio.app" / "Contents" / "Resources"
     (resources / "ui").mkdir(parents=True)
-    for name in ("app.py", "mlx_loadtest.py"):
+    for name in ("app.py", "mlx_loadtest.py", "optiq_engine.py", "engine_runtime.py", "engines.py"):
         shutil.copy(root / name, resources / name)
     shutil.copy(root / "ui" / "app.js", resources / "ui" / "app.js")
+    (resources / "packaging").mkdir()
+    shutil.copy(root / "packaging" / "optiq-lock.txt", resources / "packaging" / "optiq-lock.txt")
     if bundled == "same" and guard is not None:
         shutil.copy(root / GUARD, resources / GUARD)
     elif bundled not in (None, "same"):

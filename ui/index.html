@@ -224,6 +224,15 @@
           <div class="panel-head">
             <span id="serverModelsTitle">Models (max 2)</span>
           </div>
+          <div class="server-row">
+            <label for="engineSelect">Engine</label>
+            <select id="engineSelect" class="select" aria-describedby="engineWhy"></select>
+            <label class="check" id="anthropicBox" title="Adds /v1/messages, behind the same key" hidden>
+              <input type="checkbox" id="engineAnthropic" checked />
+              <span>Anthropic route (for Claude Code)</span>
+            </label>
+          </div>
+          <p class="hint" id="engineWhy" role="status" hidden></p>
           <ul class="model-list" id="serverModelList" aria-labelledby="serverModelsTitle"></ul>
           <p class="hint" id="serverModelEmpty">No model chosen.</p>
           <div class="server-row">
@@ -255,6 +264,10 @@
             <p class="hint" id="serverContextHint" hidden></p>
             <p class="hint" id="serverMemory" hidden></p>
             <p class="hint" id="serverPromptHint" hidden></p>
+          </details>
+          <details class="engine-details" id="engineMissing" hidden>
+            <summary id="engineMissingTitle"></summary>
+            <ul class="hint" id="engineMissingList"></ul>
           </details>
           <p class="hint server-link"><a href="#config">Context, reply limits and memory: open Configuration</a></p>
           <div class="server-row">
@@ -292,6 +305,18 @@
           <div class="endpoint" id="endpointText">http://127.0.0.1:8080/v1</div>
           <p class="hint">Point DeepSeek Harness or any OpenAI-compatible client here.</p>
           <pre class="code" id="curlExample"></pre>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <span>Client settings</span>
+            <button class="btn btn-mini" type="button" id="copyKey" hidden>Copy key</button>
+          </div>
+          <p class="hint">OpenAI-compatible clients (DeepSeek Harness and others)</p>
+          <pre class="code" id="openaiSettings"></pre>
+          <button class="btn btn-mini" type="button" id="copyOpenai">Copy OpenAI settings</button>
+          <p class="hint">Claude Code</p>
+          <pre class="code" id="claudeSettings"></pre>
+          <button class="btn btn-mini" type="button" id="copyClaude">Copy Claude Code settings</button>
         </div>
         <div class="panel">
           <div class="panel-head">
@@ -521,6 +546,11 @@
           <div class="field-error" id="ltError" role="alert"></div>
           <p class="server-why" id="ltWhy" role="status"></p>
           <div class="server-row">
+            <label for="ltEngine">Engine</label>
+            <select id="ltEngine" class="select">
+              <option value="mlx">MLX (built in)</option>
+              <option value="optiq">OptiQ</option>
+            </select>
             <button type="button" class="btn btn-primary" id="ltStartBtn" aria-describedby="ltWhy" disabled>Start test</button>
             <button type="button" class="btn btn-ghost" id="ltStopServerBtn" hidden>Stop API server</button>
             <button type="button" class="btn btn-danger" id="ltCancelBtn" hidden>Cancel test</button>
@@ -701,6 +731,12 @@
           </div>
           <p class="hint" id="setupHint"></p>
           <pre class="console" id="installLog" hidden></pre>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><span>Other engines</span></div>
+          <div class="kv" id="engineCards"></div>
+          <p class="hint">Install / Update takes only the reviewed packages listed in this app, from PyPI. A newer engine comes with a newer MLX Studio. Remove keeps your models. Output appears under Runtime packages.</p>
         </div>
 
       </div>

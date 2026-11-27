@@ -26,6 +26,9 @@
 /app.py                             @DipeshPansuriya
 /mlx_guard.py                       @DipeshPansuriya
 /mlx_loadtest.py                    @DipeshPansuriya
+/optiq_engine.py                    @DipeshPansuriya
+/engine_runtime.py                  @DipeshPansuriya
+/engines.py                         @DipeshPansuriya
 /ui/                                @DipeshPansuriya
 
 # Policy documents.

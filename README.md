@@ -331,6 +331,12 @@ python3 packaging/release_manifest.py --verify --release --dist dist
 
 ---
 
+## Engines
+
+MLX is the default. OptiQ can be installed on Setup and chosen on the API Server card;
+it needs an API key and has fewer protections. See [docs/ENGINES.md](docs/ENGINES.md).
+The rules below describe the MLX engine.
+
 ## Connect DeepSeek Harness or any OpenAI-compatible client
 
 The server offers the OpenAI-style API only. It has no `/v1/messages` route, so a

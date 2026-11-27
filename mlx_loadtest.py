@@ -320,14 +320,13 @@ class RequestError(Exception):
 REFUSALS = ("context_length_exceeded", "insufficient_memory")
 
 
-def ask(port: int, body: dict, clock, beat, progress) -> dict:
+def ask(port: int, body: dict, clock, beat, progress, headers: dict | None = None) -> dict:
     """One streamed chat request: its text, timings and usage."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=STALL_SECONDS + 30)
     try:
         sent = clock()
-        conn.request(
-            "POST", "/v1/chat/completions", json.dumps(body), {"Content-Type": "application/json"}
-        )
+        headers = {"Content-Type": "application/json", **(headers or {})}
+        conn.request("POST", "/v1/chat/completions", json.dumps(body), headers)
         reply = conn.getresponse()
         if reply.status != 200:
             raw = reply.read(64 * 1024).decode("utf-8", "replace")
@@ -357,6 +356,7 @@ def ask(port: int, body: dict, clock, beat, progress) -> dict:
             for choice in data.get("choices") or []:
                 delta = choice.get("delta") or {}
                 piece = delta.get("content") or delta.get("reasoning") or ""
+                piece = piece or delta.get("reasoning_content") or ""
                 if piece or delta.get("tool_calls"):
                     last = clock()
                     first = last if first is None else first
@@ -522,7 +522,7 @@ class Runner:
                 command[command.index("--port") + 1] = str(port)
                 Path(self.job["resident_file"]).unlink(missing_ok=True)
                 with open(log_path, "ab") as log:
-                    proc = self.spawn(command, dict(os.environ), log)
+                    proc = self.spawn(command, self.server_environment(), log)
                 self.emit({"event": "server", "pid": proc.pid, "port": port})
                 monitor = Monitor(
                     proc, self.probe, self.clock, kill=self.kill, base_swap=self.base_swap,
@@ -560,8 +560,49 @@ class Runner:
         if row["peak_percent"] >= self.kill:
             raise Stop("stopped", f"memory reached {row['peak_percent']}%")
 
+    # A job with "key_env" is a keyed server of another engine; the key is only ever
+    # in the environment.
+    def key(self) -> str | None:
+        name = self.job.get("key_env")
+        return os.environ[name] if name else None
+
+    def headers(self) -> dict | None:
+        key = self.key()
+        return {"Authorization": f"Bearer {key}"} if key else None
+
+    def server_environment(self) -> dict:
+        if not self.job.get("key_env"):
+            return dict(os.environ)
+        return {**self.job["server_env"], self.job["key_env"]: self.key()}
+
+    def wait_keyed(self, proc, port: int, monitor) -> bool:
+        """Ours alone listens, refuses calls without the key and answers one with it."""
+        import engine_runtime as runtime
+
+        while proc.poll() is None:
+            self.check(monitor)
+            holders = runtime.listeners(port)
+            if holders and holders != {proc.pid}:
+                self.taken = True
+                return False
+            if holders:
+                state = runtime.auth_state(port, self.key())
+                if state == "open":
+                    raise Stop("failed", "the server answered without the key")
+                if state == "ready" and runtime.listener_is(port, proc.pid):
+                    model, wait = self.job["request_model"], self.job["timeout_seconds"]
+                    if not runtime.warm_up(port, self.key(), model, wait):
+                        self.check(monitor)
+                        raise Stop("failed", "the model could not be loaded")
+                    return True
+            time.sleep(SAMPLE_SECONDS)
+        self.check(monitor)
+        return False
+
     def wait_ready(self, proc, port: int, monitor) -> bool:
         """Our child is alive, has written its report, loaded, and its port answers."""
+        if self.job.get("key_env"):
+            return self.wait_keyed(proc, port, monitor)
         while proc.poll() is None:
             self.check(monitor)
             try:
@@ -625,19 +666,26 @@ class Runner:
                 monitor.note(before)
                 monitor.begin_step()
                 body = {
-                    "model": self.job["repo"],
+                    "model": self.job.get("request_model", self.job["repo"]),
                     "messages": messages,
                     "stream": True,
                     "stream_options": {"include_usage": True},
                     "max_tokens": reply_tokens,
                     "temperature": 0,
                 }
+                keyed = self.headers()
+                if keyed:
+                    import engine_runtime as runtime
+
+                    if not runtime.listener_is(port, proc.pid):
+                        raise Stop("failed", "another program listens on the test port")
                 try:
                     got = ask(
                         port, body, self.clock, monitor.beat,
                         lambda done, total, name=name: self.progress(
                             state="running", step=name, done=done, total=total
                         ),
+                        *((keyed,) if keyed else ()),
                     )  # fmt: skip
                 except RequestError as exc:
                     self.check(monitor)
@@ -656,6 +704,9 @@ class Runner:
                 cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
                 written = usage.get("completion_tokens") or 0
                 prompts.append(count)
+                # Another engine may drop older text instead of refusing a long prompt.
+                if keyed and step == "cold" and count < first * 0.9:
+                    raise Stop("skipped", "the engine dropped part of the prompt")
                 if step == "cold":
                     cold_first.append(got["first"])
                     if got["first"] > 0:

@@ -67,7 +67,7 @@ jobs:
             echo "### Syntax"
             echo ""
             echo '```'
-            python3 -m py_compile app.py mlx_guard.py mlx_loadtest.py && echo "app, guard, load test: ok"
+            python3 -m py_compile app.py mlx_guard.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py && echo "app, guard, load test, engine: ok"
             node --check ui/app.js && echo "ui/app.js: ok"
             for f in run.sh Run_MLX_Manager.command scripts/*.sh .githooks/*; do
               bash -n "$f" && echo "$f: ok"

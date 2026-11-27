@@ -51,7 +51,7 @@ jobs:
 
       - name: Python compiles
         run: |
-          python3 -m py_compile app.py mlx_guard.py mlx_loadtest.py
+          python3 -m py_compile app.py mlx_guard.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py
           python3 -m py_compile scripts/check_secrets.py
           python3 -m py_compile packaging/release_manifest.py
 

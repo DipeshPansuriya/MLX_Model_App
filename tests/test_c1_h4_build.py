@@ -30,7 +30,15 @@ def clone(target: Path) -> Path:
     """Copy only what a fresh checkout would contain (no ignored binary)."""
     (target / "packaging").mkdir(parents=True)
     (target / "ui").mkdir()
-    for name in ("app.py", "mlx_guard.py", "mlx_loadtest.py"):
+    for name in (
+        "app.py",
+        "mlx_guard.py",
+        "mlx_loadtest.py",
+        "optiq_engine.py",
+        "engine_runtime.py",
+        "engines.py",
+        "packaging/optiq-lock.txt",
+    ):
         shutil.copy(ROOT / name, target / name)
     for name in ("index.html", "style.css", "app.js"):
         shutil.copy(ROOT / "ui" / name, target / "ui" / name)

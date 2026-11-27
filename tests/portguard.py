@@ -86,6 +86,11 @@ def real_launch(command, env=None, in_shell=False) -> str | None:
     if not target:
         return None
     module, run = target
+    # No test starts the real OptiQ engine or installs a package from the network.
+    if module and (run == "optiq" or run.startswith("optiq.")):
+        return f"a test tried to start the real engine {run}"
+    if module and run == "pip" and "install" in words and "--require-hashes" in words:
+        return "a test tried to run the real engine install"
     server = run.startswith("mlx_lm") if module else run.endswith("mlx_guard.py")
     app = not module and os.path.basename(run) == "app.py"
     # The load test runner starts a real API server of its own.

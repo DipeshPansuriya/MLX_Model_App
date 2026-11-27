@@ -28,12 +28,16 @@ KEYS = {
     "mlx_cache_limit_mb": (0, 1_000_000),
     "chat_temperature": (0, 2),
     "chat_top_p": (0.05, 1),
-    # Choices: (first, last). Their accepted values: test_row_perfmode.py.
+}
+# Performance mode and its raw flags are not merged by "lower value wins": their values,
+# merge and docs are tested in test_row_perfmode.py. Here: (first, last) of each.
+PERFORMANCE_KEYS = {
     "performance_mode": ("standard", "advanced"),
     "kv_bits": (4, 8),
     "kv_group_size": (32, 128),
     "prefill_step_size": (64, 2048),
 }
+ALL_KEYS = {**KEYS, **PERFORMANCE_KEYS}
 GB = 10**9
 
 
@@ -54,10 +58,10 @@ def complaints(app):
 
 class TestReading:
     def test_the_keys_and_ranges(self, app_module):
-        assert {k: (s[0], s[1]) for k, s in app_module.SETTINGS.items()} == KEYS
+        assert {k: (s[0], s[1]) for k, s in app_module.SETTINGS.items()} == ALL_KEYS
 
     def test_no_file_means_every_key_is_automatic_and_nothing_is_logged(self, app_module):
-        assert app_module.user_settings() == dict.fromkeys(KEYS)
+        assert app_module.user_settings() == dict.fromkeys(ALL_KEYS)
         assert complaints(app_module) == []
 
     @pytest.mark.parametrize("key", KEYS)
@@ -379,7 +383,7 @@ class TestSnapshot:
     def test_each_key_says_its_range_and_effective_value(self, app_module):
         write(app_module, {"prompt_cache_size": 3})
         shown = app_module.STATE.snapshot()["server"]["settings"]
-        assert set(shown) == set(KEYS)
+        assert set(shown) == set(ALL_KEYS)
         assert shown["prompt_cache_size"] == {
             "value": 3, "min": 1, "max": 100, "effective": "3",
         }  # fmt: skip

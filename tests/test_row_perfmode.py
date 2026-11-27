@@ -80,6 +80,29 @@ class TestSettings:
         problem = app_module._settings_change_problem({"values": {key: value}})
         assert problem.startswith(f"{key} must be")
 
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("performance_mode", "turbo"),
+            ("kv_bits", 6),
+            ("kv_group_size", "64"),
+            ("prefill_step_size", 5000),
+        ],
+    )
+    def test_a_bad_saved_value_falls_back_alone(self, app_module, key, value):
+        write(app_module, {key: value, "prompt_cache_size": 3})
+        read = app_module.user_settings()
+        assert read[key] is None and read["prompt_cache_size"] == 3
+
+    def test_both_ends_of_the_read_step_are_read_and_documented(self, app_module):
+        for value in (64, 2048):
+            write(app_module, {"prefill_step_size": value})
+            assert app_module.user_settings()["prefill_step_size"] == value
+        text = (Path(__file__).resolve().parent.parent / "docs" / "API.md").read_text("utf-8")
+        for key in ("performance_mode", "kv_bits", "kv_group_size", "prefill_step_size"):
+            row = next(line for line in text.splitlines() if line.startswith(f"| `{key}` |"))
+            assert key != "prefill_step_size" or "64 to 2048" in row
+
     def test_view_lists_choices(self, app_module, configs):
         view = app_module.config_view()
         assert view["settings"]["performance_mode"]["choices"] == [

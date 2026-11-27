@@ -235,3 +235,12 @@ report a vulnerability, use [the security policy](../SECURITY.md).
 
 `app.py`, `mlx_guard.py`, `scripts/install.sh`, `packaging/build_app.sh`,
 `scripts/security_audit.sh`, installed `mlx_lm` (`server.py`, `utils.py`).
+
+## Engines other than MLX
+
+OptiQ runs as its publisher's own server: the per-launch key is its only request gate.
+The child environment is built from nothing (no cloud or user keys, offline, private
+home). Port 8080 is used only after every listener, at any address, is seen to be our
+child. `lsof` lists only this user's sockets, so before a start the app also connects to
+`127.0.0.1` and `::1`. A listener of another user on another address stays unseen.
+Missing protections: [ENGINES.md](ENGINES.md).

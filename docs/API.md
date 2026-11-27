@@ -404,3 +404,18 @@ was during the test, not a promise.
 ## 7. Not applicable
 
 Webhooks, SDKs and published API versions: the app has none.
+
+## Engine routes
+
+Same session token, Host and Origin checks as the other routes.
+
+| Route | Body or query | Reply |
+|---|---|---|
+| `GET /api/engines` | `?repo=` | each engine with `eligible` and `reason` |
+| `POST /api/engines/install`, `/api/engines/remove` | `{"engine": "optiq"}` | `{"ok": true}`; 400 other engines, 409 while in use |
+| `POST /api/server/key` | `{}` | `{"key": ...}` only while our keyed server alone holds the port; else 409 |
+| `POST /api/server/start` | also `"engine"` (absent: `mlx`) and `"anthropic"` (OptiQ, default on) | 400 unknown engine, 409 refused with the reason |
+| `POST /api/loadtest/start` | also `"engine"` | as above |
+
+`GET /api/state` adds `server.engine`, `server.anthropic`, `server.engines`,
+`server.last_engine`. The server key is never in it. See [ENGINES.md](ENGINES.md).

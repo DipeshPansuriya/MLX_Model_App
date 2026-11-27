@@ -41,6 +41,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import engine_runtime
+import engines
+
 APP_NAME = "MLX Studio"
 APP_VERSION = "2.0.12"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
@@ -414,7 +417,11 @@ def build_diagnostic_bundle() -> tuple[bytes, str]:
             for path in sorted(LOG_DIR.iterdir()):
                 if path.is_file():
                     with contextlib.suppress(OSError):
-                        archive.write(path, arcname=f"logs/{path.name}")
+                        text = path.read_bytes().decode("utf-8", "surrogateescape")
+                        text = engine_runtime.redact(text)
+                        archive.writestr(
+                            f"logs/{path.name}", text.encode("utf-8", "surrogateescape")
+                        )
     return buffer.getvalue(), name
 
 
@@ -1007,6 +1014,11 @@ class State:
         self.server_pid: int | None = None
         self.server_identity: str | None = None
         self.server_unguarded = False  # adopted, and running without mlx_guard.py
+        self.server_engine = "mlx"
+        self.server_port = SERVER_PORT  # of a direct engine's server; MLX: SERVER_PORT
+        self.server_snapshot: str | None = None  # the folder a direct engine serves
+        self.server_verdict: str | None = None  # a direct engine: "ready" or "failed"
+        self.server_anthropic = False  # a direct engine's /v1/messages route is on
         self.server_stopping = False
         self.window = None
         self.browser_mode = False  # no native window; the UI is a browser tab
@@ -1128,8 +1140,12 @@ class State:
                 "settings_pending": _settings_pending(
                     self.server_proc is not None or _pid_alive(self.server_pid), view
                 ),
-                "port": SERVER_PORT,
-                "endpoint": f"http://{HOST}:{SERVER_PORT}/v1",
+                "port": _server_port(),
+                "endpoint": f"http://{HOST}:{_server_port()}/v1",
+                "engine": self.server_engine,
+                "anthropic": self.server_anthropic,
+                "engines": [engine.view(APP_DIR) for engine in engines.REGISTRY],
+                "last_engine": _last_engine(),
                 "tool_support": tool_support(),
                 "lines": self.server_lines[-200:],
                 "background": self.server_background,
@@ -1172,11 +1188,39 @@ def _chat_refusal(stream: http.client.HTTPResponse) -> str:
     return f"The API server refused the request: {said}"
 
 
-def _read_reply(conn: http.client.HTTPConnection, body: bytes, put) -> None:
+def _chat_target(repo: str, messages: list[dict], settings: dict) -> tuple[dict, int]:
+    """What Chat asks the running server, and on which port."""
+    engine = _running_engine()
+    body = {
+        "model": engine.request_model if engine.direct else repo,
+        "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        **settings,
+    }
+    return body, _server_port()
+
+
+def _chat_headers() -> dict:
+    """The key of a direct engine, only while every listener on its port is our server."""
+    engine = _running_engine()
+    if not engine.direct:
+        return {}
+    key = engine.read_key(_key_file())
+    if not key or not engine_runtime.listener_is(_server_port(), STATE.server_pid):
+        raise engine_runtime.Refused(
+            "The key was not sent: another program may listen on the server's port. "
+            "Press Stop, then Start Server."
+        )
+    return {"Authorization": f"Bearer {key}"}
+
+
+def _read_reply(conn: http.client.HTTPConnection, body: bytes, put, headers=None) -> None:
     """Send the request and ``put`` what comes back; runs in its own thread."""
     usage, finish = {}, None
     try:
-        conn.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json", **(headers or {})}
+        conn.request("POST", "/v1/chat/completions", body, headers)
         response = conn.getresponse()
         if response.status != 200:
             put(("error", _chat_refusal(response)))
@@ -1197,7 +1241,11 @@ def _read_reply(conn: http.client.HTTPConnection, body: bytes, put) -> None:
             for choice in data.get("choices") or []:
                 finish = choice.get("finish_reason") or finish
                 delta = choice.get("delta") or {}
-                for kind, key in (("reasoning", "reasoning"), ("token", "content")):
+                for kind, key in (
+                    ("reasoning", "reasoning"),
+                    ("reasoning", "reasoning_content"),
+                    ("token", "content"),
+                ):
                     if isinstance(delta.get(key), str) and delta[key]:
                         put((kind, delta[key]))
         put(("error", CHAT_CUT_SHORT))
@@ -1232,16 +1280,9 @@ def stream_chat(repo: str, messages: list[dict], stop: threading.Event):
     and a browser that has gone away is noticed. Closing this generator closes the
     request to the server.
     """
-    body = json.dumps(
-        {
-            "model": repo,
-            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            **chat_settings(repo),
-        }
-    ).encode("utf-8")
-    conn = http.client.HTTPConnection(HOST, SERVER_PORT, timeout=CHAT_CONNECT_SECONDS)
+    asked_body, port = _chat_target(repo, messages, chat_settings(repo))
+    body = json.dumps(asked_body).encode("utf-8")
+    conn = http.client.HTTPConnection(HOST, port, timeout=CHAT_CONNECT_SECONDS)
     try:
         conn.connect()
     except OSError:
@@ -1255,7 +1296,14 @@ def stream_chat(repo: str, messages: list[dict], stop: threading.Event):
     sock.settimeout(None)
     inbox: queue.Queue = queue.Queue()
     asked = time.monotonic()
-    threading.Thread(target=_read_reply, args=(conn, body, inbox.put), daemon=True).start()
+    try:
+        headers = _chat_headers()
+    except engine_runtime.Refused as exc:
+        conn.close()
+        yield ("error", str(exc))
+        return
+    reader = (conn, body, inbox.put, headers) if headers else (conn, body, inbox.put)
+    threading.Thread(target=_read_reply, args=reader, daemon=True).start()
     pieces, first = 0, None
     try:
         while True:
@@ -1481,6 +1529,50 @@ def worker_install(kind: str) -> None:
     )
     STATE.install["running"] = False
     worker_check_versions()
+
+
+def worker_engine_install(engine: engines.Engine) -> None:
+    """Install an engine from the lock the app ships; Setup shows the lines."""
+    lines = STATE.install["lines"]
+    log_activity("install", engine.name, "running", f"{engine.version} started")
+    ok = False
+    try:
+        engine.install(APP_DIR, lines.append)
+        lines.append(f"{engine.name} {engine.version} is installed.")
+        ok = True
+    except engine_runtime.Refused as exc:
+        lines.append(str(exc))
+    except Exception as exc:
+        lines.append(f"error: {exc}")
+    finally:
+        STATE.install["running"] = False
+    log_activity("install", engine.name, "success" if ok else "failed", "install finished")
+    log_app("info" if ok else "error", "engine install finished", engine=engine.id, ok=ok)
+
+
+def _engine_change(action: str, body: dict) -> tuple[int, dict]:
+    """``install`` or ``remove`` an engine: ``(HTTP status, reply)``."""
+    engine = engines.get(body.get("engine")) if isinstance(body.get("engine"), str) else None
+    if engine is None or not engine.installable:
+        return 400, {"error": "that engine cannot be installed or removed here"}
+    with STATE.server_lock:  # no start is in between
+        running = STATE.server_proc is not None or _pid_alive(STATE.server_pid)
+        if STATE.server_pending or (running and STATE.server_engine == engine.id):
+            return 409, {"error": "Stop the API server first."}
+        if not STATE.reserve_install(f"{engine.id} {action}"):
+            why = LOADTEST_BUSY if STATE.testing() else "install already running"
+            return 409, {"error": why}
+    if action == "install":
+        threading.Thread(target=worker_engine_install, args=(engine,), daemon=True).start()
+        return 200, {"ok": True}
+    try:
+        engine.remove(APP_DIR)
+    except (engine_runtime.Refused, OSError) as exc:
+        return 409, {"error": str(exc)[:300]}
+    finally:
+        STATE.install["running"] = False
+    log_activity("install", engine.name, "success", "removed")
+    return 200, {"ok": True}
 
 
 def worker_check_versions() -> None:
@@ -1943,7 +2035,9 @@ def _ps_field(pid: int, field: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def _is_our_server(pid: int | None, repo: str | None, started: str | None, port=None) -> bool:
+def _is_our_server(
+    pid: int | None, repo: str | None, started: str | None, port=None, direct: str | None = None
+) -> bool:
     """True only when ``pid`` is still the API server we launched.
 
     A pid is reused after a crash or reboot, so both the command line and, when
@@ -1954,7 +2048,10 @@ def _is_our_server(pid: int | None, repo: str | None, started: str | None, port=
     command = f"{_ps_field(pid, 'command')} "
     # The second form is a background server started by a build without the guard.
     launchers = (f"/{GUARD_SCRIPT.name}", " -m mlx_lm server")
-    if not any(f"{start} --model {repo} --host " in command for start in launchers):
+    marks = [f"{start} --model {repo} --host " for start in launchers]
+    if direct:  # a direct engine's own command line, see Engine.identity
+        marks = [direct]
+    if not any(mark in command for mark in marks):
         return False
     if f" --port {port or SERVER_PORT} " not in command:
         return False
@@ -1964,6 +2061,71 @@ def _is_our_server(pid: int | None, repo: str | None, started: str | None, port=
 def _is_guarded(pid: int) -> bool:
     """True only when the command line shows the server runs behind the guard."""
     return f"/{GUARD_SCRIPT.name} --model " in _ps_field(pid, "command")
+
+
+def _running_engine() -> engines.Engine:
+    return engines.get(STATE.server_engine) or engines.MLX
+
+
+def _server_port() -> int:
+    return STATE.server_port if _running_engine().direct else SERVER_PORT
+
+
+def _key_file() -> Path:
+    """The running direct engine's key: private, new at each launch, gone at stop."""
+    return APP_DIR / "server.key"
+
+
+def _still_our_server(pid: int | None, repo: str | None) -> bool:
+    """``_is_our_server`` for the engine that was started."""
+    engine = _running_engine()
+    if not engine.direct:
+        return _is_our_server(pid, repo, STATE.server_identity)
+    mark = engine.identity(STATE.server_snapshot)
+    return _is_our_server(pid, repo, STATE.server_identity, STATE.server_port, direct=mark)
+
+
+def _reset_engine() -> None:
+    STATE.server_engine, STATE.server_port = "mlx", SERVER_PORT
+    STATE.server_snapshot = STATE.server_verdict = None
+    STATE.server_anthropic = False
+    with contextlib.suppress(OSError):
+        _key_file().unlink(missing_ok=True)
+
+
+def _engine_refusal(engine_id, repos: list[str], port_too: bool = True) -> str | None:
+    """Why this engine cannot start these models now. Nothing is changed or stopped."""
+    engine = engines.get(engine_id)
+    if engine is None:
+        return "Unknown engine."
+    if not engine.selectable:
+        return f"{engine.name}: {engine.refusal}"
+    if not engine.direct:
+        return None
+    if len(repos) > 1:
+        return f"{engine.name} serves one model. Remove the second one."
+    if STATE.install["running"] and STATE.install["kind"].startswith(engine.id):
+        return f"{engine.name}: an install is running."
+    try:
+        engine.program(APP_DIR)
+        engine.check_model(repos[0], _snapshot_dir(repos[0]))
+    except engine_runtime.Refused as exc:
+        return str(exc)
+    if not port_too:
+        return None
+    # The server being replaced may hold the port; nothing else may.
+    running = STATE.server_proc is not None or _pid_alive(STATE.server_pid)
+    ours = STATE.server_pid if running else None
+    return engine_runtime.port_problem(engine.port, ours=ours)
+
+
+def _engines_view(repo: str) -> list[dict]:
+    """Each engine and, for ``repo``, whether it could serve it and why not."""
+    views = []
+    for engine in engines.REGISTRY:
+        why = _engine_refusal(engine.id, [repo], port_too=False)
+        views.append({**engine.view(APP_DIR), "eligible": why is None, "reason": why})
+    return views
 
 
 def _write_server_pidfile(
@@ -1976,9 +2138,16 @@ def _write_server_pidfile(
         "repos": repos or [repo],
         "background": background,
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "port": SERVER_PORT,
+        "port": _server_port(),
         "started": _ps_field(pid, "lstart"),
     }
+    if _running_engine().direct:
+        payload.update(
+            engine=STATE.server_engine,
+            snapshot=STATE.server_snapshot,
+            anthropic=STATE.server_anthropic,
+            settings=STATE.server_started_with,
+        )
     STATE.server_identity = payload["started"]
     with contextlib.suppress(OSError):
         _server_pidfile().write_text(json.dumps(payload), encoding="utf-8")
@@ -2006,6 +2175,8 @@ def _clear_server_pidfile(only_pid: int | None = None) -> None:
 
 def _start_verdict(pid: int, models: int) -> str | None:
     """What a new server has reported: ``ready``, ``failed``, or None for not yet."""
+    if _running_engine().direct:  # it reports nothing: see _probe_direct
+        return STATE.server_verdict if pid == STATE.server_pid else None
     view = _resident_view(pid)
     if view["resident"]:
         # Two models are not up until the second has been tried as well.
@@ -2026,6 +2197,7 @@ def _server_readiness() -> dict:
     # No report to wait for: an adopted server of an older build, or a guard that
     # cannot measure loads. Its requests simply wait while it loads.
     silent = verdict is None and (proc is None or _read_resident(pid).get("report") is False)
+    silent = silent and not _running_engine().direct
     return {"ready": verdict == "ready" or silent, "load_failed": verdict == "failed"}
 
 
@@ -2039,7 +2211,12 @@ def _chat_problem(repo: str) -> str | None:
     if pending:
         return "The API server is starting. Wait until it is ready."
     # A pid is reused after a crash: no prompt goes to whoever has the port then.
-    running = proc.poll() is None if proc else _is_our_server(pid, first, identity)
+    if proc:
+        running = proc.poll() is None
+    elif _running_engine().direct:
+        running = _still_our_server(pid, first)
+    else:
+        running = _is_our_server(pid, first, identity)
     if not running:
         return "Start the API server first (API Server page)."
     # Any other name would make the server load one more model.
@@ -2062,7 +2239,12 @@ def _running_server() -> tuple[list[str], bool] | None:
         proc, pid = STATE.server_proc, STATE.server_pid
         repos, background = list(STATE.server_repos), STATE.server_background
     alive = proc.poll() is None if proc is not None else _pid_alive(pid)
-    return (repos, background) if alive and repos else None
+    if not (alive and repos):
+        return None
+    # MLX stays a pair; another engine is named with its switch, to be restored as it was.
+    if _running_engine().direct:
+        return repos, background, STATE.server_engine, STATE.server_anthropic
+    return repos, background
 
 
 def _last_good_server() -> tuple[list[str], bool] | None:
@@ -2568,13 +2750,26 @@ def _last_models() -> list[str]:
     return repos[:SERVER_MAX_MODELS]
 
 
+def _last_engine() -> str:
+    """The engine of the last server reported ready; MLX when unknown."""
+    try:
+        raw = _read_small(_last_models_file(), LAST_MODELS_MAX_BYTES)
+        engine = engines.get(json.loads(raw.decode("utf-8")).get("engine"))
+    except Exception:  # parsing can fail in more ways than ValueError
+        return "mlx"
+    return engine.id if engine and engine.selectable else "mlx"
+
+
 def _remember_models(pid: int) -> None:
     with STATE.lock:
         repos = list(STATE.server_repos) if STATE.server_pid == pid else []
     if not repos:
         return
     with contextlib.suppress(OSError):
-        _write_private(_last_models_file(), json.dumps({"repos": repos}))
+        saved = {"repos": repos}
+        if _running_engine().direct:
+            saved["engine"] = STATE.server_engine
+        _write_private(_last_models_file(), json.dumps(saved))
 
 
 def _try_launch(*args) -> subprocess.Popen | None:
@@ -2599,10 +2794,13 @@ def _bring_back(previous: tuple[list[str], bool], why: str, stops: int) -> subpr
     if stops != STATE.server_stops:  # the user pressed Stop meanwhile
         return None
     STATE.server_fallback = None
-    repos, background = previous
+    repos, background, *engine = previous
     why = why.rstrip(".")
     names = " and ".join(name.rsplit("/", maxsplit=1)[-1] for name in repos)
-    proc = _try_launch(repos[0], background, *([repos[1:]] if repos[1:] else []))
+    args = [repos[1:]] if repos[1:] else []
+    if engine:
+        args = [repos[1:], None, *engine]
+    proc = _try_launch(repos[0], background, *args)
     if proc is None:
         notice = STATE.server_down_notice = (
             f"The new server did not start: {why}. Starting {names} again failed too: "
@@ -2627,11 +2825,55 @@ def _pump_output(proc: subprocess.Popen) -> None:
         STATE.server_lines.append("error: no stdout stream")
         return
     for line in proc.stdout:
-        STATE.server_lines.append(line.rstrip())
+        STATE.server_lines.append(engine_runtime.redact(line.rstrip()))
         STATE.server_lines = STATE.server_lines[-400:]
     proc.wait()
     with contextlib.suppress(Exception):
         STATE.server_last_error = f"exited with status {proc.returncode}"
+
+
+def _probe_direct(pid: int) -> str | None:
+    """Look at a direct engine's server once. Returns why it must be stopped, or None.
+
+    The key is used only after every listener on the port is seen to be this process,
+    at each start and again while it runs. Sets ``server_verdict`` when it answers.
+    """
+    engine, port = _running_engine(), STATE.server_port
+    if STATE.server_pid != pid or not engine.direct:
+        return None
+    holders = engine_runtime.listeners(port)
+    if holders is None:
+        return None  # unknown: nothing is sent, and the next look tries again
+    if holders - {pid}:
+        return f"another program listens on port {port}; the key was not sent to it"
+    if not holders or STATE.server_verdict == "ready":
+        return None
+    key = engine.read_key(_key_file())
+    if not key:
+        return "its key file is missing"
+    answer = engine_runtime.auth_state(port, key, anthropic=STATE.server_anthropic)
+    if answer == "open":
+        return "it answered without the key"
+    if answer != "ready" or not engine_runtime.listener_is(port, pid):
+        return None
+    if not engine_runtime.warm_up(port, key, engine.request_model, START_WATCH_SECONDS):
+        return "it could not answer a first request (see the server output)"
+    if STATE.server_pid == pid:
+        STATE.server_verdict = "ready"
+    return None
+
+
+def _end_direct(pid: int, proc: subprocess.Popen | None, repo: str) -> None:
+    """Kill a direct engine's server that may not go on."""
+    if proc is not None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    elif _still_our_server(pid, repo):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
 
 
 def _watch_server(
@@ -2654,7 +2896,25 @@ def _watch_server(
     failed = None
     unheard = True  # this server has not yet said whether it came up
     deadline = time.monotonic() + START_WATCH_SECONDS
+    direct = _running_engine().direct and STATE.server_pid == pid
+    stopped_why = None  # the app stopped a direct engine's server, and why
     while True:
+        # Until it answers at every look, then every half minute.
+        if direct and STATE.server_pid == pid and not STATE.server_stopping:
+            came_up = STATE.server_verdict == "ready"
+            if not came_up or checks % 15 == 14:
+                stopped_why = _probe_direct(pid)
+                late = STATE.server_verdict != "ready" and time.monotonic() > deadline
+                if late and not stopped_why:
+                    stopped_why = "it did not answer in time"
+                alive = proc.poll() is None if proc else _pid_alive(pid)
+                if stopped_why and alive and not STATE.server_stopping:
+                    STATE.server_verdict = "failed"
+                    STATE.server_lines.append(f"stopped by MLX Studio: {stopped_why}")
+                    _end_direct(pid, proc, repo)
+                    failed = stopped_why
+                    break
+                stopped_why = None
         if previous or unheard:
             verdict = _start_verdict(pid, len(STATE.server_repos))
             if unheard and verdict == "ready":
@@ -2675,7 +2935,7 @@ def _watch_server(
                 break
         elif not _pid_alive(pid):
             break
-        elif checks % 15 == 14 and not _is_our_server(pid, repo, STATE.server_identity):
+        elif checks % 15 == 14 and not _still_our_server(pid, repo):
             break  # the pid now belongs to another process
         checks += 1
         time.sleep(2)
@@ -2716,10 +2976,13 @@ def _watch_server(
         STATE.server_background = False
         STATE.server_started_at = None
         STATE.server_unguarded = False
+        _reset_engine()
         STATE.server_last_error = (
             f"exited with status {code}" if code is not None else "process gone"
         )
-        if code == -signal.SIGKILL:
+        if stopped_why:
+            STATE.server_last_error = stopped_why
+        elif code == -signal.SIGKILL:
             STATE.server_last_error += ", killed, possibly out of memory"
         STATE.server_down_notice = (
             f"API server for {names} stopped unexpectedly ({STATE.server_last_error})"
@@ -2788,7 +3051,8 @@ def _server_env(
     performance: dict | None = None,
 ) -> dict:
     return {
-        **os.environ,
+        # No key or token of the app's environment reaches the server.
+        **engine_runtime.minimal_environment(),
         # A request must never make the server download a model.
         "HF_HUB_OFFLINE": "1",
         "MLX_STUDIO_SERVED_FILE": str(served),
@@ -2802,14 +3066,22 @@ def _server_env(
 
 
 def worker_server_start(
-    repo: str, background: bool = False, ticket: int | None = None, also: list[str] | None = None
+    repo: str,
+    background: bool = False,
+    ticket: int | None = None,
+    also: list[str] | None = None,
+    engine: str = "mlx",
+    anthropic: bool = True,
 ) -> None:
     proc = None
     with STATE.server_lock:
         try:
             stops = STATE.server_stops if ticket is None else ticket
             # Stop can win the lock while this start is still queued.
-            if stops == STATE.server_stops:
+            refused = _engine_refusal(engine, [repo, *(also or [])])
+            if stops == STATE.server_stops and refused:
+                _refuse_start(repo, refused)
+            elif stops == STATE.server_stops:
                 previous = _last_good_server()
                 with STATE.lock:
                     if stops == STATE.server_stops:  # not after a Stop just now
@@ -2817,6 +3089,8 @@ def worker_server_start(
                 args = [also] if also else []
                 if previous:
                     args = [also or [], previous]
+                if engine != "mlx":
+                    args = [also or [], previous, engine, anthropic]
                 proc = _try_launch(repo, background, *args)
                 if proc is None and previous:
                     why = STATE.server_down_notice or STATE.server_last_error or "unknown error"
@@ -2838,11 +3112,23 @@ def worker_server_start(
         _pump_output(proc)
 
 
+def _refuse_start(repo: str, why: str) -> None:
+    """Say why nothing was started; a running server stays as it is."""
+    with STATE.lock:
+        if STATE.server_proc is not None or _pid_alive(STATE.server_pid):
+            STATE.server_apply_notice = f"Nothing was changed. {why}"
+        else:
+            STATE.server_down_notice = f"The API server did not start: {why}"
+    log_activity("server", repo, "failed", why)
+
+
 def _launch_server(
     repo: str,
     background: bool,
     also: list[str] | None = None,
     previous: tuple[list[str], bool] | None = None,
+    engine: str = "mlx",
+    anthropic: bool = True,
 ) -> subprocess.Popen | None:
     """Replace any running API server. The caller holds ``STATE.server_lock``."""
     if STATE.testing():
@@ -2854,6 +3140,8 @@ def _launch_server(
     STATE.server_apply_notice = None
     STATE.server_last_error = None
     repos = [repo, *(also or [])]
+    if engine != "mlx":
+        return _launch_direct(engines.get(engine), repo, background, previous, anthropic)
     # Read again now that the old server has given its memory back.
     limits = server_memory_estimate(repos, fresh=True) if len(repos) > 1 else None
     STATE.server_context = None
@@ -2897,6 +3185,64 @@ def _launch_server(
         _model_performance(repos),
     )
     STATE.server_started_with = env["MLX_STUDIO_SETTINGS"]
+    return _spawn_server(cmd, env, repos, background, previous)
+
+
+def _direct_settings(settings: dict) -> dict:
+    """The saved settings, with the defaults a direct engine must be given."""
+    reply = settings["server_max_reply_tokens"] or SERVER_MAX_TOKENS
+    passed = {**settings, "server_max_reply_tokens": reply}
+    ram = hardware().get("ram_bytes")
+    if ram and not passed["prompt_cache_bytes"]:
+        # Without the flag OptiQ keeps about 0.5 GB, too little for a follow-up.
+        passed["prompt_cache_bytes"] = ram // 8
+    return passed
+
+
+def _launch_direct(
+    engine: engines.Engine, repo: str, background: bool, previous, anthropic: bool
+) -> subprocess.Popen | None:
+    """Start a direct engine. The old server is stopped. Refusals raise."""
+    if why := _engine_refusal(engine.id, [repo]):
+        raise engine_runtime.Refused(why)
+    snapshot = _snapshot_dir(repo)
+    settings = server_settings([repo])
+    stamp = _launch_stamp(settings)
+    command = engine.command(
+        engine.program(APP_DIR),
+        snapshot,
+        engine.port,
+        settings=_direct_settings(settings),
+        performance=performance_flags(repo)[0],
+        origins=f"http://{HOST}:{PORT}",
+        anthropic=anthropic,
+    )
+    root = APP_DIR / "engines" / engine.id / "run"
+    key = engine.new_key()
+    env = engine.environment(root, key)
+    engine_runtime.write_key(_key_file(), key)
+    STATE.server_context = None
+    STATE.server_started_with = stamp
+    STATE.server_engine, STATE.server_port = engine.id, engine.port
+    STATE.server_snapshot, STATE.server_verdict = str(snapshot), None
+    STATE.server_anthropic = engine.anthropic and anthropic
+    proc = _spawn_server(command, env, [repo], background, previous, cwd=str(root))
+    if proc is None:
+        _reset_engine()
+    return proc
+
+
+def _spawn_server(
+    cmd: list[str],
+    env: dict,
+    repos: list[str],
+    background: bool,
+    previous=None,
+    cwd: str | None = None,
+) -> subprocess.Popen | None:
+    """Run ``cmd`` as the API server, record it and watch it."""
+    repo, port = repos[0], _server_port()
+    where = {"cwd": cwd} if cwd else {}
     for stale in (_served_file(), _resident_file(), _budget_file()):
         with contextlib.suppress(OSError):
             stale.unlink(missing_ok=True)
@@ -2918,6 +3264,7 @@ def _launch_server(
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
                 env=env,
+                **where,
             )
         else:
             proc = subprocess.Popen(
@@ -2927,6 +3274,7 @@ def _launch_server(
                 text=True,
                 bufsize=1,
                 env=env,
+                **where,
             )
     except Exception as exc:
         STATE.server_lines.append(f"failed to start: {exc}")
@@ -2946,7 +3294,7 @@ def _launch_server(
         "server",
         repo,
         "running",
-        f"listening on {HOST}:{SERVER_PORT}" + (" (background)" if background else ""),
+        f"listening on {HOST}:{port}" + (" (background)" if background else ""),
     )
     log_app(
         "info",
@@ -2954,7 +3302,7 @@ def _launch_server(
         repo=repo,
         pid=proc.pid,
         background=background,
-        port=SERVER_PORT,
+        port=port,
     )
     watch = (proc.pid, repo, proc)
     if previous:
@@ -2980,14 +3328,14 @@ def _stop_server_locked() -> None:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        elif _is_our_server(pid, repo, STATE.server_identity):
+        elif _still_our_server(pid, repo):
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGTERM)
             for _ in range(50):
                 if not _pid_alive(pid):
                     break
                 time.sleep(0.1)
-            if _is_our_server(pid, repo, STATE.server_identity):
+            if _still_our_server(pid, repo):
                 with contextlib.suppress(OSError):
                     os.kill(pid, signal.SIGKILL)
         elif _pid_alive(pid):
@@ -3004,6 +3352,7 @@ def _stop_server_locked() -> None:
             STATE.server_down_notice = None
             STATE.server_apply_notice = None
             STATE.server_unguarded = False
+            _reset_engine()
         _clear_server_pidfile(only_pid=pid)
         if repo:
             log_activity("server", repo, "info", "server stopped")
@@ -3022,12 +3371,25 @@ def restore_server_state() -> None:
         _clear_server_pidfile()
         return
     pid = data.get("pid")
-    if not isinstance(pid, int) or not _is_our_server(
-        pid, data.get("repo"), data.get("started"), data.get("port")
+    engine = engines.get(data.get("engine"))
+    extra = {}
+    if engine is not None and engine.direct:
+        extra = {"direct": engine.identity(data.get("snapshot"))}
+    if (
+        engine is None
+        or not engine.selectable
+        or not isinstance(pid, int)
+        or not _is_our_server(pid, data.get("repo"), data.get("started"), data.get("port"), **extra)
     ):
         log_app("info", "dropped a stale api server pidfile", pid=pid)
         _clear_server_pidfile()
+        _reset_engine()
         return
+    if engine.direct and type(data.get("port")) is int:
+        STATE.server_engine, STATE.server_port = engine.id, data["port"]
+        STATE.server_snapshot, STATE.server_verdict = data.get("snapshot"), None
+        STATE.server_started_with = data.get("settings")
+        STATE.server_anthropic = data.get("anthropic") is True
     STATE.server_pid = pid
     STATE.server_identity = data.get("started")
     STATE.server_repo = data.get("repo")
@@ -3041,7 +3403,7 @@ def restore_server_state() -> None:
     with contextlib.suppress(OSError):
         _budget_file().unlink(missing_ok=True)
     # A build without the guard may have left it. Restarting is the user's call.
-    STATE.server_unguarded = not _is_guarded(pid)
+    STATE.server_unguarded = not engine.direct and not _is_guarded(pid)
     if STATE.server_unguarded:
         log_app(
             "warning",
@@ -3142,7 +3504,7 @@ def _stored_runs(repo: str) -> list[dict]:
     return runs
 
 
-def _loadtest_fingerprint(repo: str) -> dict:
+def _loadtest_fingerprint(repo: str, engine_id: str = "mlx") -> dict:
     """What a result depends on; the max context is left out, as Apply changes it."""
     unused = (*CHAT_ONLY_SETTINGS, "max_context_tokens", "two_model_context_tokens")
     settings = {
@@ -3150,7 +3512,11 @@ def _loadtest_fingerprint(repo: str) -> dict:
         for k, v in server_settings([repo]).items()
         if k not in (*unused, *PERFORMANCE_SETTINGS)
     }
+    engine = engines.get(engine_id)
+    # Named only for another engine, so MLX results made before stay current.
+    other = {"engine": engine.id, "engine_version": engine.version} if engine.direct else {}
     return {
+        **other,
         "revision": _snapshot_dir(repo).name,
         "mlx": pkg_version("mlx"),
         "mlx_lm": pkg_version("mlx-lm"),
@@ -3181,26 +3547,63 @@ def _loadtest_blocked_locked(repo: str) -> str | None:
     return None
 
 
-def _loadtest_job(repo: str, sizes: list[int], run_id: str, workdir: Path) -> tuple[dict, dict]:
+def _direct_test_launch(engine, repo: str, settings: dict) -> tuple[list[str], dict, dict]:
+    """``(command, runner environment, job fields)`` for a direct engine's test.
+
+    The key travels only in the environment; the job file never holds it.
+    """
+    command = engine.command(
+        engine.program(APP_DIR),
+        _snapshot_dir(repo),
+        0,  # the runner puts a spare port here
+        settings=_direct_settings(settings),
+        performance=performance_flags(repo)[0],
+        origins=f"http://{HOST}:{PORT}",
+        anthropic=False,
+    )
+    root = APP_DIR / "engines" / engine.id / "run"
+    key = engine.new_key()
+    server_env = engine.environment(root, key)
+    del server_env[engine.key_env]
+    env = {
+        **engine_runtime.minimal_environment(),
+        "HF_HUB_OFFLINE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        engine.key_env: key,
+    }
+    fields = {
+        "engine": engine.id,
+        "key_env": engine.key_env,
+        "server_env": server_env,
+        "server_dir": str(root),
+        "request_model": engine.request_model,
+    }
+    return command, env, fields
+
+
+def _loadtest_job(
+    repo: str, sizes: list[int], run_id: str, workdir: Path, engine_id: str = "mlx"
+) -> tuple[dict, dict]:
     """The runner's job and the environment its server inherits."""
+    engine = engines.get(engine_id)
     guard = _guard_module()
     values = {key: entry["value"] for key, entry in load_test_view().items()}
     settings = server_settings([repo])
     # The largest size asked for, plus room for its follow-up reply; the guard still
     # lowers it to the memory ceiling and the model's own limit.
     room = max(sizes) + values["reply_tokens"]
-    command = _server_command(
-        repo,
-        {**settings, "max_context_tokens": room},
-        0,
-        performance=performance_flags(repo)[0],
-    )
-    command.append("--studio-exit-with-parent")
     resident = workdir / "resident.json"
-    env = _server_env(_launch_stamp(settings), workdir / "served.models", resident, {}, {})
-    env["PYTHONDONTWRITEBYTECODE"] = "1"  # nothing is written into the app bundle
+    asked = {**settings, "max_context_tokens": room}
+    fields = {}
+    if engine.direct:
+        command, env, fields = _direct_test_launch(engine, repo, asked)
+    else:
+        command = _server_command(repo, asked, 0, performance=performance_flags(repo)[0])
+        command.append("--studio-exit-with-parent")
+        env = _server_env(_launch_stamp(settings), workdir / "served.models", resident, {}, {})
+        env["PYTHONDONTWRITEBYTECODE"] = "1"  # nothing is written into the app bundle
     snapshot = _snapshot_dir(repo)
-    fingerprint = _loadtest_fingerprint(repo)
+    fingerprint = _loadtest_fingerprint(repo, engine_id)
     priors = [
         [row["size"], row["server_peak_bytes"], row.get("status") == "passed"]
         for run in _stored_runs(repo)
@@ -3226,12 +3629,16 @@ def _loadtest_job(repo: str, sizes: list[int], run_id: str, workdir: Path) -> tu
         "resident_file": str(resident),
         "workdir": str(workdir),
         "priors": priors,
+        **fields,
     }
     return job, env
 
 
-def start_loadtest(repo: str, sizes) -> tuple[int, dict]:
+def start_loadtest(repo: str, sizes, engine_id: str = "mlx") -> tuple[int, dict]:
     """``(HTTP status, reply)``. Starts nothing while a server or other work runs."""
+    engine = engines.get(engine_id)
+    if engine is None or not engine.selectable:
+        return 400, {"error": "that engine cannot be tested"}
     if repo not in _complete_models():
         return 400, {"error": f"{repo} is not installed completely"}
     most = _model_max_size(repo)
@@ -3242,6 +3649,8 @@ def start_loadtest(repo: str, sizes) -> tuple[int, dict]:
         }
     if not hardware().get("ram_bytes"):
         return 500, {"error": "this Mac's memory size cannot be read"}
+    if engine.direct and (why := _engine_refusal(engine.id, [repo], port_too=False)):
+        return 409, {"error": why}
     run_id = secrets.token_hex(8)
     with STATE.server_lock:
         with STATE.lock:
@@ -3259,6 +3668,8 @@ def start_loadtest(repo: str, sizes) -> tuple[int, dict]:
                 "sizes": sorted(sizes),
                 "rows": [],
             }
+            if engine.direct:
+                record["engine"] = engine.id
             run = {"active": True, "repo": repo, "record": record, "status": "running"}
             run.update(progress={}, cancel=False, proc=None, server_pid=None)
             previous, STATE.loadtest = STATE.loadtest, run
@@ -3266,11 +3677,19 @@ def start_loadtest(repo: str, sizes) -> tuple[int, dict]:
         try:
             APP_DIR.mkdir(parents=True, exist_ok=True)
             workdir = Path(tempfile.mkdtemp(prefix="loadtest-run-", dir=APP_DIR))
-            job, env = _loadtest_job(repo, sizes, run_id, workdir)
+            job, env = _loadtest_job(repo, sizes, run_id, workdir, engine.id)
+            where, after = {}, "--max-tokens"
+            if engine.direct:
+                where = {"cwd": job["server_dir"]}
+                run["pids"] = {"repo": repo, "engine": engine.id, "snapshot": job["snapshot"]}
             record.update(
-                fingerprint=_loadtest_fingerprint(repo),
+                fingerprint=_loadtest_fingerprint(repo, engine.id),
                 limit_percent=job["limit_percent"] or 80,
-                flags=job["command"][job["command"].index("--max-tokens") :],
+                flags=job["command"][
+                    job["command"].index("--port") + 2
+                    if engine.direct
+                    else job["command"].index(after) :
+                ],
                 values={key: job[key] for key in LOAD_TEST_NUMBERS},
             )
             with open(workdir / "runner.log", "wb") as errors:
@@ -3282,6 +3701,7 @@ def start_loadtest(repo: str, sizes) -> tuple[int, dict]:
                     text=True,
                     env=env,
                     start_new_session=True,
+                    **where,
                 )
             run["proc"] = proc
             _write_loadtest_pidfile(run, runner=proc.pid)
@@ -3358,6 +3778,8 @@ def _watch_loadtest(run: dict, workdir: Path) -> None:
         log_app("error", "load test watch failed", error=repr(exc)[:300])
     finally:
         _kill_runner(proc)
+        # A direct engine's server does not exit by itself when the runner is gone.
+        _end_test_server(run.get("pids", {}))
         if record["status"] == "running":
             if run["cancel"]:
                 record["status"], record["reason"] = "cancelled", "cancelled by you"
@@ -3419,6 +3841,28 @@ def shutdown_loadtest() -> None:
         thread.join(timeout=5)
 
 
+def _end_left(saved: dict, name: str, marks: tuple[str, ...]) -> None:
+    """Kill the process stored as ``name``, only while it is still the one we started."""
+    pid, started = saved.get(name), saved.get(f"{name}_started")
+    if type(pid) is not int or not started or not _pid_alive(pid):
+        return
+    command = f"{_ps_field(pid, 'command')} "
+    if _ps_field(pid, "lstart") == started and all(mark in command for mark in marks):
+        with contextlib.suppress(OSError):
+            if os.getpgid(pid) == pid:
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
+        log_app("info", "ended a left over load test process", pid=pid, kind=name)
+
+
+def _end_test_server(saved: dict) -> None:
+    """End the server of a direct engine's load test, if one is left."""
+    engine = engines.get(saved.get("engine"))
+    if engine is not None and engine.direct:
+        _end_left(saved, "server", (engine.identity(saved.get("snapshot")),))
+
+
 def restore_loadtest() -> None:
     """Clear what a killed app left: end only processes that are still ours."""
     try:
@@ -3430,18 +3874,11 @@ def restore_loadtest() -> None:
         "runner": (str(LOADTEST_SCRIPT),),
         "server": (f"/{GUARD_SCRIPT.name} --model {repo} ", "--studio-exit-with-parent"),
     }
+    if saved.get("engine"):
+        del ours["server"]
     for name, marks in ours.items():
-        pid, started = saved.get(name), saved.get(f"{name}_started")
-        if type(pid) is not int or not started or not _pid_alive(pid):
-            continue
-        command = f"{_ps_field(pid, 'command')} "
-        if _ps_field(pid, "lstart") == started and all(mark in command for mark in marks):
-            with contextlib.suppress(OSError):
-                if os.getpgid(pid) == pid:
-                    os.killpg(pid, signal.SIGKILL)
-                else:
-                    os.kill(pid, signal.SIGKILL)
-            log_app("info", "ended a left over load test process", pid=pid, kind=name)
+        _end_left(saved, name, marks)
+    _end_test_server(saved)
     for record in _read_loadtest():
         if record.get("status") == "running":
             record["status"] = "interrupted"
@@ -3472,7 +3909,7 @@ def loadtest_summary() -> dict | None:
 
 def loadtest_view(repo: str) -> dict:
     """The Load Test page for ``repo``."""
-    current = _loadtest_fingerprint(repo)
+    current = functools.cache(lambda engine: _loadtest_fingerprint(repo, engine))
     most = _model_max_size(repo)
     values = load_test_view()
     with STATE.lock:
@@ -3483,7 +3920,7 @@ def loadtest_view(repo: str) -> dict:
         "status": loadtest_summary(),
         "rows": list(run["record"]["rows"]) if run and run["repo"] == repo else [],
         "results": [
-            {**record, "stale": record.get("fingerprint") != current}
+            {**record, "stale": record.get("fingerprint") != current(record.get("engine", "mlx"))}
             for record in _stored_runs(repo)
         ],
         "sizes": {
@@ -3510,6 +3947,8 @@ def apply_loadtest(repo: str, run_id, size) -> tuple[int, dict]:
     )
     if type(size) is not int or not passed:
         return 400, {"error": "that size did not pass in this test"}
+    if record.get("engine", "mlx") != "mlx":
+        return 400, {"error": "Apply saves a size for MLX results only"}
     if record.get("fingerprint") != _loadtest_fingerprint(repo):
         return 409, {"error": "this result is out of date; run the test again"}
     save_settings({"max_context_tokens": size}, repo)
@@ -3761,6 +4200,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json(loadtest_view(repo))
             return
+        if path == "/api/engines":
+            repo = (query.get("repo") or [""])[0]
+            if not _valid_repo(repo):
+                self._json({"error": "repo must be a model id"}, 400)
+            else:
+                self._json({"engines": _engines_view(repo)})
+            return
         if path == "/api/ping":
             self._json({"ok": True, "app": APP_VERSION})
             return
@@ -3816,7 +4262,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ("/api/loadtest/start", "/api/loadtest/apply"):
             if path == "/api/loadtest/start":
-                code, answer = start_loadtest(repo, body.get("sizes"))
+                engine = body.get("engine", "mlx")
+                if not isinstance(engine, str):
+                    code, answer = 400, {"error": "engine must be a name"}
+                else:
+                    code, answer = start_loadtest(repo, body.get("sizes"), engine)
             elif not _valid_repo(repo):
                 code, answer = 400, {"error": "repo must be a model id"}
             else:
@@ -3875,6 +4325,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": problem}, 400)
                 return
             repos = [repo, *also]
+            engine = body.get("engine", "mlx")
+            if not isinstance(engine, str) or engines.get(engine) is None:
+                self._json({"error": "unknown engine"}, 400)
+                return
             # A pair is checked above. One name alone is checked here: nothing else is
             # launched, and a running server is not stopped for it.
             if not also and repo not in _complete_models():
@@ -3888,6 +4342,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": estimate["refused"], "estimate": estimate}, 409)
                 return
             background = bool(body.get("background"))
+            options = ()
+            if engine != "mlx":
+                if why := _engine_refusal(engine, repos):
+                    self._json({"error": why}, 409)
+                    return
+                options = (engine, body.get("anthropic") is not False)
             with STATE.lock:
                 deleting = any(name in STATE.deleting for name in repos)
                 testing = STATE.testing()
@@ -3899,7 +4359,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": why}, 409)
                 return
             threading.Thread(
-                target=worker_server_start, args=(repo, background, ticket, also), daemon=True
+                target=worker_server_start,
+                args=(repo, background, ticket, also, *options),
+                daemon=True,
             ).start()
             self._json({"ok": True, "background": background})
             return
@@ -3931,6 +4393,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": f"could not save the settings: {exc.strerror}"}, 500)
                 return
             self._json({"ok": True})
+            return
+
+        if path == "/api/server/key":
+            # Only when asked, only while our server alone holds the port; never logged.
+            if not (_running_engine().direct and STATE.server_verdict == "ready"):
+                self._json({"error": "no server with a key is ready"}, 409)
+                return
+            try:
+                header = _chat_headers()["Authorization"]
+            except engine_runtime.Refused as exc:
+                self._json({"error": str(exc)}, 409)
+                return
+            self._json({"key": header.removeprefix("Bearer ")})
+            return
+
+        if path in ("/api/engines/install", "/api/engines/remove"):
+            code, answer = _engine_change(path.rsplit("/", 1)[1], body)
+            self._json(answer, code)
             return
 
         if path == "/api/server/notice/clear":

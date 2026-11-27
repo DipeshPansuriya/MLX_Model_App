@@ -246,7 +246,9 @@ class TestToolSupport:
     def test_server_view_has_a_hidden_warning(self):
         html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
         assert 'id="serverToolsWarn" hidden' in html
-        assert "Claude Code" not in html
+        # The tool warning names no client; Claude Code appears only in the client settings.
+        warning = html[html.index('id="serverToolsWarn"') :].split('<div class="panel">')[0]
+        assert "Claude Code" not in warning
 
     def test_script_drives_the_warning_from_status(self):
         script = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
