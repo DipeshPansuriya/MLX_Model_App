@@ -269,7 +269,7 @@ def test_the_server_warnings_appear_inside_a_standing_live_region():
 
 # Row 735 N3: the estimate is read once --------------------------------------- #
 def test_the_visible_estimate_is_not_read_a_second_time():
-    assert PAGE["serverEstimate"][0].get("aria-hidden") == "true"
+    assert PAGE["serverWhy"][0].get("aria-hidden") == "true"
     spoken = PAGE["serverStartWhy"][0]
     assert spoken.get("role") == "status" and "aria-hidden" not in spoken
 

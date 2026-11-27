@@ -194,17 +194,50 @@ This is the contract between backend and interface. Every surface derives from
 
 ### 7.4 API Server
 
-- Topbar: title, state pill, model select, **Start**/**Stop**.
+- Topbar: title and state pill only.
 - Endpoint panel: monospace URL, **Copy**, one-line hint, `curl` example.
 - Output panel: live subprocess stdout, auto-scrolled only when already at bottom.
-- Unreleased (2.0.10 source):
-  - Panel **Also keep loaded (optional)**: a second searchable picker with
-    **None**, never offering the first model; a hint that models take turns.
-  - The second choice is kept when it is changed while the server runs.
-  - Estimate and safe-context lines. **Start** is disabled when the pair does not
-    fit, the refusal stays on screen (not a toast), and no context advice is shown
-    then. The estimate is asked again every 10 s while stopped; a running pair
-    keeps its answer, and a refused estimate is not shown while a server runs.
+- Unreleased (2.0.12 source): one card, top to bottom.
+
+  | Part | Design |
+  |---|---|
+  | **Models (max 2)** | A list: short name (full id in the tooltip), **about NK context** when known (K = tokens ÷ 1024), and **×** labelled **Remove <model id>**. Empty: **No model chosen.** |
+  | **+ Add model** | Opens the searchable picker, which offers only models not on the list. Off with a reason: **Two models is the maximum. Remove one to add another.**, **No other installed model to add.** or **No models installed. Get one on the Download page.** |
+  | Memory | **Memory: X / Y GB**: need out of allowed, or measured use out of the server's budget for the unchanged running server. Hidden while a pair is refused: the refusal gives its own figures |
+  | Reason line | One line, amber: **Starting the server…**, the last start error, **Add a model to start the server.** / **Add a model, or press Stop.**, **No memory estimate: …**, the refusal, **Shorter context: about NK tokens per model.** (two), **Shorter context: about NK tokens.** or **This model may not fit: …** (one, never blocked) |
+  | **Details** | Closed by default: the take-turns hint and safe-context line (two only), what **Memory** means, the estimate, the measured memory and the prompt length |
+  | **Background** | Checkbox; changing it is a change to apply |
+  | Buttons | **Start Server** (stopped) or **Apply changes** (running; off until the set, in any order, or **Background** differs), **Starting…** while a start is under way, **Stop** while running or starting. Beside a pending change: **Applying restarts the server: a reply in progress will be interrupted.** |
+
+  - State: the list is the user's edits, else the running server's models, else
+    the last set that ran (when the app has just opened, the last set whose start
+    reported ready; models no longer installed completely are left out). Polls
+    never overwrite edits. A new server process drops them, so the list shows what
+    really runs, except edits made after its start was sent: those stay as a change
+    to apply.
+  - **Restart** in the stopped banner sends the models and **Background** mode that
+    last ran (after a start from stopped that never ran, those that were sent), not
+    an unapplied choice, which stays on the card. Models no longer installed
+    completely are left out. When a new set and the previous one both fail, it may
+    retry the failed new set. **Background** mode is not remembered after the app
+    is closed (`server.last.json` holds model ids only).
+  - The second click of a double click on a button or checkbox of this page is
+    ignored. At 480 px or less a row's context sits under the name.
+  - Keyboard and screen readers: adding returns focus to **+ Add model** (at two,
+    to the new row's **×**); removing moves it to the remaining **×**, else to
+    **+ Add model**; **Escape** closes the picker and returns to **+ Add model**; a
+    focused button that turns off or hides passes focus to the next usable one.
+    **Start Server** / **Apply changes** passes it to **+ Add model**, or to
+    **Background** when that is off, never to **Stop**. **Restart** and
+    **Restart now** pass it the same way when their banner goes. A further start,
+    from any of these three buttons, is ignored until the status after the first
+    one is on screen. A hidden status line says **Added …** / **Removed …**.
+  - The estimate is asked again every 10 s while stopped or with a change waiting;
+    an unchanged running server keeps its answer, and a refused estimate is not
+    shown for it.
+  - A start that replaces a server and fails brings the last working models back
+    and shows the **Changes not applied** alert; if the restored server stops later,
+    **API server stopped** takes over both texts (see API.md section 5).
   - Estimate words (GB to one decimal, K = context ÷ 1000, rounded down):
 
     | Case | Words |
@@ -221,8 +254,9 @@ This is the contract between backend and interface. Every surface derives from
     again.** The cap is 2 × KV × T bytes, so by arithmetic a single conversation
     up to about 2 × T can still be cached, pushing out the other; the line is the
     safe limit, not the exact one (not tested).
-  - The visible estimate is hidden from screen readers; a status line that is
-    always in the page speaks it and describes **Start** and the second picker.
+  - The visible reason line is hidden from screen readers; a status line that is
+    always in the page speaks it, only when it changes, and describes the main
+    button.
   - A measured memory line: active, peak and budget with two models; active and
     peak only with one, noting that the Chat tab model is not included. The
     two-model line says **Measured by the API server, refreshed about every 10 s.**
@@ -237,8 +271,8 @@ This is the contract between backend and interface. Every surface derives from
     | **Loaded without enough memory** | Names the model, says it does not fit in the memory the API server may use now (with the GB figure and **with room for a T-token reply** when known), then **The other model was unloaded.** if an eviction of it is in the recent events. It ends **macOS may slow down or stop the API server. Free some memory or choose a smaller model.** |
     | **Free memory is low** | **Other apps now use memory the API server was counting on (X GB short). Replies may slow down. Close apps, or restart the server for a smaller context.** |
 
-  - The **server unprotected** and **API server stopped** alerts sit above the
-    second picker.
+  - The **server unprotected**, **API server stopped** and **Changes not applied**
+    alerts sit above the card.
   - The Chat tab says that a Chat model loads only if it fits beside the two
     models. A refused Load request shows in the load-failure panel (section 5).
   - Without a session token the app shows one toast, "This page has no session.

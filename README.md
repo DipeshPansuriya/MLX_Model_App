@@ -16,8 +16,8 @@ available.
 
 > This page describes **2.0.9**, released on 2026-11-26 as the
 > [latest release](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
-> Text marked **unreleased** came with the 2.0.10 source, is also in the 2.0.11
-> source, and is not in the released app ([CHANGELOG](CHANGELOG.md)). The
+> Text marked **unreleased** came with the 2.0.10 source or later, is in the
+> 2.0.12 source, and is not in the released app ([CHANGELOG](CHANGELOG.md)). The
 > screenshots show an earlier version.
 
 ![Chat view](screenshots/02-chat-loaded.png)
@@ -191,15 +191,17 @@ The double-clicked app does not look in that folder.
 ### API Server
 - Starts `mlx_lm server` through MLX Studio's request guard on
   `http://127.0.0.1:8080/v1`, with 8192 reply tokens by default.
-- Live server output, copyable endpoint, `curl` example, and the same searchable
-  dropdown.
+- Live server output, copyable endpoint and `curl` example.
+- Unreleased (2.0.12 source): one card, **Models (max 2)**. **+ Add model** opens
+  the searchable list; **×** removes a model. See
+  [the API Server card](#the-api-server-card).
 - Warns when the chosen model is marked as unable to call tools.
 - **Background**: the server keeps running after the window closes. Its process
   id is saved in `~/.mlx_studio/server.pid` and adopted on the next launch only if
   the command line and start time still match.
 - If the server dies, the view shows a banner with **Restart** and records the
   event.
-- Unreleased: can keep [two models loaded](#one-or-two-models) at once.
+- Since 2.0.10: can keep [two models loaded](#one-or-two-models) at once.
 
 ### Activity
 - Filterable log of chats, loads, downloads, deletes, installs and server events.
@@ -333,7 +335,27 @@ reject long input; too much context fails through memory or quality.
 The figures are for a 32 GB Mac and are **calculated from measured bytes per
 token, not load-tested**. They include the reply. 500K or 1M context is not
 proven and is not recommended here. They are for one model; with two models
-loaded (unreleased), use the safe context the API Server view shows.
+loaded, use the safe context the API Server view shows.
+
+### The API Server card
+
+**Unreleased (2.0.12 source).**
+
+| Part | Behaviour |
+|---|---|
+| **Models (max 2)** | The chosen models, each with its context figure when known and a remove button. The same model cannot be added twice. At two, **+ Add model** is off and says why |
+| When the app opens | With the server stopped, the models of the last start that reported ready are already chosen, so **Start Server** is one click. Models no longer installed completely are left out; with nothing remembered the list is empty. Nothing starts by itself |
+| While a server runs | The list shows what it was started with. Your edits stay until you apply them or a new server starts; edits made while a start is under way stay after it |
+| **Restart** | After the server stops unexpectedly or cannot start: starts the models and mode that last ran, not an unapplied choice, leaving out models no longer installed completely. If a new set and the previous one both failed, it may retry the failed new set. **Background** mode is not remembered after the app is closed |
+| Memory | **Memory: X / Y GB**: what the choice needs (or, for the unchanged running server, uses) out of what the API server may use. Hidden while two models are refused. **Details** holds the longer explanations |
+| Warnings | A refusal or a shorter context is shown on the card without opening Details. One model is never refused; if it may not fit, the card says so |
+| **Start Server** | Off, with the reason shown, when no model is chosen or two do not fit |
+| **Apply changes** | On a running server, enabled when the models or **Background** differ. It restarts the server, so **a reply in progress is interrupted** |
+| Failed Apply | The two-model fit is checked before the old server stops. If the new server is then refused, cannot be started, exits, or cannot load its first model before it is ready, the last models that were ready (else the ones that were running) are started again once and **Changes not applied** says why. Applying again before the new server is ready keeps that fallback. If starting them fails, **API server stopped** gives both reasons. A restored server can also stop later; **API server stopped** then says both, and nothing more is started |
+| **Stop** | Stops the server, also while it is starting, and forgets the fallback |
+
+"Ready" is the server's own report that its models are loaded. Without that report,
+a server still running after 10 minutes counts as started.
 
 ### One or two models
 
@@ -342,8 +364,7 @@ downloaded model makes it swap, after the running work finishes, which adds load
 time. The model loaded in the **Chat** tab is separate and uses its own memory;
 unload it if you only need the server.
 
-**Unreleased (2.0.10 source):** the API Server tab has a second picker, **Also
-keep loaded (optional)**.
+Since 2.0.10, add a second model on the API Server card to keep both loaded.
 
 | Point | Behaviour |
 |---|---|
@@ -353,18 +374,19 @@ keep loaded (optional)**.
 | Context per model | Called **T** below. At most 32,768 tokens, rounded down to a multiple of 1,024, and never above a model's own limit. It is set at start and stays until the server is restarted |
 | Memory the pair may use | The smaller of 0.52 × RAM (less the Chat model's weights) and what is free now: the free, speculative, purgeable and file-backed pages reported by `/usr/bin/vm_stat`, minus 2 GB left for macOS and other apps. A running server's own memory counts as free, because a restart gives it back. If `vm_stat` cannot be read, only the 52% rule is used and the view says so |
 | How T is worked out | (budget − weights of both models − 1.4 GB margin) ÷ (5.1 × cache bytes per token), rounded down and capped. 5.1 is 2 for the prompt cache plus 3.1 for one reply. The larger of the two models' cache bytes per token is used |
-| Shrink or refuse | From 8,192 up to 32,767 the server starts with that smaller T and the estimate says so. Below 8,192 two models are refused: **Start** is disabled, or the start is refused (`409`), with the figures. Close other apps or start one model |
+| Shrink or refuse | From 8,192 up to 32,767 the server starts with that smaller T and the estimate says so. Below 8,192 two models are refused: **Start Server** or **Apply changes** is disabled, or the start is refused (`409`), with the figures. Close other apps or start one model |
 | Prompt cache | Capped at 2 × cache bytes per token × T, room for about one conversation of T tokens per model. **Keep prompts to T tokens or fewer. The prompt cache holds about 2T tokens in total; above that, older prompts are dropped and read again.** Treat T as the safe limit: by the cap arithmetic a conversation up to about 2 × T can still be cached, but it pushes out the other one, and above that it is read again every turn (not tested with real models) |
 | After start | Each load of a model that is not in memory checks free memory again and may trim the cache, evict, or load alone. A switch between the two loaded models is not checked. Nothing is unloaded just because free memory drops |
 | Chat tab | A Chat model loads only if it passes both the 52% check and the live free-memory check beside the two models. Otherwise the load is refused (`409`) with the figures |
 | Refused Load | The reason stays in a panel at the bottom right until **Dismiss** or the next load |
-| Choosing **None** | One model, started with the same command as 2.0.9: no prompt cache byte cap, no live memory check and no memory refusal. The view adds a measured memory line |
+| One model chosen | One model, started with the same command as 2.0.9: no prompt cache byte cap, no live memory check and no memory refusal. The view adds a measured memory line |
 | Older or changed `mlx-lm` hooks | The server keeps one model and the app says why |
 
-What the view says about memory (unreleased):
+What the card says about memory (the longer lines are under **Details**):
 
 | Words | When |
 |---|---|
+| **Shorter context: about 10K tokens per model.** | On the card when T is below 32,768; **Close other apps for more.** is added for a choice not yet running when free memory is the limit |
 | **Two models: about 10K tokens each (one model alone can use more). Uses about … of … GB free.** | T is below 32,768. **Close other apps for more.** is added only when free memory, not the 52% rule, is the limit |
 | **Two models: 32K tokens each. Uses about … of … GB free.** | T is 32,768 |
 | **Uses about … of … GB available.** or **Needs about … GB, … GB would be available.** | A server is running and holds memory; "available" counts the running server's memory (same pair or different) |
@@ -397,8 +419,8 @@ lower budget too, and a background server left running after you quit keeps a
 lowered budget until the app opens again. The Chat tab check counts the new
 model's weights, not its reply cache, and does not count the memory of the Chat
 model it replaces, so a swap may be refused until you **Unload**. If memory runs
-short between stopping the old server and starting the new one, the old server
-stays stopped and the reason is shown. Right after a server is killed, free
+short between stopping the old server and starting the new one, the app tries once
+to start the previous models again (unreleased) and shows the reason. Right after a server is killed, free
 memory may be read before macOS has returned it. A model whose own context limit
 is below 8,192 can make the "needed" figure too small. Screen readers may
 announce the notice or estimate again on later updates (not checked). Any local
@@ -584,6 +606,7 @@ unreleased source the page no longer holds it.
 | Launch log | `~/.mlx_studio/logs/launch.log` |
 | Background server output | `~/.mlx_studio/logs/server.log` |
 | Background server pid | `~/.mlx_studio/server.pid` |
+| Last models that started (unreleased) | `~/.mlx_studio/server.last.json` |
 | Loaded models and memory (unreleased) | `~/.mlx_studio/server.resident.json`, removed on stop |
 | Two-model memory budget (unreleased) | `~/.mlx_studio/server.budget`, removed on stop |
 

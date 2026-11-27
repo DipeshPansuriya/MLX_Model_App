@@ -327,43 +327,30 @@ def test_two_first_calls_never_write_bytecode(app_module, monkeypatch):
 
 
 # F1, U4 --------------------------------------------------------------------- #
-CHOOSE = """
-const choose = async (id, value) => { $(id).value = value; $(id).listeners.change();
-  await new Promise((r) => setTimeout(r, 0)); };
-const pickers_ = () => [$("#serverModelSelect").value, $("#serverModel2Select").value];
-"""
-
-
 @needs_node
 @pytest.mark.parametrize(
-    ("repos", "choices", "expected"),
+    ("repos", "chosen"),
     [
-        (["org/a", "org/b"], [("1", "org/c"), ("2", "org/a")], ["org/c", "org/a"]),
-        (["org/a"], [("2", "org/b")], ["org/a", "org/b"]),
-        (["org/a", "org/b"], [("2", "None")], ["org/a", "None"]),
+        (["org/a", "org/b"], ["org/c", "org/a"]),
+        (["org/a"], ["org/a", "org/b"]),
+        (["org/a", "org/b"], ["org/a"]),
     ],
 )
-def test_a_choice_made_while_running_survives_polls_and_stop(tmp_path, repos, choices, expected):
-    steps = "".join(
-        f'await choose("#serverModel{"" if which == "1" else "2"}Select", "{value}");'
-        for which, value in choices
-    )
+def test_a_choice_made_while_running_survives_polls_and_stop(tmp_path, repos, chosen):
     out = ui(
         tmp_path,
-        CHOOSE + f"const on = () => running({{ repos: {json.dumps(repos)} }});"
-        f" await show(on()); {steps} await show(on()); await show(on());"
-        " const polled = pickers_(); await show(view()); return [polled, pickers_()];",
+        f"const on = () => running({{ repos: {json.dumps(repos)} }});"
+        f" await show(on()); editServerSet({json.dumps(chosen)}); await show(on());"
+        " await show(on()); const polled = serverSet(); await show(view());"
+        " return [polled, serverSet()];",
     )
-    assert out == [expected, expected]
+    assert out == [chosen, chosen]
 
 
 @needs_node
-def test_a_new_server_still_sets_the_second_picker(tmp_path):
-    out = ui(
-        tmp_path,
-        "await show(view()); await show(running()); return $('#serverModel2Select').value;",
-    )
-    assert out == "org/b"
+def test_a_new_server_still_fills_the_card(tmp_path):
+    out = ui(tmp_path, "await show(view()); await show(running()); return serverSet();")
+    assert out == ["org/a", "org/b"]
 
 
 @needs_node
@@ -512,20 +499,10 @@ def test_the_chat_tab_says_the_server_holds_two_models(tmp_path):
 
 
 # F10, F11: markup ------------------------------------------------------------ #
-def test_server_alerts_come_before_the_second_picker():
-    panel = HTML.index("server-pair")
+def test_server_alerts_come_before_the_card():
+    panel = HTML.index('id="serverCard"')
     assert HTML.index('id="serverUnguarded"') < panel
     assert HTML.index('id="serverNotice"') < panel
-
-
-def test_the_reason_start_is_off_is_linked_and_always_in_the_page():
-    why = HTML[HTML.index('id="serverStartWhy"') - 40 : HTML.index('id="serverStartWhy"') + 60]
-    assert 'role="status"' in why and "sr-only" in why and "hidden" not in why
-    assert 'id="serverStartBtn" aria-describedby="serverStartWhy"' in HTML
-    group = HTML[HTML.index("server-pair") : HTML.index('id="serverModel2Select"')]
-    assert 'role="group"' in group and 'aria-describedby="serverStartWhy"' in group
-    # One live region: the visible line would be read twice.
-    assert 'id="serverEstimate" hidden' in HTML
 
 
 @needs_node
@@ -534,6 +511,6 @@ def test_the_live_region_gets_the_reason(tmp_path):
         tmp_path,
         'estimate = { ...estimate, fits: false, refused: "They do not fit." };'
         ' await pick("org/a", "org/b"); const over = text("#serverStartWhy");'
-        ' await pick("org/a", "None"); return [over, text("#serverStartWhy")];',
+        ' await pick("org/a"); return [over, text("#serverStartWhy")];',
     )
-    assert "do not fit" in out[0] and out[1] == ""
+    assert "do not fit" in out[0] and "do not fit" not in out[1]

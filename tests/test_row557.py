@@ -318,11 +318,13 @@ class TestSearchFieldMarkup:
         box = re.search(rf'<input[^>]*id="{select}Search"[^>]*>', field).group(0)
         assert 'placeholder="Search models…"' in box
         assert re.search(r'aria-label="Search [^"]*model', box)
-        assert f'aria-describedby="{select}Chosen"' in box
+        # The API Server's picker adds to a list: it keeps no chosen model to describe.
+        keeps_choice = select == "chatModelSelect"
+        assert (f'aria-describedby="{select}Chosen"' in box) is keeps_choice
         clear = re.search(rf'<button[^>]*id="{select}Clear"[^>]*>', field).group(0)
         for attribute in ('type="button"', 'aria-label="Clear model search"', "hidden"):
             assert attribute in clear
-        assert re.search(rf'id="{select}Chosen"', HTML)
+        assert (f'id="{select}Chosen"' in HTML) is keeps_choice
 
     def test_the_open_list_leaves_the_selected_line_visible_and_badges_stay_whole(self):
         assert re.search(

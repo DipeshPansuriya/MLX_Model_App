@@ -81,10 +81,10 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/download/cancel` | `repo` (required) | 404 not downloading |
 | `/api/delete` | `repo` (required) | 404, 409, 500 |
 | `/api/reveal` | `repo` (required) | 404, 500 |
-| `/api/server/start` | `repo` (required), `background`; unreleased: `also` | 409 being deleted; unreleased: 400, 409 (section 5) |
+| `/api/server/start` | `repo` (required), `background`; unreleased: `also`. Replaces a running server | 409 being deleted; unreleased: 400, 409 (section 5) |
 | `/api/server/estimate` | unreleased: `repo` (required), `also` | 400 |
 | `/api/server/stop` | - (also cancels a start that has not launched yet) | - |
-| `/api/server/notice/clear` | - | - |
+| `/api/server/notice/clear` | - (unreleased: clears `down_notice` and `apply_notice`) | - |
 | `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running |
 | `/api/logs/clear` | - | 500 |
 | other paths | - | 404 |
@@ -101,11 +101,48 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | 400 | `/api/server/estimate` with `also` empty: `repo` is not installed completely |
 | 409 | `/api/server/start` with a pair: it does not fit at 8,192 tokens each. `error` is the refusal text and `estimate` is the estimate reply below |
 | 409 | `/api/server/start`: a model is being deleted |
+| 400 | 2.0.12 source: `/api/server/start` with one model: it is not installed completely. Nothing is launched, and a running server is left alone |
 
 A start with one model is never refused for memory. The app stops the running
 server before the new one starts and then checks memory again. If the pair is
-refused at that point, the call has already answered 200: the old server stays
-stopped, nothing new is started and `server.down_notice` holds the reason.
+refused at that point, the call has already answered 200 and `/api/state` tells
+the outcome.
+
+### Replacing a running server (unreleased, 2.0.12 source)
+
+A start that replaces a server remembers a fallback: the models and mode of the
+last server that was ready, else of the running one. A further start before the new
+server is ready keeps that fallback. It is started again, once, when the new server:
+
+| Case | Detected |
+|---|---|
+| Is refused for memory after the stop, cannot be spawned, or the start raises an unexpected error (a process already spawned is stopped) | At once |
+| Exits before it is ready | By the watcher, every 2 s |
+| Cannot load its first model (still running) | `load-failed` or `preload_done` with nothing resident; the process is stopped |
+
+Ready means a model is resident and, for two, `preload_done` is `true` (not needed
+with `multi_off`). A server still running 10 minutes after its start counts as
+ready. `/api/server/stop` forgets the fallback. Nothing is started again after it,
+while a newer start waits, or when there is no fallback and no server was running.
+
+| Outcome | Field |
+|---|---|
+| Previous server started again | `apply_notice`: **The new server did not start: … was started again.** |
+| That failed too | `down_notice`: both reasons, ending **The API server is stopped.** |
+| The restored server stops later | `down_notice`: the `apply_notice` text followed by **API server for … stopped unexpectedly**; `apply_notice` is `null`. Nothing more is started |
+| No earlier server, and the new one cannot be started | `down_notice`: **The API server did not start: …** (a memory refusal keeps its own text) |
+
+Three further fields under `server`: `apply_notice` (text or `null`), `starting`
+(`true` while a requested start has not launched yet) and `last_models` (up to two
+ids of the last server that reported ready, else `[]`). `apply_notice` is cleared
+by the next start, by stop and by `/api/server/notice/clear`.
+
+`last_models` is read from `~/.mlx_studio/server.last.json`, written when the
+watcher sees the ready report within 10 minutes of the start (not by the 10 minute
+rule above, and not after a failed load). It may name a model that has since been
+removed; the page leaves those out of the card and of **Restart**, and
+`/api/server/start` refuses them. Reading it starts nothing. Anything but a regular
+file of at most 4 KB holding printable ids of at most 200 characters reads as `[]`.
 
 ### `/api/load`
 

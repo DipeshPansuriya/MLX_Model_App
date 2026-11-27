@@ -19,6 +19,19 @@ const state = {
   refreshAgain: false,
   lastServerUnguarded: false,
   serverMode: "",
+  // The API Server card: the user's edits (null: follow the server), what ran last
+  // (when just opened: the last set that started), and edits to keep over a start.
+  server: null,
+  serverDraft: null,
+  serverLast: [],
+  serverLastBackground: null,
+  keptSet: false,
+  keptBox: false,
+  serverStartError: "",
+  serverSending: false,
+  lastApplyNotice: null,
+  estimate: null,
+  estimateError: "",
 };
 
 /* ───────────── utilities ───────────── */
@@ -252,6 +265,7 @@ function render(snap) {
   $("#loadBtn").disabled = !!loaded.loading;
 
   // server
+  const held = document.activeElement;
   const unguarded = !!(server.running && server.unguarded);
   const runningDot = unguarded ? "dot-warn" : "dot-ok";
   $("#serverUnguarded").hidden = !unguarded;
@@ -262,8 +276,6 @@ function render(snap) {
   setHTML($("#serverState"), server.running
     ? `<span class="dot ${runningDot}"></span>${esc(runningNames(server))}`
     : `<span class="dot dot-warn"></span>Stopped`);
-  $("#serverStartBtn").hidden = server.running;
-  $("#serverStopBtn").hidden = !server.running;
   $("#navServerDot").className = "dot " + (server.running ? runningDot : "");
   setText($("#navServerText"),
     unguarded ? "server unprotected" : server.running ? "server running" : "server stopped");
@@ -287,12 +299,32 @@ function render(snap) {
   }
   state.lastServerRunning = server.running;
   // The box shows a running server's mode. Set once per server, so a later click
-  // stays, and a stopped server keeps the mode for the next start.
+  // stays, and a stopped server keeps the mode for the next start. A new server
+  // also replaces the edits on the card: the list shows what is really running.
   const mode = server.running ? `${server.pid}:${!!server.background}` : "";
   if (mode && mode !== state.serverMode) {
-    $("#serverBackground").checked = !!server.background;
+    // Edits made after that server's start was sent are the newer wish: they stay.
+    if (!state.keptBox) $("#serverBackground").checked = !!server.background;
+    if (!state.keptSet) state.serverDraft = null;
+    state.keptSet = state.keptBox = false;
     state.serverMode = mode;
+    state.serverStartError = "";
   }
+  state.server = server;
+  if (server.running) {
+    state.serverLast = runningSet(server);
+    state.serverLastBackground = !!server.background;
+  } else if (!state.serverLast.length) {
+    // Just opened: the card starts with the last set that came up.
+    state.serverLast = server.last_models || [];
+  }
+  $("#serverApplyNotice").hidden = !server.apply_notice;
+  setText($("#serverApplyText"), server.apply_notice || "");
+  // Said once, whichever page is open.
+  if (server.apply_notice && server.apply_notice !== state.lastApplyNotice) {
+    toast(server.apply_notice, true);
+  }
+  state.lastApplyNotice = server.apply_notice;
   const sLog = $("#serverLog");
   if (sLog) {
     const atBottom = sLog.scrollTop + sLog.clientHeight >= sLog.scrollHeight - 40;
@@ -364,11 +396,14 @@ function render(snap) {
   // model dropdowns
   const ready = models.filter((m) => m.complete !== false).map((m) => m.repo);
   fillSelect("#chatModelSelect", ready, loaded.repo);
-  fillSelect("#serverModelSelect", ready, server.repo);
   state.readyModels = ready;
-  fillSecondModel(server.running ? server.repos?.[1] || NO_MODEL : null);
   renderServerMemory(server);
   refreshEstimate(snap);
+  paintServerCard();
+  // A Restart button goes away with its notice: leave the focus on something that stays.
+  const gone = [["#serverRestartBtn", "#serverNotice"],
+    ["#serverUnguardedRestart", "#serverUnguarded"]];
+  if (gone.some(([button, box]) => held === $(button) && $(box).hidden)) spareControl().focus();
   renderToolsWarning(server);
   renderModelCards(models, loaded, downloads);
   renderDownloads(downloads);
@@ -394,26 +429,37 @@ function setPkg(valId, pillId, current, target, missing) {
 }
 
 /* ───────────── two models on the API server ───────────── */
-const NO_MODEL = "None";
+const MAX_SERVER_MODELS = 2;
 const LOGGED_EVENTS = ["evict", "trim", "alone", "preload-skipped", "load-failed"];
 const shortName = (repo) => String(repo || "").split("/").pop();
 const gb = (bytes) => (bytes / 1e9).toFixed(1);
+const runningSet = (server) =>
+  server?.repos?.length ? server.repos : server?.repo ? [server.repo] : [];
+// Order does not make a different choice.
+const sameSet = (a, b) => a.length === b.length && a.every((repo) => b.includes(repo));
 
-// The second picker never offers the first picker's model. A change by the user
-// passes no value: what the server reported stays on record, so the next poll
-// does not look like a new server and undo the choice.
-function fillSecondModel(current = $("#serverModel2Select")._current) {
-  const first = $("#serverModelSelect").value;
-  const others = (state.readyModels || []).filter((repo) => repo !== first);
-  const select = $("#serverModel2Select");
-  if (select.value === first) select.value = NO_MODEL;
-  fillSelect("#serverModel2Select", [NO_MODEL, ...others], current);
+// The names that are installed completely; all of them until the list has loaded.
+const usable = (set) =>
+  set.filter((repo) => !state.readyModels || state.readyModels.includes(repo));
+
+// The models on the card: the user's edits, else what runs, else what ran last.
+function serverSet() {
+  const server = state.server;
+  if (server?.running) return state.serverDraft || runningSet(server);
+  return usable(state.serverDraft || state.serverLast);
 }
 
-// The model fields of a start request, from the pickers.
-function serverChoice(repo = $("#serverModelSelect").value) {
-  const second = $("#serverModel2Select").value;
-  return second && second !== NO_MODEL && second !== repo ? { repo, also: [second] } : { repo };
+// The card differs from the running server, so Apply has something to do.
+function serverPending() {
+  const server = state.server;
+  return !!server?.running && (!sameSet(serverSet(), runningSet(server)) ||
+    $("#serverBackground").checked !== !!server.background);
+}
+
+// The model fields of a start request.
+function serverChoice(set = serverSet()) {
+  const [repo = "", second] = set;
+  return second ? { repo, also: [second] } : { repo };
 }
 
 function runningNames(server) {
@@ -519,16 +565,17 @@ function renderServerMemory(server) {
 
 const ESTIMATE_RETRY_MS = 10000;
 
-// Asked again when the pair or the app's own chat model changes, and a while after
-// the last answer, as the free memory moves. A running server keeps its answer.
+// Asked again when the choice or the app's own chat model changes, and a while after
+// the last answer, as the free memory moves. An unchanged running server keeps its
+// answer; an edit waiting for Apply does not.
 async function refreshEstimate(snap) {
   const choice = serverChoice();
-  const key = choice.also
+  const key = choice.repo
     ? JSON.stringify([choice, snap?.loaded?.repo, snap?.loaded?.loading])
     : "";
   const same = key === (state.estimateKey || "");
-  const running = !!snap?.server?.running;
-  if (same && (!(Date.now() >= state.estimateRetryAt) || (running && state.estimated))) return;
+  const settled = !!snap?.server?.running && !serverPending();
+  if (same && (!(Date.now() >= state.estimateRetryAt) || (settled && state.estimated))) return;
   state.estimateKey = key;
   state.estimateRetryAt = Infinity;
   if (!same) {
@@ -544,8 +591,7 @@ async function refreshEstimate(snap) {
     if (state.estimateKey !== key) return;
     state.estimateRetryAt = Date.now() + ESTIMATE_RETRY_MS;
     state.estimated = true;
-    // A running pair is not called refused: its own memory is what is in use.
-    showEstimate(running && estimate.fits === false ? null : estimate);
+    showEstimate(estimate);
   } catch (err) {
     if (state.estimateKey !== key) return;
     state.estimated = false;
@@ -586,30 +632,196 @@ function estimateWords(estimate) {
     (unread ? fallback : shrinkNote);
 }
 
-function showEstimate(estimate, error) {
-  $("#serverStartBtn").disabled = estimate?.fits === false;
-  $("#serverEstimate").hidden = !estimate && !error;
-  // No context advice for a pair that cannot be started.
-  const advise = !!estimate && estimate.fits !== false;
-  $("#serverContextHint").hidden = !advise;
-  // The status region is always in the page, so a screen reader hears its changes.
-  const say = (words) => {
-    setText($("#serverEstimate"), words);
-    setText($("#serverStartWhy"), words);
-  };
-  if (!estimate) {
-    say(error ? `No memory estimate: ${error}` : "");
-    setText($("#serverContextHint"), "");
-    return;
+function showEstimate(estimate, error = "") {
+  state.estimate = estimate;
+  state.estimateError = error;
+  paintServerCard();
+}
+
+const kilo = (tokens) => Math.floor(tokens / 1024);
+
+// What one row can promise about its context; empty when nothing is known.
+function contextWords(repo, view) {
+  const found = view.estimate?.models?.find((m) => m.repo === repo);
+  let tokens = view.estimate?.fits === false && view.two ? null : found?.safe_context;
+  if (view.live && view.two && holdsTwo(view.server) && view.server.context_tokens) {
+    tokens = Math.min(view.server.context_tokens, found?.context_limit || Infinity);
   }
-  say(estimateWords(estimate));
-  setText($("#serverContextHint"), !advise ? "" :
+  return tokens >= 1024 ? `about ${kilo(tokens)}K context` : "";
+}
+
+// The one thing to read without opening Details: why the button is off, or a warning.
+function serverReason(view) {
+  const { server, set, two, live, estimate, refused } = view;
+  if (server.starting) return "Starting the server…";
+  if (state.serverStartError) return state.serverStartError;
+  if (!set.length) {
+    return server.running ? "Add a model, or press Stop." : "Add a model to start the server.";
+  }
+  if (state.estimateError) return `No memory estimate: ${state.estimateError}`;
+  if (refused) return estimateWords(estimate);
+  if (two) {
+    const running = live && holdsTwo(server);
+    const tokens = running ? server.context_tokens
+      : !live && estimate?.fits !== false ? estimate?.context_tokens : null;
+    if (!tokens || tokens >= FULL_CONTEXT) return "";
+    const more = !running && estimate.free_is_limit && estimate.free_bytes !== null;
+    return `Shorter context: about ${Math.floor(tokens / 1000)}K tokens per model.` +
+      (more ? " Close other apps for more." : "");
+  }
+  // One model is never refused: the server may still run it with less room.
+  if (live || estimate?.fits !== false) return "";
+  const safe = estimate.models?.[0]?.safe_context;
+  return safe >= 8192
+    ? `Shorter context: about ${kilo(safe)}K tokens.`
+    : `This model may not fit: it needs about ${gb(estimate.total_bytes)} GB and ` +
+      `the API server may use ${gb(estimate.budget_bytes)} GB.`;
+}
+
+// A line inside the card, hidden while it has nothing to say.
+function showLine(id, words) {
+  $(id).hidden = !words;
+  setText($(id), words);
+}
+
+function paintServerCard() {
+  const server = state.server;
+  if (!server) return;
+  const set = serverSet();
+  const two = set.length > 1;
+  const pending = serverPending();
+  // The card lists exactly what the running server holds.
+  const live = !!server.running && sameSet(set, runningSet(server));
+  const estimate = state.estimate;
+  // A running pair is not called refused: its own memory is what is in use.
+  const refused = two && estimate?.fits === false && (!server.running || pending);
+  const view = { server, set, two, live, estimate, refused };
+
+  const list = $("#serverModelList");
+  const drawn = setHTML(list, set.map((repo) => {
+    const context = contextWords(repo, view);
+    return `<li><span class="model-name" title="${esc(repo)}">${esc(shortName(repo))}</span>` +
+      (context ? `<span class="model-context">${context}</span>` : "") +
+      `<button class="btn btn-mini btn-ghost" type="button" data-remove="${esc(repo)}" ` +
+      `aria-label="Remove ${esc(repo)}">×</button></li>`;
+  }).join(""));
+  if (drawn) {
+    list.querySelectorAll("[data-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => removeServerModel(btn.dataset.remove));
+    });
+  }
+  $("#serverModelEmpty").hidden = set.length > 0;
+
+  const ready = state.readyModels || [];
+  const others = ready.filter((repo) => !set.includes(repo));
+  fillSelect("#serverModelSelect", others, null);
+  // Nothing is preselected: every pick in the list adds that model.
+  $("#serverModelSelect").value = "";
+  const noAdd = set.length >= MAX_SERVER_MODELS
+    ? "Two models is the maximum. Remove one to add another."
+    : !ready.length ? "No models installed. Get one on the Download page."
+      : !others.length ? "No other installed model to add." : "";
+  $("#serverAddBtn").disabled = !!noAdd;
+  setText($("#serverAddWhy"), noAdd);
+  if (noAdd) showAddPicker(false);
+
+  const measured = live ? server.memory : null;
+  const used = measured ? measured.active_bytes : estimate?.total_bytes;
+  const allowed = measured ? measured.budget_bytes : estimate?.budget_bytes;
+  // A refusal gives its own figures; this line beside them reads as a contradiction.
+  const memory = !refused && set.length && used != null && allowed != null
+    ? `Memory: ${gb(used)} / ${gb(allowed)} GB` : "";
+  showLine("#serverMemoryLine", memory);
+  showLine("#serverMemoryHint", !memory ? "" : measured
+    ? "Memory: used now, of what the API server may use."
+    : "Memory: what this choice needs, of what the API server may use.");
+
+  const reason = serverReason(view);
+  showLine("#serverWhy", reason);
+  // The status region is always in the page, so a screen reader hears its changes.
+  setText($("#serverStartWhy"), reason);
+
+  // A refusal is already on screen; a running server is not described as refused.
+  const details = !set.length || !estimate || (two && estimate.fits === false) ? ""
+    : two ? estimateWords(estimate)
+      : `Needs about ${gb(estimate.total_bytes)} GB with a ` +
+        `${Math.floor(estimate.context_tokens / 1000)}K-token reply; the API server may use ` +
+        `${gb(estimate.budget_bytes)} GB.`;
+  showLine("#serverEstimate", details);
+  showLine("#serverContextHint", !two || !estimate || estimate.fits === false ? "" :
     "Safe context while both are loaded (estimate): " +
     estimate.models.map((m) => {
       if (m.safe_context == null) return `${shortName(m.repo)} unknown`;
       const limit = m.safe_context === m.context_limit ? " (model limit)" : "";
-      return `${shortName(m.repo)} about ${Math.floor(m.safe_context / 1024)}K${limit}`;
+      return `${shortName(m.repo)} about ${kilo(m.safe_context)}K${limit}`;
     }).join("; ") + ". Set your client's context window to this or lower.");
+  $("#serverPairHint").hidden = !two;
+  $("#serverDetails").hidden = !set.length && !server.running;
+
+  const start = $("#serverStartBtn");
+  const stop = $("#serverStopBtn");
+  const focused = document.activeElement;
+  setText(start, server.starting ? "Starting…" : server.running ? "Apply changes" : "Start Server");
+  start.disabled = !!server.starting || !set.length || (server.running && !pending) || refused;
+  stop.hidden = !server.running && !server.starting;
+  // Focus must not stay on a button that can no longer be used, nor move from Start
+  // to Stop, where a second Enter would stop the server.
+  if (focused === start && start.disabled) spareControl().focus();
+  if (focused === stop && stop.hidden) (start.disabled ? spareControl() : start).focus();
+  setText($("#serverApplyNote"), pending && set.length && !server.starting
+    ? "Applying restarts the server: a reply in progress will be interrupted." : "");
+}
+
+function showAddPicker(show) {
+  $("#serverAddPicker").hidden = !show;
+  $("#serverAddBtn").setAttribute("aria-expanded", String(show));
+}
+
+// Where focus goes when its button cannot be used: never Start or Stop.
+function spareControl() {
+  const add = $("#serverAddBtn");
+  return add.disabled ? $("#serverBackground") : add;
+}
+
+// A start has been sent and the server it makes is not on screen yet.
+const startOnItsWay = () => !!(state.serverSending || state.server?.starting);
+
+// An edit of the card. Back to what runs, the card follows the server again; while
+// a start is on its way the old server is about to go, so the edit is kept.
+function editServerSet(next) {
+  const server = state.server;
+  const busy = startOnItsWay();
+  if (busy) state.keptSet = true;
+  state.serverDraft =
+    !busy && server?.running && sameSet(next, runningSet(server)) ? null : next;
+  serverCardChanged();
+}
+
+function serverCardChanged() {
+  state.serverStartError = "";
+  refreshEstimate(state.snapshot);
+  paintServerCard();
+  if (state.snapshot) renderToolsWarning(state.snapshot.server);
+}
+
+function addServerModel() {
+  const repo = $("#serverModelSelect").value;
+  const set = serverSet();
+  if (!repo || set.includes(repo) || set.length >= MAX_SERVER_MODELS) return;
+  showAddPicker(false);
+  editServerSet([...set, repo]);
+  setText($("#serverSetStatus"), `Added ${shortName(repo)}.`);
+  const add = $("#serverAddBtn");
+  const row = Array.from($("#serverModelList").querySelectorAll("[data-remove]"))
+    .find((btn) => btn.dataset.remove === repo);
+  (add.disabled && row ? row : add).focus();
+}
+
+function removeServerModel(repo) {
+  editServerSet(serverSet().filter((other) => other !== repo));
+  setText($("#serverSetStatus"), `Removed ${shortName(repo)}.`);
+  const next = $("#serverModelList").querySelectorAll("[data-remove]")[0];
+  (serverSet().length && next ? next : $("#serverAddBtn")).focus();
 }
 
 // Warn only for models marked as unable to call tools; unmarked means unknown.
@@ -652,7 +864,7 @@ function fillSelect(sel, values, current) {
 // app reads. Polling never overwrites an open list's typed text or highlight.
 const pickers = {};
 
-function createPicker(sel) {
+function createPicker(sel, { onLeave } = {}) {
   const select = $(sel);
   const box = $(`${sel}Search`);
   const list = $(`${sel}List`);
@@ -687,6 +899,7 @@ function createPicker(sel) {
   // The box only ever holds the search text; the choice is written beside it.
   function showState() {
     clear.hidden = !box.value;
+    if (onLeave) return; // an "add" picker keeps no choice to show
     setText(chosen, `Selected: ${select.value || "none"}`);
     chosen.title = select.value;
   }
@@ -722,11 +935,18 @@ function createPicker(sel) {
   box.addEventListener("click", () => {
     if (list.hidden) open(box.value);
   });
-  box.addEventListener("blur", close);
+  box.addEventListener("blur", () => {
+    close();
+    onLeave?.(false);
+  });
   box.addEventListener("input", () => open(box.value));
   box.addEventListener("keydown", (e) => {
     if (e.isComposing) return;
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (e.key === "Escape" && onLeave) {
+      e.preventDefault();
+      close();
+      onLeave(true);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       if (list.hidden) { open(); return; }
       if (!shown.length) return;
@@ -760,6 +980,7 @@ function createPicker(sel) {
   });
 
   pickers[sel] = {
+    open() { open(); },
     sync(next) {
       values = next;
       box.readOnly = !values.length;
@@ -1247,11 +1468,38 @@ async function exportDiagnostics() {
   } catch (err) { toast(err.message, true); }
 }
 
+// One start at a time, held until the card shows what it did. ``keep`` names the
+// card edits that are not part of this start.
+async function sendStart(body, message, keep = {}) {
+  if (state.serverSending) return;
+  const stopped = !state.server?.running;
+  state.keptSet = !!keep.set;
+  state.keptBox = !!keep.box;
+  state.serverSending = true;
+  try {
+    await api("/api/server/start", { method: "POST", body: JSON.stringify(body) });
+  } catch (err) {
+    state.serverSending = false;
+    throw err;
+  }
+  // From stopped, this is now the set that Restart would try again.
+  if (stopped) {
+    state.serverLast = [body.repo, ...(body.also || [])];
+    state.serverLastBackground = body.background;
+  }
+  toast(message);
+  refreshState().finally(() => { state.serverSending = false; });
+}
+
 /* ───────────── wiring ───────────── */
 function wire() {
   createPicker("#chatModelSelect");
-  createPicker("#serverModelSelect");
-  createPicker("#serverModel2Select");
+  createPicker("#serverModelSelect", {
+    onLeave(escaped) {
+      showAddPicker(false);
+      if (escaped) $("#serverAddBtn").focus();
+    },
+  });
 
   $("#loadBtn").addEventListener("click", async () => {
     const repo = $("#chatModelSelect").value;
@@ -1300,28 +1548,43 @@ function wire() {
   $("#refreshModelsBtn").addEventListener("click", refreshModels);
   $("#catalogFilter").addEventListener("change", renderCatalog);
 
-  const pairChanged = () => {
-    fillSecondModel();
-    refreshEstimate(state.snapshot);
-    if (state.snapshot) renderToolsWarning(state.snapshot.server);
+  $("#serverModelSelect").addEventListener("change", addServerModel);
+  $("#serverAddBtn").addEventListener("click", () => {
+    showAddPicker(true);
+    $("#serverModelSelectSearch").focus();
+    pickers["#serverModelSelect"].open();
+  });
+  $("#serverBackground").addEventListener("change", () => {
+    if (startOnItsWay()) state.keptBox = true;
+    serverCardChanged();
+  });
+  // The first click of a double click moves things: the second would press whatever
+  // came under the pointer. Keyboard presses report no click count.
+  const secondClick = (e) => {
+    if (e.detail > 1 && e.target.closest("button, label")) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
   };
-  $("#serverModelSelect").addEventListener("change", pairChanged);
-  $("#serverModel2Select").addEventListener("change", pairChanged);
+  $("#view-server").addEventListener("click", secondClick, true);
+  $("#view-server").addEventListener("mousedown", secondClick, true);
 
   $("#serverStartBtn").addEventListener("click", async () => {
-    const repo = $("#serverModelSelect").value;
-    if (!repo) { toast("No model selected", true); return; }
+    if (state.serverSending) return;
+    const set = serverSet();
+    if (!set.length) { toast("No model selected", true); return; }
     const background = $("#serverBackground").checked;
+    const applying = !!state.server?.running;
+    state.serverStartError = "";
     try {
-      await api("/api/server/start", {
-        method: "POST",
-        body: JSON.stringify({ ...serverChoice(repo), background }),
-      });
-      toast(background ? "Starting in background…" : "Starting server…");
-      refreshState();
+      await sendStart({ ...serverChoice(set), background },
+        applying ? "Restarting server…"
+          : background ? "Starting in background…" : "Starting server…");
     } catch (err) {
-      // A refusal for memory stays on screen: the next poll asks for the reason.
+      // The reason stays on the card; the next poll asks for the figures again.
       state.estimateRetryAt = 0;
+      state.serverStartError = err.message;
+      paintServerCard();
       toast(err.message, true);
     }
   });
@@ -1329,35 +1592,37 @@ function wire() {
     try { await api("/api/server/stop", { method: "POST", body: "{}" }); refreshState(); }
     catch (err) { toast(err.message, true); }
   });
-  $("#serverNoticeDismiss").addEventListener("click", async () => {
+  const dismissNotice = async () => {
     try { await api("/api/server/notice/clear", { method: "POST", body: "{}" }); refreshState(); }
     catch (err) { toast(err.message, true); }
+  };
+  $("#serverNoticeDismiss").addEventListener("click", dismissNotice);
+  $("#serverApplyDismiss").addEventListener("click", () => {
+    // The notice goes away with its button: leave the focus on something that stays.
+    spareControl().focus();
+    return dismissNotice();
   });
   $("#serverUnguardedRestart").addEventListener("click", async () => {
-    // The model and mode that are running now, whatever the picker shows.
+    // The model and mode that are running now, whatever the card shows.
     const { repo, repos, background } = state.snapshot?.server || {};
     if (!repo) return;
     try {
-      await api("/api/server/start", {
-        method: "POST",
-        body: JSON.stringify({
-          repo, ...(repos?.[1] ? { also: [repos[1]] } : {}), background: !!background,
-        }),
-      });
-      toast("Restarting server…");
-      refreshState();
+      await sendStart({
+        repo, ...(repos?.[1] ? { also: [repos[1]] } : {}), background: !!background,
+      }, "Restarting server…");
     } catch (err) { toast(err.message, true); }
   });
   $("#serverRestartBtn").addEventListener("click", async () => {
-    const repo = $("#serverModelSelect").value || state.snapshot?.server?.repo;
-    if (!repo) { toast("Pick a model first", true); return; }
+    // What ran last, not an unapplied choice; the card only when nothing is known.
+    let set = usable(state.serverLast);
+    if (!set.length) set = serverSet();
+    if (!set.length) set = usable([state.snapshot?.server?.repo].filter(Boolean));
+    if (!set.length) { toast("Pick a model first", true); return; }
+    const box = $("#serverBackground").checked;
+    const background = state.serverLastBackground ?? box;
     try {
-      await api("/api/server/start", {
-        method: "POST",
-        body: JSON.stringify({ ...serverChoice(repo), background: $("#serverBackground").checked }),
-      });
-      toast("Restarting server…");
-      refreshState();
+      await sendStart({ ...serverChoice(set), background }, "Restarting server…",
+        { set: !!state.serverDraft, box: box !== background });
     } catch (err) { toast(err.message, true); }
   });
   $("#copyEndpoint").addEventListener("click", async () => {

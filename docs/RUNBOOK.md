@@ -78,7 +78,9 @@ land in `~/.cache/huggingface/hub/models--<org>--<name>/`.
 
 ### 3.4 Start the OpenAI-compatible server
 
-API Server tab → select a model → **Start**.
+API Server tab → **+ Add model** → choose one → **Start Server**. In the
+unreleased 2.0.12 source the models that last started are already chosen after the
+app opens; delete `~/.mlx_studio/server.last.json` to open with an empty list.
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -90,14 +92,15 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 Point DeepSeek Harness or another OpenAI-compatible client at `http://127.0.0.1:8080/v1` with any non-empty API
 key.
 
-Unreleased (2.0.10 source): to keep two models loaded, also choose one under
-**Also keep loaded (optional)** and read the memory estimate before **Start**. Set
-the client's context window to the shown safe context or lower. The limits are
+Since 2.0.10, to keep two models loaded add a second one, then read the memory
+line, any warning and **Details** before **Start Server**. Set the client's context
+window to the shown safe context or lower. The limits are
 calculated and have not been re-tested with real models, so watch memory pressure.
 
 | You see | Meaning and what to do |
 |---|---|
-| **Two models: about …K tokens each** | The pair starts with a context shorter than 32,768. If **Close other apps for more** follows, free memory is the limit: close apps, then **Start** |
+| **Shorter context: about …K tokens per model** | The pair starts, or runs, with a context shorter than 32,768. If **Close other apps for more** follows, free memory is the limit: close apps, then **Start Server** |
+| **This model may not fit** or **Shorter context: about …K tokens** (one model) | A warning only; the model can still be started. Choose a smaller one if the server stops |
 | **Not enough free memory for two models** | Less than 8,192 tokens each would fit. Close apps until the "needed" figure is free, or start one model |
 | **Not enough memory for two models** | The 52% rule is the limit, or free memory could not be read. Choose smaller models or start one model; **Unload** a Chat model if one is loaded |
 | **Free memory could not be read** | `/usr/bin/vm_stat` failed; only the fixed 52% rule applies. Watch memory pressure |
@@ -108,8 +111,18 @@ calculated and have not been re-tested with real models, so watch memory pressur
 
 The context and the budget are set at start. After closing apps, restart the
 server to get more. A server started while a Chat model was loaded keeps the lower
-budget until it is restarted. If a restart is refused after the old server was
-stopped, it stays stopped and the reason is in the **API server stopped** notice.
+budget until it is restarted.
+
+**Changing a running server** (unreleased, 2.0.12 source): edit the list or
+**Background**, then **Apply changes**. The server restarts, so a reply in progress
+is interrupted.
+
+| You see | Meaning and what to do |
+|---|---|
+| **Changes not applied** | The new server did not start; the last working models were started again. Read the reason, change the choice or free memory, apply again |
+| **API server stopped**, naming two reasons | Neither the new nor the previous models started. Fix the reasons (memory, model files, Setup), then **Restart** or **Start Server**. **Restart** may retry the failed new set, not the previous one: check the list on the card. **Background** mode is not remembered after the app is closed: tick it again if you want it |
+| **API server stopped**: **… was started again**, then **stopped unexpectedly** | The restored server stopped as well; nothing more is started. Check the server log and free memory, then **Restart** or **Start Server** |
+| **Apply changes** is off | Nothing differs from what runs, no model is listed (add one or **Stop**), or two do not fit |
 
 ### 3.5 Update the runtime
 
@@ -338,6 +351,7 @@ ls -la ~/.mlx_studio ~/.mlx_studio/logs
 | Launch log | `~/.mlx_studio/logs/launch.log` |
 | Background server output | `~/.mlx_studio/logs/server.log` |
 | Background server pid | `~/.mlx_studio/server.pid` |
+| Last models that started (unreleased) | `~/.mlx_studio/server.last.json` |
 | Model cache | `~/.cache/huggingface/hub/` |
 | Update manifest | `release/latest.json` in the repo |
 | Bundle | `/Applications/MLX Studio.app` |

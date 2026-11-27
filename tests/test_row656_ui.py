@@ -15,7 +15,7 @@ spec.loader.exec_module(helpers)
 run, needs_node = helpers.run, helpers.needs_node
 HTML = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
 
-# A server screen with three installed models, A and B picked, and a fake API.
+# A server screen with three installed models and a fake API.
 SETUP = """
 const models = ["org/a", "org/b", "org/c"].map((repo) =>
   ({ repo, path: repo, size_h: "4 GB", complete: true }));
@@ -29,14 +29,15 @@ let estimate = { fits: true, refused: null, context_tokens: 26624, free_bytes: 2
     { repo: "org/a", safe_context: 26624, context_limit: 1000000 },
     { repo: "org/b", safe_context: 16384, context_limit: 16384 }] };
 let current = view();
+// The harness never answers the page's first state request; forget it, as it would end.
+state.refreshing = null;
 respond = (path) => reply(path === "/api/server/estimate" ? estimate : current);
 const show = async (s) => { current = s; state.snapshot = s; render(s);
   await new Promise((r) => setTimeout(r, 0)); };
-const pick = async (first, second) => {
+// Puts these models on the card, as the add and remove buttons do.
+const pick = async (...repos) => {
   await show(current);
-  $("#serverModelSelect").value = first;
-  $("#serverModel2Select").value = second;
-  $("#serverModel2Select").listeners.change();
+  editServerSet(repos);
   await new Promise((r) => setTimeout(r, 0));
 };
 const text = (s) => $(s).textContent;
@@ -46,40 +47,6 @@ const sent = (path) => calls.filter((c) => c.path === path).map((c) => JSON.pars
 
 def ui(tmp_path, scenario):
     return run(tmp_path, SETUP + scenario)
-
-
-def test_the_second_picker_is_searchable_and_under_the_first():
-    first = HTML.index('id="serverModelSelectList"')
-    second = HTML.index('id="serverModel2Select"')
-    assert first < second
-    for part in ("Search", "Clear", "Chosen", "List", "Status"):
-        assert f'id="serverModel2Select{part}"' in HTML
-    assert "Also keep loaded (optional)" in HTML
-    assert 'id="serverModel2Select" class="select"' in HTML
-    assert "style=" not in HTML[second - 600 : second + 2000]
-
-
-@needs_node
-def test_the_second_picker_offers_none_and_not_the_first_choice(tmp_path):
-    out = ui(
-        tmp_path,
-        'await show(view()); $("#serverModelSelect").value = "org/b";'
-        ' $("#serverModelSelect").listeners.change();'
-        ' return html("#serverModel2Select");',
-    )
-    values = [part.split('"')[0] for part in out.split('value="')[1:]]
-    assert values == ["None", "org/a", "org/c"]
-
-
-@needs_node
-def test_choosing_the_second_as_first_clears_the_second(tmp_path):
-    out = ui(
-        tmp_path,
-        'await pick("org/a", "org/b"); $("#serverModelSelect").value = "org/b";'
-        ' $("#serverModelSelect").listeners.change();'
-        ' return [$("#serverModel2Select").value, $("#serverEstimate").hidden];',
-    )
-    assert out == ["None", True]
 
 
 @needs_node
@@ -106,9 +73,9 @@ def test_start_is_off_over_budget_and_back_with_one_model(tmp_path):
         tmp_path,
         'estimate = { ...estimate, fits: false, refused: "21.6 GB needed" };'
         ' await pick("org/a", "org/b");'
-        ' const over = [$("#serverStartBtn").disabled, text("#serverEstimate")];'
-        ' await pick("org/a", "None");'
-        ' return [over, $("#serverStartBtn").disabled, $("#serverEstimate").hidden];',
+        ' const over = [$("#serverStartBtn").disabled, text("#serverWhy")];'
+        ' await pick("org/a");'
+        ' return [over, $("#serverStartBtn").disabled, $("#serverPairHint").hidden];',
     )
     (disabled, reason), after, hidden = out
     assert disabled and reason == "21.6 GB needed"
@@ -134,7 +101,7 @@ def test_a_failed_estimate_says_why(tmp_path):
         'respond = (path) => path === "/api/server/estimate"'
         ' ? reply({ error: "org/b is not installed completely" }, false) : reply(current);'
         ' await pick("org/a", "org/b");'
-        ' return [text("#serverEstimate"), $("#serverStartBtn").disabled];',
+        ' return [text("#serverWhy"), $("#serverStartBtn").disabled];',
     )
     assert "not installed completely" in out[0] and out[1] is False
 
@@ -144,7 +111,7 @@ def test_start_sends_both_or_one(tmp_path):
     out = ui(
         tmp_path,
         'await pick("org/a", "org/b"); await $("#serverStartBtn").listeners.click();'
-        ' await pick("org/a", "None"); await $("#serverStartBtn").listeners.click();'
+        ' await pick("org/a"); await $("#serverStartBtn").listeners.click();'
         ' return sent("/api/server/start");',
     )
     assert out == [
@@ -168,7 +135,7 @@ def test_unguarded_restart_sends_the_running_pair(tmp_path):
     out = ui(
         tmp_path,
         "await show(running({ unguarded: true, background: true }));"
-        ' $("#serverModelSelect").value = "org/c"; $("#serverModel2Select").value = "None";'
+        ' editServerSet(["org/c"]);'
         ' await $("#serverUnguardedRestart").listeners.click();'
         ' return sent("/api/server/start");',
     )
@@ -262,7 +229,6 @@ def test_a_hostile_name_is_escaped(tmp_path):
 
 def test_the_screen_still_has_search_and_copy():
     script = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-    assert 'createPicker("#serverModel2Select")' in script
-    assert 'createPicker("#serverModelSelect")' in script
+    assert 'createPicker("#serverModelSelect"' in script
     assert "navigator.clipboard.writeText" in script
     assert json.dumps("/api/server/estimate") in script

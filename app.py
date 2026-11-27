@@ -25,8 +25,10 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -37,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.11"
+APP_VERSION = "2.0.12"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
@@ -88,9 +90,15 @@ SERVER_MAX_TOKENS = 8192
 # Two models at once (see mlx_guard.install_multi). The share of memory they may
 # use is an assumption carried from the 18 GB "safe" figure on a 32 GB Mac.
 SERVER_MAX_MODELS = 2
+# Limits for reading server.last.json: far above two real model ids.
+LAST_MODELS_MAX_BYTES = 4096
+MODEL_NAME_MAX = 200
 SERVER_RAM_FRACTION = 0.52
 # How long a reading of the free memory is shown before it is taken again.
 FREE_CACHE_SECONDS = 10
+# How long a server that replaced another may take to report ready before it counts
+# as started; until then a failure brings the replaced one back.
+START_WATCH_SECONDS = 600
 # Versions verified for this release (mirrors requirements.txt).
 PINNED_PACKAGES = {"mlx": "0.32.4", "mlx-lm": "0.32.2", "huggingface-hub": "2.4.0"}
 
@@ -921,6 +929,9 @@ class State:
         self.server_started_at: str | None = None
         self.server_last_error: str | None = None
         self.server_down_notice: str | None = None
+        self.server_apply_notice: str | None = None  # a failed Apply, old set back
+        # The last good (models, background), until its replacement is ready.
+        self.server_fallback: tuple[list[str], bool] | None = None
         self.server_pid: int | None = None
         self.server_identity: str | None = None
         self.server_unguarded = False  # adopted, and running without mlx_guard.py
@@ -947,6 +958,7 @@ class State:
     def cancel_pending_starts(self) -> None:
         with self.lock:
             self.server_stops += 1
+            self.server_fallback = None
 
     # -- packages --------------------------------------------------------- #
     def reserve_install(self, kind: str) -> bool:
@@ -1054,7 +1066,10 @@ class State:
                 "background": self.server_background,
                 "started_at": self.server_started_at,
                 "last_error": self.server_last_error,
+                "last_models": _last_models(),
                 "down_notice": self.server_down_notice,
+                "apply_notice": self.server_apply_notice,
+                "starting": bool(self.server_pending),
                 "pid": self.server_pid,
                 "unguarded": self.server_unguarded and _pid_alive(self.server_pid),
             },
@@ -1823,15 +1838,175 @@ def _clear_server_pidfile(only_pid: int | None = None) -> None:
             stale.unlink(missing_ok=True)
 
 
-def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
+def _start_verdict(pid: int, models: int) -> str | None:
+    """What a new server has reported: ``ready``, ``failed``, or None for not yet."""
+    view = _resident_view(pid)
+    if view["resident"]:
+        # Two models are not up until the second has been tried as well.
+        both = models < 2 or view["preload_done"] or view["multi_off"] is not None
+        return "ready" if both else None
+    failed = any(e.get("event") == "load-failed" for e in view["events"])
+    return "failed" if failed or view["preload_done"] else None
+
+
+def _running_server() -> tuple[list[str], bool] | None:
+    """``(models, background)`` of the server a new start is about to replace."""
+    with STATE.lock:
+        proc, pid = STATE.server_proc, STATE.server_pid
+        repos, background = list(STATE.server_repos), STATE.server_background
+    alive = proc.poll() is None if proc is not None else _pid_alive(pid)
+    return (repos, background) if alive and repos else None
+
+
+def _last_good_server() -> tuple[list[str], bool] | None:
+    """What a new start falls back to. The caller holds ``server_lock``.
+
+    The running server if it has reported ready, else the one it was replacing.
+    """
+    running = _running_server()
+    if running and _start_verdict(STATE.server_pid, len(running[0])) == "ready":
+        return running
+    return STATE.server_fallback or running
+
+
+def _last_models_file() -> Path:
+    """The last model set an API server reported ready; the card starts with it."""
+    return APP_DIR / "server.last.json"
+
+
+def _last_models() -> list[str]:
+    """The remembered ids. Anything unexpected in the file's place reads as none."""
+    try:
+        # Not blocking and not a link: a pipe planted here must not stall /api/state.
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+        with os.fdopen(os.open(_last_models_file(), flags), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return []
+            raw = handle.read(LAST_MODELS_MAX_BYTES + 1)
+        if len(raw) > LAST_MODELS_MAX_BYTES:
+            return []
+        repos = json.loads(raw.decode("utf-8"))["repos"]
+        if not isinstance(repos, list) or not all(
+            isinstance(name, str) and 0 < len(name) <= MODEL_NAME_MAX and name.isprintable()
+            for name in repos
+        ):
+            return []
+    except Exception:  # parsing can fail in more ways than ValueError
+        return []
+    return repos[:SERVER_MAX_MODELS]
+
+
+def _remember_models(pid: int) -> None:
+    with STATE.lock:
+        repos = list(STATE.server_repos) if STATE.server_pid == pid else []
+    if not repos:
+        return
+    path = _last_models_file()
+    with contextlib.suppress(OSError):
+        # A new name, created exclusively with mode 0600: a planted link is never followed.
+        handle, temp = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as out:
+                out.write(json.dumps({"repos": repos}))
+            os.replace(temp, path)
+        finally:
+            with contextlib.suppress(OSError):  # already gone after a good replace
+                os.unlink(temp)
+
+
+def _try_launch(*args) -> subprocess.Popen | None:
+    """``_launch_server``, with an unexpected error recorded instead of raised."""
+    try:
+        return _launch_server(*args)
+    except Exception as exc:
+        # Nothing half started stays behind.
+        with contextlib.suppress(Exception):
+            stop_server()
+        STATE.server_lines.append(f"failed to start: {exc}")
+        STATE.server_last_error = str(exc)[:300] or type(exc).__name__
+        log_app("error", "api server start failed", repo=args[0], error=str(exc)[:500])
+        return None
+
+
+def _bring_back(previous: tuple[list[str], bool], why: str, stops: int) -> subprocess.Popen | None:
+    """Start the replaced server again and say why. The caller holds ``server_lock``.
+
+    One try: the start made here has nothing to fall back to.
+    """
+    if stops != STATE.server_stops:  # the user pressed Stop meanwhile
+        return None
+    STATE.server_fallback = None
+    repos, background = previous
+    why = why.rstrip(".")
+    names = " and ".join(name.rsplit("/", maxsplit=1)[-1] for name in repos)
+    proc = _try_launch(repos[0], background, *([repos[1:]] if repos[1:] else []))
+    if proc is None:
+        notice = STATE.server_down_notice = (
+            f"The new server did not start: {why}. Starting {names} again failed too: "
+            f"{(STATE.server_down_notice or STATE.server_last_error or '').rstrip('.')}. "
+            "The API server is stopped."
+        )
+    else:
+        was = "were" if len(repos) > 1 else "was"
+        notice = f"The new server did not start: {why}. {names} {was} started again."
+        with STATE.lock:
+            if STATE.server_pid == proc.pid:
+                STATE.server_apply_notice = notice
+            else:  # it has died already: one notice says both
+                STATE.server_down_notice = f"{notice} {STATE.server_down_notice}"
+    log_activity("server", repos[0], "failed", notice)
+    return proc
+
+
+def _pump_output(proc: subprocess.Popen) -> None:
+    """Keep a foreground server's output until it exits."""
+    if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
+        STATE.server_lines.append("error: no stdout stream")
+        return
+    for line in proc.stdout:
+        STATE.server_lines.append(line.rstrip())
+        STATE.server_lines = STATE.server_lines[-400:]
+    proc.wait()
+    with contextlib.suppress(Exception):
+        STATE.server_last_error = f"exited with status {proc.returncode}"
+
+
+def _watch_server(
+    pid: int,
+    repo: str,
+    proc: subprocess.Popen | None,
+    previous: tuple[list[str], bool] | None = None,
+    stops: int = 0,
+) -> None:
     """Notice when the API server dies and record why, so the UI can warn.
 
     A detached child stays a zombie until it is reaped, and os.kill(pid, 0)
     still succeeds on a zombie, so poll the Popen handle when we have one and
     fall back to the pid probe only for a server adopted from a pidfile.
+
+    ``previous`` is the server this one replaced: it is started again when this
+    one exits, or cannot load its model, before it has reported that it is ready.
     """
     checks = 0
+    failed = None
+    unheard = True  # this server has not yet said whether it came up
+    deadline = time.monotonic() + START_WATCH_SECONDS
     while True:
+        if previous or unheard:
+            verdict = _start_verdict(pid, len(STATE.server_repos))
+            if unheard and verdict == "ready":
+                _remember_models(pid)
+            unheard = verdict is None and time.monotonic() <= deadline
+        if previous:
+            if verdict == "failed":
+                failed = "its model could not be loaded"
+                break
+            if verdict == "ready" or time.monotonic() > deadline:
+                previous = None
+                with STATE.server_lock:
+                    # A newer start keeps its own fallback.
+                    if STATE.server_pid == pid:
+                        STATE.server_fallback = None
         if proc is not None:
             if proc.poll() is not None:
                 break
@@ -1847,6 +2022,22 @@ def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
     if proc is not None:
         with contextlib.suppress(Exception):
             code = proc.returncode
+    if previous:
+        with STATE.server_lock:
+            # Not after a Stop, nor when a newer start is running or waiting.
+            ours = STATE.server_pid == pid and not STATE.server_pending
+            ours = ours and stops == STATE.server_stops
+            if ours:
+                if failed is None:
+                    last = STATE.server_lines[-1][:200] if STATE.server_lines else ""
+                    failed = f"it exited with status {code}" + (f" ({last})" if last else "")
+                restored = _bring_back(previous, failed, stops)
+        if ours:
+            if restored is not None and not previous[1]:
+                _pump_output(restored)
+            return
+        if failed and proc.poll() is None:
+            return  # still alive, so not to be reported as stopped
     with STATE.lock:
         # A restart may already have installed a successor; only the watcher for
         # the current pid is allowed to declare the server down.
@@ -1870,6 +2061,9 @@ def _watch_server(pid: int, repo: str, proc: subprocess.Popen | None) -> None:
         STATE.server_down_notice = (
             f"API server for {names} stopped unexpectedly ({STATE.server_last_error})"
         )
+        if STATE.server_apply_notice:  # a restored server: one notice, not two
+            STATE.server_down_notice = f"{STATE.server_apply_notice} {STATE.server_down_notice}"
+            STATE.server_apply_notice = None
     _clear_server_pidfile(only_pid=pid)
     log_activity("server", repo, "failed", f"stopped unexpectedly ({STATE.server_last_error})")
     log_app("error", "api server died", repo=repo, pid=pid, exit_code=code)
@@ -1879,39 +2073,50 @@ def worker_server_start(
     repo: str, background: bool = False, ticket: int | None = None, also: list[str] | None = None
 ) -> None:
     proc = None
-    try:
-        with STATE.server_lock:
+    with STATE.server_lock:
+        try:
+            stops = STATE.server_stops if ticket is None else ticket
             # Stop can win the lock while this start is still queued.
-            if ticket is None or ticket == STATE.server_stops:
-                proc = _launch_server(repo, background, *([also] if also else []))
+            if stops == STATE.server_stops:
+                previous = _last_good_server()
+                with STATE.lock:
+                    if stops == STATE.server_stops:  # not after a Stop just now
+                        STATE.server_fallback = previous
+                args = [also] if also else []
+                if previous:
+                    args = [also or [], previous]
+                proc = _try_launch(repo, background, *args)
+                if proc is None and previous:
+                    why = STATE.server_down_notice or STATE.server_last_error or "unknown error"
+                    proc, background = _bring_back(previous, why, stops), previous[1]
+                elif proc is None:
+                    with STATE.lock:
+                        # A refusal has its own words; after a Stop there is no news.
+                        if stops == STATE.server_stops and not STATE.server_down_notice:
+                            why = (STATE.server_last_error or "unknown error").rstrip(".")
+                            STATE.server_down_notice = f"The API server did not start: {why}."
             else:
                 log_activity("server", repo, "info", "start cancelled by Stop")
-    finally:
-        with STATE.lock:
-            for name in (repo, *(also or [])):
-                if name in STATE.server_pending:
-                    STATE.server_pending.remove(name)
-    if proc is None or background:
-        return
-
-    if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
-        STATE.server_lines.append("error: no stdout stream")
-        return
-    for line in proc.stdout:
-        STATE.server_lines.append(line.rstrip())
-        STATE.server_lines = STATE.server_lines[-400:]
-    proc.wait()
-    with contextlib.suppress(Exception):
-        STATE.server_last_error = f"exited with status {proc.returncode}"
+        finally:
+            with STATE.lock:
+                for name in (repo, *(also or [])):
+                    if name in STATE.server_pending:
+                        STATE.server_pending.remove(name)
+    if proc is not None and not background:
+        _pump_output(proc)
 
 
 def _launch_server(
-    repo: str, background: bool, also: list[str] | None = None
+    repo: str,
+    background: bool,
+    also: list[str] | None = None,
+    previous: tuple[list[str], bool] | None = None,
 ) -> subprocess.Popen | None:
     """Replace any running API server. The caller holds ``STATE.server_lock``."""
     stop_server()
     STATE.server_lines = []
     STATE.server_down_notice = None
+    STATE.server_apply_notice = None
     STATE.server_last_error = None
     repos = [repo, *(also or [])]
     # Read again now that the old server has given its memory back.
@@ -2022,7 +2227,10 @@ def _launch_server(
         background=background,
         port=SERVER_PORT,
     )
-    threading.Thread(target=_watch_server, args=(proc.pid, repo, proc), daemon=True).start()
+    watch = (proc.pid, repo, proc)
+    if previous:
+        watch += (previous, STATE.server_stops)
+    threading.Thread(target=_watch_server, args=watch, daemon=True).start()
     return proc
 
 
@@ -2065,6 +2273,7 @@ def _stop_server_locked() -> None:
             STATE.server_background = False
             STATE.server_started_at = None
             STATE.server_down_notice = None
+            STATE.server_apply_notice = None
             STATE.server_unguarded = False
         _clear_server_pidfile(only_pid=pid)
         if repo:
@@ -2493,11 +2702,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": problem}, 400)
                 return
             repos = [repo, *also]
+            # A pair is checked above. One name alone is checked here: nothing else is
+            # launched, and a running server is not stopped for it.
+            if not also and repo not in _complete_models():
+                self._json({"error": f"{repo} is not installed completely"}, 400)
+                return
             if path == "/api/server/estimate":
-                # A pair is checked above; one name alone is checked here.
-                if not also and repo not in _complete_models():
-                    self._json({"error": f"{repo} is not installed completely"}, 400)
-                    return
                 self._json(server_memory_estimate(repos))
                 return
             estimate = server_memory_estimate(repos, fresh=True) if also else None
@@ -2528,6 +2738,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/server/notice/clear":
             STATE.server_down_notice = None
+            STATE.server_apply_notice = None
             self._json({"ok": True})
             return
 
