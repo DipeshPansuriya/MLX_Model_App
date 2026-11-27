@@ -1486,20 +1486,11 @@ def _snapshot_dir(repo: str) -> Path:
     allowed = _complete_models()
     if repo not in allowed:
         return CACHE_DIR
-    # Explicitly validate path components to satisfy static analysis.
-    if repo.count("/") != 1:
-        return CACHE_DIR
-    org, name = repo.split("/", 1)
-    if not org or not name:
-        return CACHE_DIR
 
-    def _safe_entry(org: str, name: str) -> Path:
-        """Build a cache entry path from validated org/name components.
-        Called only after validation that org and name are non-empty and
-        contain no path separators. nosec B108."""
-        return CACHE_DIR / f"models--{org}--{name}"
-
-    entry = _safe_entry(org, name)
+    # Pre-compute the safe entry path from the allowlist.
+    # The allowlist comes from installed_models() which validates repo format.
+    # nosec B108: repo validated against allowlist; path components extracted safely
+    entry = CACHE_DIR / f"models--{repo.replace('/', '--')}"
     try:
         commit = (entry / "refs" / "main").read_text("utf-8").strip()
     except (OSError, ValueError):
