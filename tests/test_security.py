@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import inspect
 import json
 import re
 import subprocess
@@ -102,17 +103,86 @@ class TestCrossSitePost:
         )
 
 
+def routes(app_module, method):
+    """Every /api path a handler method names, so a new route is covered too."""
+    source = inspect.getsource(getattr(app_module.Handler, method))
+    return sorted(set(re.findall(r'"(/api/[a-z0-9/_-]+)"', source)))
+
+
 class TestTokenDelivery:
-    def test_index_carries_the_launch_token(self, server, app_module):
-        for path in ("/", "/index.html"):
-            _, headers, body = request(server, "GET", path)
-            found = re.search(rb'name="mlx-token" content="([^"]+)"', body)
-            assert found and found.group(1).decode() == app_module.API_TOKEN
-            assert headers["X-Frame-Options"] == "DENY"
-            assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+    @pytest.mark.parametrize("path", ["/", "/index.html", "/app.js", "/style.css"])
+    def test_no_served_file_carries_the_token(self, server, app_module, path):
+        status, headers, body = request(server, "GET", path)
+        assert status == 200
+        for secret in (app_module.API_TOKEN.encode(), b"__MLX_TOKEN__"):
+            assert secret not in body
+        assert b'name="mlx-token"' not in body
+        assert headers["X-Frame-Options"] == "DENY"
+        assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+
+    def test_without_the_token_every_api_get_is_refused(self, server, app_module):
+        paths = [p for p in routes(app_module, "do_GET") if p != "/api/ping"]
+        assert "/api/state" in paths and len(paths) >= 8
+        for path in paths:
+            assert request(server, "GET", path)[0] == 403, path
+
+    def test_without_the_token_every_api_post_is_refused(self, server, app_module):
+        paths = [p for p in routes(app_module, "do_POST") if p != "/api/focus"]
+        assert "/api/delete" in paths and len(paths) >= 10
+        json_type = {"Content-Type": "application/json"}
+        for path in paths:
+            assert request(server, "POST", path, b"{}", json_type)[0] == 403, path
 
     def test_token_is_long_and_new_each_launch(self, app_module):
         assert len(app_module.API_TOKEN) >= 32
+
+    def test_the_refusal_says_how_to_get_a_new_session(self, server):
+        body = request(server, "GET", "/api/state")[2]
+        assert json.loads(body)["error"] == (
+            "invalid session token; open MLX Studio again from its icon"
+        )
+
+
+def with_origins(server, app_module, method, path, origins):
+    """A request with the token and one Origin header per value, repeats included."""
+    port = server.server_address[1]
+    own = f"http://127.0.0.1:{port}"
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.putrequest(method, path)
+        for key, value in good_headers(app_module).items():
+            conn.putheader(key, value)
+        for origin in origins:
+            conn.putheader("Origin", own if origin == "own" else origin)
+        body = b"{}" if method == "POST" else None
+        if body:
+            conn.putheader("Content-Length", str(len(body)))
+        conn.endheaders(body)
+        resp = conn.getresponse()
+        return resp.status, resp.read()
+    finally:
+        conn.close()
+
+
+CALLS = [("GET", "/api/logs"), ("POST", "/api/unload")]
+EVIL = "https://evil.example"
+
+
+class TestOrigin:
+    @pytest.mark.parametrize(("method", "path"), CALLS)
+    @pytest.mark.parametrize(
+        "origins",
+        [["own", EVIL], [EVIL, "own"], ["own", "null"], ["own", ""], ["null"], [""], [EVIL]],
+    )
+    def test_one_foreign_value_refuses_the_request(self, server, app_module, method, path, origins):
+        status, body = with_origins(server, app_module, method, path, origins)
+        assert status == 403
+        assert json.loads(body) == {"error": "forbidden origin"}
+
+    @pytest.mark.parametrize(("method", "path"), CALLS)
+    @pytest.mark.parametrize("origins", [["own", "own"], ["own"], []])
+    def test_own_or_no_origin_is_allowed(self, server, app_module, method, path, origins):
+        assert with_origins(server, app_module, method, path, origins)[0] == 200
 
 
 def fake_server(repo="org/model", port=8080):
@@ -206,7 +276,7 @@ class TestPidIdentity:
 
 class TestVersion:
     def test_release_version(self, app_module):
-        assert app_module.APP_VERSION == "2.0.9"
+        assert app_module.APP_VERSION == "2.0.10"
 
 
 # F3: exactly one Host header ------------------------------------------------ #

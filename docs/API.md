@@ -99,18 +99,32 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 |---|---|
 | 400 | `also` is not a list of strings, holds more than one name, repeats `repo`, or, with a second name, either model is not installed completely |
 | 400 | `/api/server/estimate` with `also` empty: `repo` is not installed completely |
-| 409 | `/api/server/start`: the pair does not fit the memory budget at 8,192 tokens each (the reply includes `estimate`), or a model is being deleted |
+| 409 | `/api/server/start` with a pair: it does not fit at 8,192 tokens each. `error` is the refusal text and `estimate` is the estimate reply below |
+| 409 | `/api/server/start`: a model is being deleted |
+
+A start with one model is never refused for memory. The app stops the running
+server before the new one starts and then checks memory again. If the pair is
+refused at that point, the call has already answered 200: the old server stays
+stopped, nothing new is started and `server.down_notice` holds the reason.
 
 ### `/api/load`
 
 | Answer | When |
 |---|---|
 | 400 | `repo` is not installed completely: for example an unknown name, a folder path or a partial download. This is checked before the busy checks |
-| 409 | A two-model server is running, and the Chat model's weights plus the server's memory would pass 0.52 of RAM **or** the live free memory check fails. The message gives the figures and says to stop the API server or choose a smaller model. The loaded Chat model stays; there is no override |
+| 409 | A two-model server is running and either check below fails. The message gives the figures. The loaded Chat model stays; there is no override |
 | 200 `already` | `repo` is the Chat model already loaded; neither check above applies |
 
 The memory 409 does not apply when the server is stopped, serves one model, or
-reports `multi_off`.
+reports `multi_off`. The two checks, in order:
+
+| Check | Refused when | Message starts |
+|---|---|---|
+| Fixed share | server memory + Chat weights > 0.52 × RAM. Server memory is the larger of the pair's calculated need and the measured use plus reply room and margin | `not enough memory: the API server keeps two models` |
+| Live free memory | Chat weights + max(0, need − server `active_bytes`) > free − 2 GB. Free memory is read afresh; without a measurement, `active_bytes` counts as 0. Skipped if free memory cannot be read | `not enough free memory:` |
+
+The old Chat model's memory is not counted as free, so replacing one Chat model
+with another may be refused until `/api/unload`.
 
 ### Estimate reply
 
@@ -118,16 +132,22 @@ All values are calculated, not measured.
 
 | Field | Meaning |
 |---|---|
-| `models[]` | `repo`, `weights_bytes`, `safe_context` (tokens, `null` if unknown), `context_limit` |
-| `weights_bytes`, `reply_bytes`, `cache_bytes`, `margin_bytes`, `total_bytes` | the memory sum; `cache_bytes` is 0 for one model |
-| `budget_bytes` | the smaller of 0.52 × RAM (less the Chat model's weights if loaded) and live free memory (free + speculative + purgeable + file-backed − 2 GB) |
-| `free_bytes` | live free memory in bytes, or `null` if `vm_stat` unreadable |
-| `held_bytes` | memory held by a running server (weights + cache); 0 if no server |
-| `fits` | whether the models can be kept loaded together (T ≥ 8,192 and admission plan admits) |
-| `refused` | refusal message with figures when `fits` is false |
-| `context_tokens` | context per model T (1,024-step, capped at 32,768) |
-| `cache_cap_bytes` | prompt cache cap = 2 × KV × T |
-| `free_is_limit` | true when live free memory is the limiting factor (not the 52% rule) |
+| `models[]` | `repo`, `weights_bytes`, `safe_context` (tokens, `null` if unknown), `context_limit`. For a pair, `safe_context` is the smaller of `context_tokens` and the model's limit |
+| `weights_bytes`, `reply_bytes`, `cache_bytes`, `margin_bytes`, `total_bytes` | the memory sum; `total_bytes` is the need. Reply room is 3.1 × cache bytes per token × context, largest model only; margin is 1.4 GB; `cache_bytes` is 0 for one model. A pair below 8,192 is summed at 8,192 |
+| `budget_bytes` | static = 0.52 × RAM, less the Chat model's weights if one is loaded or loading. For a pair with readable free memory: max(0, min(static, `held_bytes` + `free_bytes` − 2 GB)). Otherwise static |
+| `free_bytes` | free memory in bytes (cached up to 10 s for this route, read afresh for a start). `null` if `vm_stat` cannot be read, and always for one model, where it is not read |
+| `held_bytes` | measured `active_bytes` of the running server, which a restart gives back; 0 if there is none, for one model, or without `free_bytes` |
+| `context_tokens` | pair: context per model T, a multiple of 1,024, at most 32,768; below 8,192 (down to 0) means refused. One model: 32,768 |
+| `cache_cap_bytes` | pair: 2 × cache bytes per token × T (at least 8,192), using the larger of the two models' bytes per token (131,072 if a config cannot be read). 0 for one model |
+| `fits` | pair: T is at least 8,192 and the guard's admission rule accepts both. A start refuses a pair when this is `false`. One model: `false` if the guard's rule would count it as not fitting; it is still started |
+| `refused` | pair that does not fit: the refusal text. Otherwise `null` |
+| `free_is_limit` | `true` when `held_bytes` + `free_bytes` − 2 GB is below the static budget; `false` for one model or unreadable free memory |
+
+Refusal text, with free memory readable and the static budget large enough:
+`Not enough free memory for two models: X GB free, Y GB needed for 8K each. ...`.
+Y is the need at 8,192 plus the 2 GB reserve, less `held_bytes`; X is rounded down
+and Y up, to 0.1 GB. Otherwise:
+`Not enough memory for two models: X GB allowed for the API server, Y GB needed for 8K each. ...`.
 
 ### New fields in `/api/state` under `server`
 
@@ -135,11 +155,19 @@ All values are calculated, not measured.
 |---|---|
 | `repos` | models the server was started with; the first equals `repo` |
 | `resident` | models in memory now, the current one first |
-| `memory` | `budget_bytes`, `active_bytes`, `peak_bytes`, `measured`, or `null`; updated at a model load or switch, not after each reply |
-| `events` | the last 5 model events: load, switch, cache trim, eviction, load over budget, skipped preload, failed load; refresh events are not recorded |
+| `memory` | `budget_bytes`, `active_bytes`, `peak_bytes`, `measured`, or `null`. Updated at a model load or switch; with two models also at evictions, trims and about every 10 s from `mlx_lm`'s request loop |
+| `events` | the last 5 events, by name: `hit`, `load`, `evict`, `trim`, `alone`, `load-failed`, `preload-skipped`. The periodic refresh adds none |
 | `oversize` | models loaded alone although they do not fit the budget; empty list if none |
 | `multi_off` | why only one model is kept, when the installed `mlx_lm` no longer matches; else `null` |
-| `memory_low` | `null` or `{free_bytes, short_by_bytes}` when free memory dropped below need |
+| `context_tokens` | context per model of a running two-model server: the guard's figure, or the one the app started it with. `null` for one model or with `multi_off`. It does not depend on `events` |
+| `preload_done` | `true` once the guard has finished preloading, however that ended (both loaded, second skipped, or a load failed); else `false` |
+| `memory_low` | `null` or `{free_bytes, short_by_bytes}`. Stays `null` until `preload_done` is `true`, without a measurement, if free memory cannot be read, for one model and with `multi_off` |
+
+`short_by_bytes` is (need − 0.4 GB − `active_bytes`) − (`free_bytes` − 2 GB), and
+`memory_low` is set when that is above 0. Need is the larger of the pair asked for
+and the pair loaded now, at the running context. The 0.4 GB process overhead is
+taken off because the running process already uses it. Nothing is unloaded
+because of this field.
 
 ### Guard flags on port 8080
 
@@ -151,15 +179,24 @@ the start.
 |---|---|
 | `--studio-also-model` | second model id |
 | `--studio-max-models` | `1` or `2` (the app sends `2`) |
-| `--studio-budget-bytes` | memory budget at start, at least 1 |
+| `--studio-budget-bytes` | the estimate's `budget_bytes` at start, at least 1 |
 | `--studio-kv-tokens` | context per model T, in tokens |
 
-The app also passes `--prompt-cache-bytes` (2 × KV × T bytes) then. `mlx_lm` trims to it only
-on its batch path, so in two-model mode the guard also sets the cache's own byte
-limit, which covers requests run one at a time (for example with `seed`). At each
-load the guard reads the file in `MLX_STUDIO_BUDGET_FILE` and uses the lower of it
-and the start budget ([DATABASE.md](DATABASE.md)). Clients keep using one base URL
-and choose by the `model` field. Models take turns.
+The app also passes `--prompt-cache-bytes` (`cache_cap_bytes`) then. `mlx_lm`
+trims to it only on its batch path, so in two-model mode the guard also sets the
+cache's own byte limit, which covers requests run one at a time (for example with
+`seed`). A one-model start passes none of these flags, so it has no byte cap from
+the app. If the guard falls back to one model (`multi_off`), the flags were still
+passed, so `mlx_lm` receives the cache cap but the guard sets no byte limit.
+
+At each load of a model that is not in memory, at the preload of the second model
+and at each periodic refresh, the guard works out its budget as the smallest of:
+the start budget, the number in the `MLX_STUDIO_BUDGET_FILE` file
+([DATABASE.md](DATABASE.md)), and its own active memory plus free memory minus
+2 GB (skipped, with one line on stderr, if `vm_stat` cannot be read). It never
+goes above the start budget. A switch between loaded models loads nothing and is
+not checked. Clients keep using one base URL and choose by the `model` field.
+Models take turns.
 
 ## 6. Chat stream
 

@@ -90,6 +90,8 @@ classDiagram
         oversize: string[] (unreleased)
         multi_off: string or null (unreleased)
         memory_low: object or null (unreleased)
+        context_tokens: int or null (unreleased)
+        preload_done: bool (unreleased)
     }
 
     class Download {
@@ -132,11 +134,13 @@ classDiagram
 | `server.running` | Child process alive | Server pill, nav dot |
 | `server.lines` | Last 400 stdout lines | Server console |
 | `server.repos`, `server.resident` (unreleased) | Models started with; models in memory, current first | Server pill |
-| `server.memory` (unreleased) | Measured bytes at the last load or switch | Memory line on API Server |
+| `server.memory` (unreleased) | Measured bytes at the last load or switch; with two models also refreshed about every 10 s | Memory line on API Server |
 | `server.events` (unreleased) | Recent load, trim and eviction events; refresh events not recorded | Notice on API Server, server console |
-| `server.oversize` (unreleased) | Models loaded alone over the budget | **Loaded without enough memory** notice |
+| `server.oversize` (unreleased) | Models loaded alone although they do not fit | **Loaded without enough memory** notice |
 | `server.multi_off` (unreleased) | Why only one model is kept | Notice on API Server |
-| `server.memory_low` (unreleased) | `null` or `{free_bytes, short_by_bytes}` when free memory dropped | **Free memory is low** notice |
+| `server.memory_low` (unreleased) | `null` or `{free_bytes, short_by_bytes}` when free memory is short of what the server may still take; `null` until preload ends | **Free memory is low** notice |
+| `server.context_tokens` (unreleased) | Context per model of a two-model server, else `null` | Prompt length line, **Loaded without enough memory** text |
+| `server.preload_done` (unreleased) | Preload has ended, however it ended | Gate for `server.memory_low` |
 | `downloads[]` | Per-repo download status | Download cards |
 | `install.lines` | pip output | Setup console |
 | `generating` | A chat stream is in flight | Send/Stop visibility |

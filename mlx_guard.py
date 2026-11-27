@@ -732,7 +732,14 @@ def install_multi(server, opts: Options, status, figures, is_cached) -> None:
 
     def preload(self):
         """Load the first model, then the second if both fit, and end on the first."""
-        load_default(self)
+        try:
+            load_default(self)
+            preload_second(self)
+        finally:
+            # MLX Studio waits for this before it compares memory, however it ended.
+            status(preload_done=True)
+
+    def preload_second(self):
         repo = opts.also
         if not repo:
             return
@@ -788,8 +795,6 @@ def install_multi(server, opts: Options, status, figures, is_cached) -> None:
         start_generator(self, model_provider, prompt_cache)
 
     provider_class._load = _load
-    provider_class.load_default = preload
-    generator.__init__ = __init__
     provider_class.load_default = preload
     generator.__init__ = __init__
 

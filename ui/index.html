@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="mlx-token" content="__MLX_TOKEN__" />
 <title>MLX Studio</title>
 <link rel="icon" href="data:," />
 <link rel="stylesheet" href="/style.css" />
@@ -78,6 +77,8 @@
           <button class="btn btn-ghost" id="newChatBtn">＋ New chat</button>
         </div>
       </header>
+
+      <p class="hint chat-note" id="chatServerNote" hidden></p>
 
       <div class="chat-scroll" id="chatScroll">
         <div class="empty" id="chatEmpty">
@@ -206,14 +207,14 @@
             <input type="checkbox" id="serverBackground" />
             <span>Background</span>
           </label>
-          <button class="btn btn-primary" id="serverStartBtn">Start</button>
+          <button class="btn btn-primary" id="serverStartBtn" aria-describedby="serverStartWhy">Start</button>
           <button class="btn btn-ghost" id="serverStopBtn" hidden>Stop</button>
         </div>
       </header>
       <div class="scroll">
         <div class="notice" id="serverUnguarded" role="alert" hidden>
           <div class="notice-body">
-            <div class="notice-title">Restart the API server to apply the 2.0.9 protection</div>
+            <div class="notice-title">Restart the API server to apply the 2.0.10 protection</div>
             <div class="notice-text">This server was started without the request guard (for example by an older version of MLX Studio), so web pages open in your browser may be able to use it. Restarting loads the same model again.</div>
           </div>
           <div class="notice-actions">
@@ -228,6 +229,38 @@
           <div class="notice-actions">
             <button class="btn btn-mini btn-primary" id="serverRestartBtn">Restart</button>
             <button class="btn btn-mini btn-ghost" id="serverNoticeDismiss">Dismiss</button>
+          </div>
+        </div>
+        <div class="panel server-pair" role="group" aria-label="Second model" aria-describedby="serverStartWhy">
+          <div class="panel-head">
+            <span>Also keep loaded (optional)</span>
+          </div>
+        <div class="picker">
+          <select id="serverModel2Select" class="select" aria-label="Second model to keep loaded (optional)" hidden></select>
+          <div class="search-field">
+            <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
+            <input type="text" class="input picker-input" id="serverModel2SelectSearch" role="combobox" placeholder="Also keep loaded (optional)…" aria-label="Also keep loaded (optional)" aria-describedby="serverModel2SelectChosen" aria-autocomplete="list" aria-expanded="false" aria-controls="serverModel2SelectList" autocomplete="off" spellcheck="false" />
+            <button type="button" class="search-clear" id="serverModel2SelectClear" aria-label="Clear second model search" title="Clear search" tabindex="-1" hidden>×</button>
+          </div>
+          <div class="picker-chosen" id="serverModel2SelectChosen">Selected: none</div>
+          <ul class="picker-list" id="serverModel2SelectList" role="listbox" aria-label="Models to also keep loaded" hidden></ul>
+          <div class="sr-only" id="serverModel2SelectStatus" role="status"></div>
+        </div>
+          <p class="hint">Both models answer on the same address. They take turns: a request for one waits until the other's replies finish.</p>
+          <!-- The status line below says the same words to a screen reader. -->
+          <p class="hint" id="serverEstimate" hidden aria-hidden="true"></p>
+          <div class="sr-only" id="serverStartWhy" role="status"></div>
+          <p class="hint" id="serverContextHint" hidden></p>
+          <p class="hint" id="serverMemory" hidden></p>
+          <p class="hint" id="serverPromptHint" hidden></p>
+        </div>
+        <!-- Always in the page, so a screen reader hears the warning appear in it. -->
+        <div role="status">
+          <div class="notice" id="serverMulti" hidden>
+            <div class="notice-body">
+              <div class="notice-title" id="serverMultiTitle">Loaded models changed</div>
+              <div class="notice-text" id="serverMultiText"></div>
+            </div>
           </div>
         </div>
         <div class="notice" id="serverToolsWarn" hidden>
@@ -418,6 +451,10 @@
     </section>
 
   </main>
+</div>
+<div class="load-problem" id="loadProblemBox">
+  <div id="loadProblem" role="alert"></div>
+  <button class="btn btn-mini btn-ghost" id="loadProblemDismiss" type="button" hidden>Dismiss</button>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="/app.js"></script>

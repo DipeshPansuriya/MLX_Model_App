@@ -399,6 +399,10 @@ The four open items are one plan limitation (6.6, 6.7), one stale artifact (9.4)
 and one pending approval gate (3.10), all named in the documents rather than
 hidden.
 
+These scores are the 2026-11-24 snapshot of 2.0.0 and have not been re-scored.
+The stale DMG noted for 9.4 does not apply to `v2.0.9`, whose release audit
+passed with 0 failures (2026-11-26, [DEPLOYMENT.md](DEPLOYMENT.md) section 5.3).
+
 ---
 
 ## 14. Order of work

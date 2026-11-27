@@ -256,7 +256,7 @@ function render(snap) {
   const runningDot = unguarded ? "dot-warn" : "dot-ok";
   $("#serverUnguarded").hidden = !unguarded;
   if (unguarded && !state.lastServerUnguarded) {
-    toast("Restart the API server to apply the 2.0.9 protection (API Server page)", true);
+    toast("Restart the API server to apply the 2.0.10 protection (API Server page)", true);
   }
   state.lastServerUnguarded = unguarded;
   setHTML($("#serverState"), server.running
@@ -442,21 +442,19 @@ function multiNotice(server) {
     const budget = server.memory?.budget_bytes;
     const space = budget == null ? "the memory" : `the ${gb(budget)} GB`;
     const tokens = server.context_tokens;
-    // Only say "The other model was unloaded" if there was an actual eviction.
+    // Only an eviction shows that the other model was unloaded; a first load has none.
     const events = server.events || [];
     const evicted = new Set(
       events.filter((e) => e.event === "evict").map((e) => e.model)
     );
     const otherModel = (server.repos || []).find((r) => !oversize.includes(r));
     const wasEvicted = otherModel && evicted.has(otherModel);
-    const action = wasEvicted
-      ? "The other model was unloaded."
-      : "It was loaded alone because it did not fit with another model.";
+    const unloaded = wasEvicted ? "The other model was unloaded. " : "";
     return ["Loaded without enough memory",
       `${oversize.map(shortName).join(", ")} was loaded on its own: it does not fit in ` +
       `${space} the API server may use now` +
       (tokens ? `, with room for a ${tokens}-token reply` : "") +
-      `. ${action} macOS may slow down or stop the API server. ` +
+      `. ${unloaded}macOS may slow down or stop the API server. ` +
       "Free some memory or choose a smaller model."];
   }
   if (server.memory_low) {
@@ -500,14 +498,14 @@ function renderServerMemory(server) {
     // Only a two-model server is held to a budget.
     setText($("#serverMemory"), holdsTwo(server)
       ? `${used} of a ${gb(memory.budget_bytes)} GB budget. ` +
-        "Measured at the last model load or switch."
+        "Measured by the API server, refreshed about every 10 s."
       : `${used}. Measured at the last model load. A model on the Chat tab is not included.`);
   }
   const tokens = holdsTwo(server) ? server.context_tokens : null;
   $("#serverPromptHint").hidden = !tokens;
   setText($("#serverPromptHint"), tokens
-    ? `Prompts longer than ${tokens} tokens are not kept in cache; ` +
-      "the next turn reads them again."
+    ? `Keep prompts to ${tokens} tokens or fewer. The prompt cache holds about ` +
+      `${2 * tokens} tokens in total; above that, older prompts are dropped and read again.`
     : "");
   const [title, notice] = multiNotice(server);
   $("#serverMulti").hidden = !notice;
@@ -530,15 +528,12 @@ async function refreshEstimate(snap) {
     : "";
   const same = key === (state.estimateKey || "");
   const running = !!snap?.server?.running;
-  const runningRepos = snap?.server?.repos || [];
-  const choiceRepos = choice.also ? [choice.repo, choice.also[0]] : [choice.repo];
-  const isDifferentPair = running && JSON.stringify(runningRepos.sort()) !== JSON.stringify(choiceRepos.sort());
   if (same && (!(Date.now() >= state.estimateRetryAt) || (running && state.estimated))) return;
   state.estimateKey = key;
   state.estimateRetryAt = Infinity;
   if (!same) {
     state.estimated = false;
-    showEstimate(null, "", isDifferentPair);
+    showEstimate(null, "");
   }
   if (!key) return;
   try {
@@ -550,27 +545,26 @@ async function refreshEstimate(snap) {
     state.estimateRetryAt = Date.now() + ESTIMATE_RETRY_MS;
     state.estimated = true;
     // A running pair is not called refused: its own memory is what is in use.
-    showEstimate(running && estimate.fits === false ? null : estimate, "", isDifferentPair);
+    showEstimate(running && estimate.fits === false ? null : estimate);
   } catch (err) {
     if (state.estimateKey !== key) return;
     state.estimated = false;
     state.estimateRetryAt = Date.now() + ESTIMATE_RETRY_MS;
-    showEstimate(null, err.message, isDifferentPair);
+    showEstimate(null, err.message);
   }
 }
 
 const FULL_CONTEXT = 32768;
 
 // What the picked pair will get, or why it cannot be started.
-function estimateWords(estimate, isDifferentPair) {
+function estimateWords(estimate) {
   const unread = estimate.free_bytes === null;
   const fallback = unread ? " Free memory could not be read; using the fixed 52% rule." : "";
   if (estimate.fits === false) return `${estimate.refused}${fallback}`;
 
   let uses;
-  if (isDifferentPair && estimate.held_bytes != null && estimate.free_bytes != null) {
-    // When estimating for a different pair than the running server, the running
-    // server's memory would be freed. Show the total available and the need.
+  if (!unread && estimate.held_bytes > 0) {
+    // A running server's memory is not in the free figure, and a new start frees it.
     const available = estimate.free_bytes + estimate.held_bytes;
     const need = estimate.total_bytes;
     if (need > available) {
@@ -592,7 +586,7 @@ function estimateWords(estimate, isDifferentPair) {
     (unread ? fallback : shrinkNote);
 }
 
-function showEstimate(estimate, error, isDifferentPair) {
+function showEstimate(estimate, error) {
   $("#serverStartBtn").disabled = estimate?.fits === false;
   $("#serverEstimate").hidden = !estimate && !error;
   // No context advice for a pair that cannot be started.
@@ -608,7 +602,7 @@ function showEstimate(estimate, error, isDifferentPair) {
     setText($("#serverContextHint"), "");
     return;
   }
-  say(estimateWords(estimate, isDifferentPair));
+  say(estimateWords(estimate));
   setText($("#serverContextHint"), !advise ? "" :
     "Safe context while both are loaded (estimate): " +
     estimate.models.map((m) => {

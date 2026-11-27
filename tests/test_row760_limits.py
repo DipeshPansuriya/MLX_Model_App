@@ -442,11 +442,8 @@ class TestEstimate:
     # Preload case - no memory_low during preload
     def test_no_memory_low_during_preload(self, app_module, monkeypatch, ram, free_memory):
         """memory_low should not be set while preload is in progress."""
-        # Simulate preload in progress: only first model loaded, no hit event yet
-        events = [
-            {"event": "load", "model": "org/a", "at": 1000},
-            # No hit event for org/a yet - preload still in progress
-        ]
+        # Preload in progress: only the first model loaded, preload_done not written yet
+        events = [{"event": "load", "model": "org/a", "at": 1000}]
         app_module.STATE.server_pid = 4242
         apps.resident_file(
             app_module,
@@ -823,7 +820,8 @@ def test_memory_low_and_the_prompt_length(tmp_path):
         "slow down. Close apps, or restart the server for a smaller context."
     )
     assert prompt == (
-        "Prompts longer than 10240 tokens are not kept in cache; the next turn reads them again."
+        "Keep prompts to 10240 tokens or fewer. The prompt cache holds about 20480 tokens "
+        "in total; above that, older prompts are dropped and read again."
     )
 
 
@@ -839,7 +837,7 @@ def test_the_oversize_words(tmp_path):
     assert out[0] == "Loaded without enough memory"
     assert out[1] == (
         "c was loaded on its own: it does not fit in the 13.1 GB the API server may use now, "
-        "with room for a 10240-token reply. It was loaded alone because it did not fit with another model. macOS may slow down "
+        "with room for a 10240-token reply. macOS may slow down "
         "or stop the API server. Free some memory or choose a smaller model."
     )
     assert "larger than the memory budget" not in out[1]

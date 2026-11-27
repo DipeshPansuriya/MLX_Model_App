@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.9"
+APP_VERSION = "2.0.10"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
@@ -1455,6 +1455,7 @@ def _resident_view(pid: int | None) -> dict:
         if isinstance(events, list)
         else [],
         "multi_off": str(data.get("reason")) if data.get("multi") is False else None,
+        "preload_done": data.get("preload_done") is True,
     }
 
 
@@ -1572,17 +1573,10 @@ def _server_limits(asked: list[str], view: dict) -> dict:
     limits = {"context_tokens": None, "memory_low": None}
     if len(asked) < 2 or view["multi_off"] is not None:
         return limits
-    # No memory_low until preload finishes: preload ends with a "hit" on the first model.
-    events = view.get("events", [])
-    if events:
-        last = events[-1]
-        first_model = asked[0] if asked else None
-        if not (last.get("event") == "hit" and last.get("model") == first_model):
-            # Preload in progress or server just started; wait for stable state.
-            return limits
     limits["context_tokens"] = view["context_tokens"] or STATE.server_context
-    # Without a measurement there is nothing to compare the free memory with.
-    free = free_memory() if view["memory"] else None
+    # Without a measurement there is nothing to compare the free memory with, and a
+    # half-done preload would look like memory other apps took.
+    free = free_memory() if view["preload_done"] and view["memory"] else None
     if free is None:
         return limits
     guard = _guard_module()

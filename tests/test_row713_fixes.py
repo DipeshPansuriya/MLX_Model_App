@@ -48,9 +48,8 @@ def serving(app, monkeypatch, repos=(A, B), **resident):
     # As the app records it at a start; the smallest context two models run with.
     app.STATE.server_context = 8192
     if resident:
-        # Preload completed: "hit" on the first model (real server writes this after load)
-        events = resident.pop("events", [{"event": "hit", "model": repos[0], "at": 0}])
-        apps.resident_file(app, 4242, events=events, **resident)
+        # As the guard leaves it once the preload is over.
+        apps.resident_file(app, 4242, **{"preload_done": True, **resident})
 
 
 @pytest.fixture

@@ -7,10 +7,14 @@ bundle. HOME is temporary, so no real log is touched.
 
 from __future__ import annotations
 
+import fcntl
+import os
 import re
 import shutil
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -72,13 +76,15 @@ class Bundle:
         )
         return subprocess.run(
             [str(self.binary)],
-            env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"},
-            cwd=str(self.base),
+            **self.surroundings(),
             capture_output=True,
             text=True,
             timeout=60,
             check=False,
         )
+
+    def surroundings(self) -> dict:
+        return {"env": {"HOME": str(self.home), "PATH": "/usr/bin:/bin"}, "cwd": str(self.base)}
 
     def text(self) -> str:
         return self.log.read_text(encoding="utf-8")
@@ -190,6 +196,153 @@ def test_keeps_logging_when_rotation_fails(bundle):
     assert bundle.run([good]).returncode == 0
     assert "ran good app.py" in bundle.text()
     assert (blocker / "keep").read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize("size", [2 * 1024 * 1024, 10], ids=["large", "small"])
+@pytest.mark.parametrize("mode", [0o400, 0o000], ids=["read-only", "no-access"])
+def test_a_log_that_cannot_be_written_is_moved_aside(bundle, size, mode):
+    bundle.logs.mkdir(parents=True)
+    bundle.log.write_text("x" * size, encoding="utf-8")
+    bundle.log.chmod(mode)
+    good = fake_python(bundle.base, "good", 20)
+    done = bundle.run([good])
+    assert done.returncode == 0
+    assert done.stdout == ""
+    assert done.stderr == ""
+    assert "ran good app.py" in bundle.text()
+    assert bundle.log.stat().st_mode & 0o777 == 0o600
+    assert (bundle.logs / "launch.log.1").stat().st_size == size
+
+
+def test_starts_when_an_unwritable_log_cannot_be_moved(bundle):
+    bundle.logs.mkdir(parents=True)
+    bundle.log.write_text("old", encoding="utf-8")
+    bundle.log.chmod(0o400)
+    good = fake_python(bundle.base, "good", 20)
+    bundle.logs.chmod(0o500)
+    try:
+        done = bundle.run([good])
+    finally:
+        bundle.logs.chmod(0o700)
+    assert done.returncode == 0
+    assert "ran good app.py" in done.stdout
+    assert bundle.text() == "old"
+    assert not (bundle.logs / "launch.log.1").exists()
+
+
+def test_a_directory_at_the_log_path_is_left_alone(bundle):
+    bundle.log.mkdir(parents=True)
+    good = fake_python(bundle.base, "good", 20)
+    done = bundle.run([good])
+    assert done.returncode == 0
+    assert "ran good app.py" in done.stdout
+    assert bundle.log.is_dir()
+    assert not (bundle.logs / "launch.log.1").exists()
+
+
+def test_a_symlink_to_an_unwritable_file_is_not_moved(bundle):
+    bundle.logs.mkdir(parents=True)
+    target = bundle.base / "elsewhere.txt"
+    target.write_text("keep", encoding="utf-8")
+    target.chmod(0o400)
+    bundle.log.symlink_to(target)
+    good = fake_python(bundle.base, "good", 20)
+    assert bundle.run([good]).returncode == 0
+    assert bundle.log.is_symlink()
+    assert not (bundle.logs / "launch.log.1").exists()
+    assert target.read_text(encoding="utf-8") == "keep"
+    assert target.stat().st_mode & 0o777 == 0o400
+
+
+@contextmanager
+def locked(folder: Path):
+    """Hold the folder lock a launch takes while it opens and moves the logs."""
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize(
+    ("size", "mode"), [(10, 0o400), (2 * 1024 * 1024, 0o600)], ids=["unwritable", "large"]
+)
+def test_a_second_launch_waits_and_keeps_the_log_the_first_moved_aside(bundle, size, mode):
+    good = fake_python(bundle.base, "good", 20)
+    bundle.run([good])  # builds the binary; its first start is the slow one
+    old = bundle.logs / "launch.log.1"
+    bundle.log.write_text("h" * size, encoding="utf-8")
+    bundle.log.chmod(mode)
+    with locked(bundle.logs):  # stands in for the first launch
+        second = subprocess.Popen([str(bundle.binary)], **bundle.surroundings())
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not old.exists():
+            time.sleep(0.02)
+        moved_early = old.exists()
+        if not moved_early:
+            # What the first launch does before it lets go of the lock.
+            bundle.log.rename(old)
+            bundle.log.write_text("first launch\n", encoding="utf-8")
+    assert second.wait(timeout=60) == 0
+    assert not moved_early, "the log was moved while another launch held the lock"
+    assert old.read_text(encoding="utf-8") == "h" * size
+    assert bundle.text().startswith("first launch\n")
+    assert "ran good app.py" in bundle.text()
+
+
+def lock_is_taken(folder: Path) -> bool:
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def test_the_lock_is_held_while_the_log_is_opened(bundle):
+    good = fake_python(bundle.base, "good", 20)
+    bundle.run([good])
+    bundle.log.unlink()
+    os.mkfifo(bundle.log)  # opening it for writing blocks until someone reads
+    first = subprocess.Popen([str(bundle.binary)], **bundle.surroundings())
+    try:
+        deadline = time.monotonic() + 3
+        seen = 0
+        while time.monotonic() < deadline and seen < 3:
+            time.sleep(0.1)
+            seen = seen + 1 if lock_is_taken(bundle.logs) else 0
+    finally:
+        reader = os.open(bundle.log, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            code = first.wait(timeout=60)
+        finally:
+            os.close(reader)
+    assert seen == 3, "the log was opened without holding the lock"
+    assert code == 0
+
+
+def test_a_lock_that_is_never_released_does_not_stop_the_start(bundle):
+    bundle.logs.mkdir(parents=True)
+    good = fake_python(bundle.base, "good", 20)
+    with locked(bundle.logs):
+        done = bundle.run([good])
+    assert done.returncode == 0
+    assert "ran good app.py" in bundle.text()
+
+
+def test_the_app_does_not_inherit_the_log_lock(bundle):
+    (bundle.resources / "app.py").write_text(
+        "import fcntl, os\n"
+        'fd = os.open(os.path.expanduser("~/.mlx_studio/logs"), os.O_RDONLY)\n'
+        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        'print("log lock is free")\n',
+        encoding="utf-8",
+    )
+    assert bundle.run([sys.executable]).returncode == 0, bundle.text()
+    assert "log lock is free" in bundle.text()
 
 
 def test_the_log_size_check_uses_the_open_descriptor():

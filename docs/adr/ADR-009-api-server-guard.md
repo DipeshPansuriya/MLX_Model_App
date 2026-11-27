@@ -65,6 +65,12 @@ argument that is `null` where the request's schema only allows leaving it out
 (`drop_null_arguments`; full rule in [API.md](../API.md) section 1). Without it,
 a client with strict schema checks rejects the call.
 
+**Update 2026-11-26 (unreleased, 2.0.10 source): two models.** The guard can also
+keep two models loaded (`--studio-*` flags). The request checks are unchanged. If
+only these extra hooks have moved in `mlx_lm`, the server still starts and keeps
+one model; missing request-check hooks still stop the start. Decision recorded in
+[ADR-010](ADR-010-two-models-one-process.md).
+
 ## 5. Consequences
 
 | Good | Cost |

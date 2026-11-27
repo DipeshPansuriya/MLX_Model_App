@@ -1,7 +1,7 @@
 ---
 type: Security
 title: "Security — MLX Studio"
-status: "Matches the 2.0.9 source tree (not released)"
+status: "2.0.9 released 2026-11-26; parts marked unreleased describe the working source"
 date: 2026-11-25
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -62,11 +62,27 @@ There is no account system and no telemetry in the app.
 | Framing by another page is denied | — | response headers |
 | Every reply carries `X-Content-Type-Options: nosniff` | — | `end_headers` |
 
-The token is new on every app start and is written into `index.html` when it is
-served. `GET /` needs no token, so any local program or macOS user can read it
-from there: it is a defence against web pages, **not** against local software.
-`/api/ping` stays open because a second launch cannot know the token; it returns
-only `ok` and the version.
+In 2.0.9 the token is new on every app start and is written into `index.html`
+when it is served. `GET /` needs no token, so any local program or macOS user can
+read it from there: it is a defence against web pages, **not** against local
+software. `/api/ping` stays open because a second launch cannot know the token; it
+returns only `ok` and the version.
+
+**Unreleased (2.0.10 source)**
+
+| Control | Detail |
+|---|---|
+| Token handoff | The token is never served. The window opens `/#t=<token>`; the fragment is not sent over HTTP. The page keeps it in `sessionStorage` and removes it from the address bar. Without it the page shows one message and sends no requests |
+| Browser mode | The address goes to `osascript` on standard input. If that fails, it is opened inside the app's process (`NSWorkspace`); if that fails too, nothing is opened and the user is told to quit and open the app from its icon. The token is never put on a command line. A second launch makes the running app open a new tab, at most once every 3 seconds (`/api/focus`). Checked with stubs, not live |
+| Origin | Every `Origin` header must be one of the two app origins, not only the first |
+| Content type | A POST needs exactly one `Content-Type` header, and it must be `application/json` |
+| Window library logging | `PYWEBVIEW_LOG` is removed from the environment before `pywebview` is loaded |
+| Model load | `/api/load` accepts a completely installed model, or the one already loaded; any other name gets 400 |
+| Content-Security-Policy | Sent from `end_headers` on every reply: `default-src 'self'; script-src 'self'; style-src 'self'` plus one hash for the style `pywebview` 6.2.1 adds; `style-src-attr 'unsafe-inline'` (progress bar); `img-src 'self' data:`; `object-src`, `base-uri`, `form-action` and `frame-ancestors` set to `'none'` |
+| UI rule | No inline script, event handler or `eval`. A `pywebview` upgrade needs the style hash and the window rechecked; `tests/test_row603_csp.py` fails on purpose |
+
+The token is still not user authentication: programs running as the same user are
+not shut out.
 
 Static files come from a list built at startup from `ui/` (html, css, js, svg,
 png, ico). The request path is only a lookup key, so it never builds a
@@ -96,6 +112,20 @@ MLX Studio starts `mlx_lm server` through `mlx_guard.py`.
 Clients must use a loopback host name, send `Content-Type: application/json` on
 POST, and name a model that is already downloaded. See
 [ADR-009](adr/ADR-009-api-server-guard.md).
+
+**Two models (unreleased 2.0.10 source)**
+
+| Control | Detail |
+|---|---|
+| New route | `POST /api/server/estimate` is read-only and has the same token, Host, Origin and JSON checks as the other POST routes |
+| Second model | The `also` field accepts one other model that is installed completely; anything else gets 400. A one-model estimate also needs an installed model. The guard checks the preload name by the same rules as a request's model name |
+| Chat model | A Chat load that does not fit beside the two-model server, by the 52% rule or by live free memory, is refused (409). A model that does not fit the budget is loaded alone and the view warns |
+| Memory limits | Context per model is at most 32,768 tokens and follows the smaller of 0.52 × RAM and live free memory; below 8,192 a pair is refused. The prompt cache is capped at 2 × cache bytes per token × context. This limits availability risk; it is not an access control. One-model servers have no such check |
+| Free memory read | `/usr/bin/vm_stat`, called by absolute path with no arguments and no shell, 2 s timeout; only its text is parsed. On any failure the fixed 52% rule is used. The check then refuses nothing for that reason alone |
+| Budget file | `server.budget` is written with mode `0600` to a new file, never through a link. The guard reads only a plain file with a number above 0, and the file can only lower the budget, never raise it above the start figure |
+| Served-names file | The guard does not open it through a link |
+| Request checks | The model, draft, adapter and image rules above are unchanged. The server stays offline and downloads nothing |
+| Status file | `server.resident.json` is written with mode `0600`; the app uses it only when its process id is the running server's |
 
 ### 4.3 Destructive actions
 
@@ -141,7 +171,15 @@ diagnostic bundle before sharing: it includes the logs, local paths, model names
 
 | Risk | State | Reason or workaround |
 |---|---|---|
-| Local processes and users can call 8765. Reads and POSTs need the token, but any local caller can get it from `index.html`, then read state and logs, export diagnostics, delete models or run install | Accepted | Single-user desktop. Quit the app when others share the Mac |
+| 2.0.9: local processes and users can call 8765. Reads and POSTs need the token, but any local caller can get it from `index.html`, then read state and logs, export diagnostics, delete models or run install | Accepted in 2.0.9; changed in the unreleased source (token not served, section 4.1) | Single-user desktop. Quit the app when others share the Mac |
+| Unreleased source: programs running as the same user are still not shut out of the app | Accepted | Same advice |
+| Unreleased, browser mode (L1): the token could reach the `/usr/bin/open` command line if `osascript` failed | Fixed in the unreleased source (section 4.1); checked with stubs, not live | Not in any released build |
+| Unreleased, browser mode (L2): the browser may keep `/#t=<token>` in history, stored before the page removes it from the address bar | Known limit, documented; the security re-check rated it acceptable for a 2.0.10 pre-release. Not checked in a live browser | The token is new per launch and stops working when the app quits. The native window is the default |
+| Unreleased, two models (L3): a model that does not fit the budget is still loaded on its own, and any local program using 8080 can switch among downloaded models. The Chat check counts weights only | Warning and Chat-load refusal added; the rest is a limit by design (availability, local). Real memory effect not measured | Stop the server when not in use |
+| Unreleased, two models: the memory limits (2 GB reserve, 3.1 reply factor from one data point, 0.4 GB process overhead, whether `vm_stat` free memory is available without swapping) rest on calculation. An earlier real run, before these limits, had system swap rise from 0 to 4.60 GB | Open: the real two-model re-test has not run | Watch memory pressure; start one model if it rises |
+| Unreleased, two models: after a killed server, free memory may be read before macOS returns it; a model with a context limit below 8,192 can make the "needed" figure too small; the status figures can be about 10 s old, or older during a reply served one at a time | Known limits (availability) | Start again after a moment; stop the server if memory pressure rises |
+| Unreleased, two models: a switch between loaded models does no memory check. The prompt cache byte limit now covers requests run one at a time | Open limit; real growth not measured | Stop the server if memory pressure rises |
+| Unreleased source: the app process does not set `HF_HUB_OFFLINE` (only the API server does), so loading an installed model on the Chat tab may contact the Hub, and `mlx_lm.load` may prefer a local folder with the same relative name in the app's working folder | UNVERIFIED: neither was tested | None yet |
 | No authentication on 8080; local processes can generate and switch between downloaded models | Accepted | Stop the server when not in use |
 | App bundle is ad-hoc signed, the `.pkg` is unsigned, nothing is notarised | Accepted | No Apple Developer account, [ADR-007](adr/ADR-007-adhoc-signing.md) |
 | One-line installer runs a script from `main` and takes checksums from the same repository | Accepted | Proves the download is intact, not who published it. Read the script first |
@@ -149,7 +187,8 @@ diagnostic bundle before sharing: it includes the logs, local paths, model names
 | Package versions are pinned; `pip` is not run with hash checking | Accepted | — |
 | No extra integrity check on model weights beyond `huggingface_hub` | Accepted | — |
 | A background server started by an older build is adopted and stays unguarded until restarted; the app flags it | Release step | If the app shows **server unprotected**, open API Server and press **Restart now** |
-| The page's Content-Security-Policy only sets `frame-ancestors 'none'`; no `default-src` or `script-src`, so an unescaped value would be able to run inline script. No such place was found in the new cards, search fields or download cards | Open, Low: known issue in 2.0.9 | Hardening not yet done |
+| The page's Content-Security-Policy only sets `frame-ancestors 'none'`; no `default-src` or `script-src`, so an unescaped value would be able to run inline script. No such place was found in the new cards, search fields or download cards | Known issue in 2.0.9; fixed in the unreleased source (section 4.1) | Not in any released build |
+| Unreleased source (I6): the policy keeps `style-src-attr 'unsafe-inline'` for inline styles (progress bar width and fixed `style` attributes) | Known limit, documented (Info); scripts are not affected | None needed |
 
 ## 6. Hardening guidance for users
 
@@ -180,8 +219,14 @@ diagnostic bundle before sharing: it includes the logs, local paths, model names
 | App server Host, Origin, token and body rules | `tests/test_security.py`; full run of 714 passed reported for this tree, not re-run for this document | 2026-11-25 |
 | Image URL refusal with the installed `mlx_lm` handler and a stubbed download | `tests/test_guard.py`, same reported run | 2026-11-25 |
 | `null` argument rule: code review and edge-case probes; full suite 1059 passed | Independent security check, offline; live server not probed by it | 2026-11-26 |
-| Guard with a real model, rebuilt app, GUI client | — | UNVERIFIED |
-| Signature, checksums and dependency scan for 2.0.9 | — | UNVERIFIED; run `./scripts/security_audit.sh` |
+| Released app, installed: guarded server with the 1M model answered a chat; foreign `Origin` (8080 and 8765) and foreign `Host` got 403 | Release run on one Mac ([DEPLOYMENT.md](DEPLOYMENT.md) §11) | 2026-11-26 |
+| GUI client, app window and UI clicks | — | UNVERIFIED |
+| Unreleased source (token handoff, CSP, second model): security review, verdict SHIP at source level, no Critical, High or Medium; 515 selected tests passed; probes on a temporary instance | No real model loaded, packaged app not rebuilt, browser mode not run live | 2026-11-26 |
+| Security re-check of the review and security fixes: SHIP at source level; L1, L3 and I1 to I5 fixed; 575 selected tests passed, probes on a temporary copy | No real model, no browser, packaged app not rebuilt | 2026-11-26 |
+| Follow-up fixes N1 to N3 (budget file written and read without following links, bad values ignored; `/api/load` installed check): fixed, with tests in `tests/test_row731_fixes.py` | Reported by the fix run; no separate security re-check recorded here | 2026-11-26 |
+| Unreleased source: full test run before the memory limits | 1406 passed, reported by that fix run | 2026-11-26 |
+| Unreleased source with the memory limits: full test run (functional, not a security review; no security review of these limit changes is recorded here) | 1503 passed, 0 skipped, temporary `HOME`; no real model loaded | 2026-11-26 |
+| Signature, checksums and dependency scan for 2.0.9 | `--verify --release` passed; audit `--release`: 37 pass, 2 expected signing warnings, 0 fail; published assets matched `release/SHA256SUMS`; CI `Security audit` job with `pip-audit` passed | 2026-11-26 |
 
 [SECURITY-AUDIT.md](SECURITY-AUDIT.md) is the historical audit of 2.0.0. To
 report a vulnerability, use [the security policy](../SECURITY.md).

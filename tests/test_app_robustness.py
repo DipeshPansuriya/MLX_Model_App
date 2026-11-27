@@ -147,6 +147,7 @@ class TestSingleModelSlot:
     def test_two_quick_loads_start_one_worker(self, server, app_module, monkeypatch):
         worker = Recorder()
         monkeypatch.setattr(app_module, "worker_load", worker)
+        make_model(app_module, "org/m")
         results = race(6, lambda: post(server, app_module, "/api/load", {"repo": "org/m"})[0])
         assert sorted(results) == [200] + [409] * 5
         assert len(worker.calls) == 1
@@ -168,6 +169,7 @@ class TestSingleModelSlot:
     def test_model_cannot_change_during_a_reply(self, server, app_module, path):
         app_module.STATE.model, app_module.STATE.loaded_repo = "old", "org/old"
         app_module.STATE.generating = True
+        make_model(app_module, "org/new")
         assert post(server, app_module, path, {"repo": "org/new"})[0] == 409
         assert app_module.STATE.model == "old"
 

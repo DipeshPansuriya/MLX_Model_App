@@ -261,18 +261,24 @@ no router or second port.
 |---|---|
 | Slots | The guard wraps `ModelProvider._load` and `load_default`; the least recently used model goes first. The server starts on the first model and preloads the second only if both fit |
 | Turns | `mlx_lm` loads only when nothing is generating, so a request for the other model waits for the running replies, then switches |
-| Admission | Checked when a model is loaded: held memory (MLX active), plus the new weights, plus the largest reply room, plus 1.4 GB margin (1 GB + 0.4 GB overhead) must fit the budget. With both slots full the least recently used model goes first. If trimming the prompt cache alone then closes the gap, the cache is trimmed and the other model stays; else that model is evicted too, and the cache is trimmed to what fits. The guard measures and plans again after each eviction or trim. A model that still does not fit is loaded alone, with a warning. A switch between two loaded models is not checked |
-| Budget | The smaller of: (a) 0.52 × RAM less the Chat model's weights, (b) live free memory (free + speculative + purgeable + file-backed pages from `vm_stat` minus 2 GB for macOS), (c) the `server.budget` file from the app. Re-read at each non-hit load. A hit (switch between loaded models) does not check |
-| Context per model (T) | T = min(32,768, floor((budget − weights − 1.4 GB) / (5.1 × KV per token)) rounded down to 1,024). If T < 8,192 the pair is refused. The guard reserves T tokens (`--studio-kv-tokens T`) |
-| Chat model beside it | `POST /api/load` answers 409 when the Chat model's weights plus the server's memory would pass the budget, using both the static 52% check and the live free memory check (`chat_load_problem`). The Chat model's own reply cache is not counted |
-| Prompt cache | Dynamic cap (2 × KV × T bytes) passed to `mlx_lm` via `--prompt-cache-bytes`. `mlx_lm` trims to it on the batch path; the guard also sets the cache's own byte limit (`max_bytes`), which applies at every insert |
-| Memory_low | The snapshot sets `server.memory_low = {free_bytes, short_by_bytes}` when `need − active_bytes > free − 2 GB`. No automatic unload; the next non-hit load uses the lower budget |
+| Admission | Checked when a model is loaded: held memory (MLX active), plus the new weights, plus the largest reply room (3.1 × cache bytes per token × context), plus 1.4 GB margin (1 GB + 0.4 GB process overhead) must fit the budget. With both slots full the least recently used model goes first. If trimming the prompt cache alone then closes the gap, the cache is trimmed and the other model stays; else that model is evicted too, and the cache is trimmed to what fits. The guard measures and plans again after each eviction or trim. A model that still does not fit is loaded alone, with a warning. A switch between two loaded models is not checked |
+| Free memory | `free_bytes()` in `mlx_guard.py` runs `/usr/bin/vm_stat` (no shell, 2 s timeout) and adds the free, speculative, purgeable and file-backed pages. Any failure gives no figure, and the live check is skipped |
+| Budget at start | App: static = 0.52 × RAM less the Chat model's weights; live = a running server's active memory + free − 2 GB. The smaller one is used (static alone without a figure) and passed as `--studio-budget-bytes` |
+| Budget later | Guard: the smallest of the start budget, the `server.budget` file and its active memory + free − 2 GB. Worked out at each non-hit load, at the second preload and at each refresh. It never exceeds the start budget |
+| Context per model (T) | T = min(32,768, (budget − weights − 1.4 GB) / (5.1 × KV per token), rounded down to 1,024). KV per token is the larger of the two models' (131,072 bytes if unreadable). Below 8,192 the pair is refused; between 8,192 and 32,767 it starts shrunk and the UI says so. T is fixed until a restart and passed as `--studio-kv-tokens` |
+| Chat model beside it | `POST /api/load` answers 409 when either check fails (`chat_load_problem`): the server's memory plus the Chat weights above 0.52 × RAM, or the Chat weights plus what the server may still take above free − 2 GB. The Chat model's own reply cache is not counted |
+| Prompt cache | Cap of 2 × KV × T bytes, passed to `mlx_lm` as `--prompt-cache-bytes`. `mlx_lm` trims to it on the batch path; the guard also sets the cache's own byte limit (`max_bytes`), which applies at every insert. A one-model start passes no byte cap |
+| Preload | The guard writes `preload_done` to the status file when preload ends, whatever the result (`finally`) |
+| Free memory low | Only after `preload_done` and with a measurement, the snapshot sets `server.memory_low = {free_bytes, short_by_bytes}` when need − 0.4 GB − active is more than free − 2 GB. The app caches the free figure for 10 s. No automatic unload. `server.context_tokens` is set for any two-model server and does not depend on events |
 | Release | An evicted model object is emptied (`release`), because the generation thread still refers to it until the next load returns |
-| Fallback | If the hooked places in `mlx_lm` have moved, including the cache's byte limit, one model is kept and the reason is reported. The request guard still fails closed |
-| Status | The guard writes `server.resident.json` with `context_tokens` (T) and `free_bytes` at each load. The app reads it only for the running process id |
+| Fallback | If the hooked places in `mlx_lm` have moved, including the cache's byte limit and `ResponseGenerator._next_request`, one model is kept and the reason is reported. The request guard still fails closed |
+| Status | The guard writes `server.resident.json` with `context_tokens` (T), `free_bytes`, memory figures, `preload_done` and events. Besides loads, switches, evictions and trims, it refreshes the figures from `mlx_lm`'s request loop (`_next_request`) at most every 10 s, without an event. A reply served one at a time holds that loop, so no refresh runs during it. The app reads the file only for the running process id |
 | Shared formula | The app imports `mlx_guard.py` for its estimate with bytecode writing turned off, to protect the signed bundle. A lock covers this import |
 
-Real two-model memory use, cache trim, eviction and switch time are not measured.
+The one-model server is unchanged: no cache byte cap, no live memory check and no
+memory refusal. The real two-model re-test of these limits has not run yet; the
+figures are calculated, and cache trim, eviction, switch time and swap with the
+new limits are not measured.
 Design: [ADR-010](adr/ADR-010-two-models-one-process.md). Budget limits:
 [SECURITY.md](SECURITY.md) section 5.
 

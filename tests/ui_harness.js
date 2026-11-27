@@ -1,5 +1,7 @@
 // Runs ui/app.js against a minimal DOM stub, then evaluates one scenario.
-// Usage: node ui_harness.js <app.js> <scenario.js>   (prints one JSON line)
+// Usage: node ui_harness.js <app.js> <scenario.js> [boot]   (prints one JSON line)
+// boot is JSON: {hash, storage, storageBroken, answered}, the page as it is before
+// app.js runs; answered makes every request fail at once instead of never settling.
 const fs = require("fs");
 const vm = require("vm");
 
@@ -74,7 +76,22 @@ function child(parent, selector) {
   return nodes.get(key);
 }
 const get = (s) => { if (!nodes.has(s)) nodes.set(s, element(s)); return nodes.get(s); };
-get('meta[name="mlx-token"]').attrs.content = "test-token";
+const boot = JSON.parse(process.argv[4] || "{}");
+const stored = new Map(Object.entries(boot.storage ?? { "mlx-token": "test-token" }));
+const refuse = () => { if (boot.storageBroken) throw new Error("storage is off"); };
+const sessionStorage = {
+  getItem(k) { refuse(); return stored.get(k) ?? null; },
+  setItem(k, v) { refuse(); stored.set(k, String(v)); },
+};
+const location = { hash: boot.hash || "", pathname: "/", search: "" };
+const replaced = [];
+const history = {
+  replaceState(_state, _title, url) {
+    replaced.push(url);
+    location.hash = url.includes("#") ? url.slice(url.indexOf("#")) : "";
+  },
+};
+const intervals = [];
 for (const s of ["#chatModelSelectList", "#serverModelSelectList"]) get(s).hidden = true;
 
 const calls = [];
@@ -92,13 +109,13 @@ const ctx = {
     addEventListener(name, fn) { this.listeners[name] = fn; },
   },
   window: { addEventListener() {}, open: (u) => opened.push(u) },
-  location: { hash: "" },
+  location, history, sessionStorage, stored, replaced, intervals,
   navigator: { clipboard: { writeText: async () => {} } },
   CSS: { escape: (s) => s },
   URL, TextDecoder, TextEncoder,
   Event: class { constructor(type) { this.type = type; } },
   setTimeout, clearTimeout,
-  setInterval: () => 0,
+  setInterval: (fn, ms) => intervals.push(ms),
   confirm: () => true,
   // Boot requests never settle; a scenario installs its own handler.
   fetch: (path, opts) => {
@@ -107,6 +124,9 @@ const ctx = {
   },
   calls, opened, toasts, $$nodes: nodes, element,
 };
+if (boot.answered) {
+  ctx.respond = () => Promise.resolve({ ok: false, statusText: "refused", json: async () => ({}) });
+}
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
 const scenario = fs.readFileSync(process.argv[3], "utf8");

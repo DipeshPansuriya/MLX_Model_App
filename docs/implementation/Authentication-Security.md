@@ -7,7 +7,7 @@ page is the short implementation map.
 
 | Surface | Authentication | Authorisation |
 |---|---|---|
-| App, `127.0.0.1:8765` | no user login; session token on `/api/*` except `GET /api/ping` and `POST /api/focus`; Host and Origin checks. A local caller can read the token from `/` | no roles |
+| App, `127.0.0.1:8765` | no user login; session token on `/api/*` except `GET /api/ping` and `POST /api/focus`; Host and Origin checks. In 2.0.9 a local caller can read the token from `/`; the unreleased source passes it in the URL fragment and never serves it | no roles |
 | API server, `127.0.0.1:8080` | none; `mlx_guard.py` checks each request | no roles |
 
 ## Controls
@@ -27,7 +27,7 @@ page is the short implementation map.
 |---|---|
 | Secret scan | `python3 scripts/check_secrets.py`, also in hooks and CI ([PUSH-POLICY.md](../PUSH-POLICY.md)) |
 | Security audit | `./scripts/security_audit.sh` ([SECURITY-AUDIT.md](../SECURITY-AUDIT.md)) |
-| Dependencies | `pip-audit -r requirements.txt`; result for 2.0.9 UNVERIFIED |
+| Dependencies | `pip-audit -r requirements.txt`; the CI `Security audit` job with `pip-audit` passed for 2.0.9 (2026-11-26) |
 | Reporting | [root security policy](../../SECURITY.md) |
 
 ## Compliance and incidents
@@ -41,4 +41,5 @@ None found in `app.py` or `mlx_guard.py`.
 
 ## Open and accepted risks
 
-See [SECURITY.md](../SECURITY.md) section 5.
+See [SECURITY.md](../SECURITY.md) section 5, which also lists the three Low items of the unreleased
+source (browser-mode token fallback and history, two-model memory budget).

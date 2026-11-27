@@ -332,7 +332,8 @@ reject long input; too much context fails through memory or quality.
 
 The figures are for a 32 GB Mac and are **calculated from measured bytes per
 token, not load-tested**. They include the reply. 500K or 1M context is not
-proven and is not recommended here.
+proven and is not recommended here. They are for one model; with two models
+loaded (unreleased), use the safe context the API Server view shows.
 
 ### One or two models
 
@@ -349,20 +350,60 @@ keep loaded (optional)**.
 | Address | Both models answer on `http://127.0.0.1:8080/v1`; the client chooses by model name |
 | Turns | One model replies at a time. A request for the other waits for the running replies, then the server switches |
 | Third model | Naming another downloaded model evicts the least recently used one. If memory is still short, the server trims the prompt cache when that is enough; otherwise it evicts the other model too |
-| Memory | Budget is the smaller of 0.52 × RAM (less the Chat model's weights) and live free memory (free + speculative + purgeable + file-backed pages, minus 2 GB for macOS). An estimate is shown; **Start** is refused if the pair does not fit at 8,192 tokens each. A model that does not fit even on its own is still loaded alone, and the view warns **Loaded without enough memory** |
-| Chat tab | A Chat model loads only if it fits beside the two models. Otherwise the load is refused with the figures: stop the API server or choose a smaller model |
+| Context per model | Called **T** below. At most 32,768 tokens, rounded down to a multiple of 1,024, and never above a model's own limit. It is set at start and stays until the server is restarted |
+| Memory the pair may use | The smaller of 0.52 × RAM (less the Chat model's weights) and what is free now: the free, speculative, purgeable and file-backed pages reported by `/usr/bin/vm_stat`, minus 2 GB left for macOS and other apps. A running server's own memory counts as free, because a restart gives it back. If `vm_stat` cannot be read, only the 52% rule is used and the view says so |
+| How T is worked out | (budget − weights of both models − 1.4 GB margin) ÷ (5.1 × cache bytes per token), rounded down and capped. 5.1 is 2 for the prompt cache plus 3.1 for one reply. The larger of the two models' cache bytes per token is used |
+| Shrink or refuse | From 8,192 up to 32,767 the server starts with that smaller T and the estimate says so. Below 8,192 two models are refused: **Start** is disabled, or the start is refused (`409`), with the figures. Close other apps or start one model |
+| Prompt cache | Capped at 2 × cache bytes per token × T, room for about one conversation of T tokens per model. **Keep prompts to T tokens or fewer. The prompt cache holds about 2T tokens in total; above that, older prompts are dropped and read again.** Treat T as the safe limit: by the cap arithmetic a conversation up to about 2 × T can still be cached, but it pushes out the other one, and above that it is read again every turn (not tested with real models) |
+| After start | Each load of a model that is not in memory checks free memory again and may trim the cache, evict, or load alone. A switch between the two loaded models is not checked. Nothing is unloaded just because free memory drops |
+| Chat tab | A Chat model loads only if it passes both the 52% check and the live free-memory check beside the two models. Otherwise the load is refused (`409`) with the figures |
 | Refused Load | The reason stays in a panel at the bottom right until **Dismiss** or the next load |
-| Context | Context per model (T) is computed from the budget: T = min(32,768, floor((budget − weights − 1.4 GB) / (5.1 × KV per token)) rounded down to 1,024). If T < 8,192 the pair is refused. Set the client's context window to the shown "safe context" or lower |
-| Choosing **None** | One model, started with the same command as 2.0.9; the view adds a measured memory line |
+| Choosing **None** | One model, started with the same command as 2.0.9: no prompt cache byte cap, no live memory check and no memory refusal. The view adds a measured memory line |
 | Older or changed `mlx-lm` hooks | The server keeps one model and the app says why |
 
+What the view says about memory (unreleased):
+
+| Words | When |
+|---|---|
+| **Two models: about 10K tokens each (one model alone can use more). Uses about … of … GB free.** | T is below 32,768. **Close other apps for more.** is added only when free memory, not the 52% rule, is the limit |
+| **Two models: 32K tokens each. Uses about … of … GB free.** | T is 32,768 |
+| **Uses about … of … GB available.** or **Needs about … GB, … GB would be available.** | A server is running and holds memory; "available" counts the running server's memory (same pair or different) |
+| **Not enough free memory for two models: … GB free, … GB needed for 8K each. Close other apps or start one model.** | Refused because of free memory. "Needed" includes the 2 GB left for macOS |
+| **Not enough memory for two models: … GB allowed for the API server, … GB needed for 8K each. Choose smaller models or start one model.** | Refused by the 52% rule, or free memory could not be read |
+| **Free memory could not be read; using the fixed 52% rule.** | Added to the estimate when `vm_stat` fails |
+| **Free memory is low** | Notice on a running pair: other apps now use memory the server was counting on. It appears only after the loading of both models at server start has ended |
+| **Loaded without enough memory** | Notice: a model does not fit in the memory the server may use now, with room for a reply, and was loaded on its own |
+
+Example for a 32 GB Mac with two 7B 4-bit Qwen2.5 models (4.284 GB of weights
+and 57,344 cache bytes per token each), with no Chat model loaded and no server
+running. **Calculated, not measured:**
+
+| Free memory at start | T per model | Memory the server needs |
+|---|---|---|
+| 19.9 GB or more (the 52% rule is the limit) | 26,624 | about 17.75 GB |
+| 15.11 GB | 10,240 | about 12.96 GB |
+| 11.78 GB | refused | 8K each needs about 14.4 GB free |
+
+**The real two-model re-test of these limits has not run yet.** An earlier real
+run, made before these limits, drove system swap from 0 to 4.60 GB on a busy
+Mac; the limits were changed because of it. The 2 GB reserve, the 3.1 reply
+factor (one data point) and the `vm_stat` free figure are not proven.
+
 Known limits: real two-model memory use, cache trim, eviction, switch time and
-swap are **not measured** on real models. The Chat tab check counts model weights,
-not that model's reply cache. A server started while a Chat model is loaded keeps
-the lower budget until it is restarted; a background server left running after you
-quit keeps a lowered budget until the app opens again. Any local program using
-port 8080 can make the server switch models, and a switch between two loaded
-models does no memory check. More: [CHANGELOG](CHANGELOG.md).
+swap with the new limits are **not measured**. The memory budget never rises
+above the figure set at start, so restart the server to get a larger context
+after closing apps; a server started while a Chat model was loaded keeps the
+lower budget too, and a background server left running after you quit keeps a
+lowered budget until the app opens again. The Chat tab check counts the new
+model's weights, not its reply cache, and does not count the memory of the Chat
+model it replaces, so a swap may be refused until you **Unload**. If memory runs
+short between stopping the old server and starting the new one, the old server
+stays stopped and the reason is shown. Right after a server is killed, free
+memory may be read before macOS has returned it. A model whose own context limit
+is below 8,192 can make the "needed" figure too small. Screen readers may
+announce the notice or estimate again on later updates (not checked). Any local
+program using port 8080 can make the server switch models, and a switch between
+two loaded models does no memory check. More: [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -523,7 +564,7 @@ unreleased source the page no longer holds it.
 | POST | `/api/download/cancel` `{repo}` | Cancel a running download |
 | POST | `/api/delete` `{repo}` | Delete a cached model |
 | POST | `/api/reveal` `{repo}` | Show a cached model in Finder |
-| POST | `/api/server/start` `{repo, background}` | Start the API server. Unreleased: optional `also` with one more model |
+| POST | `/api/server/start` `{repo, background}` | Start the API server. Unreleased: optional `also` with one more model; `409` if the pair does not fit in memory |
 | POST | `/api/server/estimate` `{repo, also}` | Unreleased: memory estimate for the choice |
 | POST | `/api/server/stop` | Stop it |
 | POST | `/api/server/notice/clear` | Dismiss the "server stopped" banner |

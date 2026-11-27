@@ -135,7 +135,7 @@ person, one Mac, one process.
 | F22a | Run in the background | With **Background** ticked the child is detached (`start_new_session`), keeps serving after the window closes, and writes `~/.mlx_studio/logs/server.log` |
 | F22b | Survive an app restart | The pid is written to `~/.mlx_studio/server.pid`; the next launch adopts the running server instead of starting a second one |
 | F22c | Warn when the server dies | A 2 s watchdog flips state to stopped, shows a red banner with the exit status and a **Restart** button, fires a desktop notification, and logs `api server died` |
-| F22d | Keep two models loaded (unreleased, 2.0.10 source) | A second installed model can be chosen; both answer on one address and take turns; a memory estimate is shown with context per model T computed from live free memory; **Start** is refused when T < 8,192 tokens. Real two-model memory use is unmeasured |
+| F22d | Keep two models loaded (unreleased, 2.0.10 source) | A second installed model can be chosen; both answer on one address and take turns. Context per model is at most 32,768 tokens in steps of 1,024, worked out from the smaller of 0.52 × RAM (less the Chat model) and live free memory less 2 GB; the estimate says when it is shorter. **Start** is refused below 8,192 tokens each. If free memory cannot be read, the 52% rule alone applies and the view says so. A later shortage shows **Free memory is low**; a model that does not fit is loaded alone with **Loaded without enough memory**; a Chat load that does not fit beside the pair is refused. The one-model server is unchanged. Figures are calculated; the real two-model re-test of these limits has not run |
 
 ### 5.6 Activity log
 

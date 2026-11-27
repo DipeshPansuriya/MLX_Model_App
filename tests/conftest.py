@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import subprocess
 import sys
 import threading
+import types
 import urllib.request
 import uuid
 from http.server import ThreadingHTTPServer
@@ -20,6 +22,31 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def free_memory(monkeypatch):
+    """No test reads this Mac's free memory: vm_stat answers what the test sets.
+
+    Set ``.bytes`` (None: it cannot be read); ``.reads`` counts the calls.
+    """
+    fake = types.SimpleNamespace(bytes=100 * 10**9, reads=0)
+    real = subprocess.run
+
+    def run(cmd, *args, **kwargs):
+        if not (isinstance(cmd, list) and cmd[:1] == ["/usr/bin/vm_stat"]):
+            return real(cmd, *args, **kwargs)
+        fake.reads += 1
+        if fake.bytes is None:
+            raise OSError("vm_stat is not available")
+        pages = ("free", "speculative", "purgeable")
+        text = "Mach Virtual Memory Statistics: (page size of 1 bytes)\n"
+        text += f"File-backed pages: {fake.bytes}.\n"
+        text += "".join(f"Pages {name}: 0.\n" for name in pages)
+        return subprocess.CompletedProcess(cmd, 0, text, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return fake
 
 
 @pytest.fixture

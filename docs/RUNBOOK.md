@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: "Runbook — MLX Studio"
-status: "Written for the 2.0.7 source (2026-11-25), held by tag v2.0.8"
+status: "Written for the 2.0.7 source (2026-11-25); guard, process and unreleased notes added 2026-11-26; other steps not re-reviewed"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -54,7 +54,7 @@ curl -s http://127.0.0.1:8765/api/ping
 | State | `curl -s http://127.0.0.1:8765/api/state \| python3 -m json.tool` | full snapshot |
 | API server | `curl -s http://127.0.0.1:8080/v1/models` | `200` with repo id |
 | Ports | `lsof -nP -iTCP:8765 -iTCP:8080 -sTCP:LISTEN` | `127.0.0.1` only |
-| Processes | `pgrep -fl "app.py\|mlx_lm server"` | one app, at most one server |
+| Processes | `pgrep -fl "app.py\|mlx_guard.py\|mlx_lm server"` | one app, at most one server |
 | Activity | `tail -5 ~/.mlx_studio/logs/activity.log` | recent JSON lines |
 | Launch log | `tail -20 ~/.mlx_studio/logs/launch.log` | no traceback |
 
@@ -89,6 +89,27 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 Point DeepSeek Harness or another OpenAI-compatible client at `http://127.0.0.1:8080/v1` with any non-empty API
 key.
+
+Unreleased (2.0.10 source): to keep two models loaded, also choose one under
+**Also keep loaded (optional)** and read the memory estimate before **Start**. Set
+the client's context window to the shown safe context or lower. The limits are
+calculated and have not been re-tested with real models, so watch memory pressure.
+
+| You see | Meaning and what to do |
+|---|---|
+| **Two models: about …K tokens each** | The pair starts with a context shorter than 32,768. If **Close other apps for more** follows, free memory is the limit: close apps, then **Start** |
+| **Not enough free memory for two models** | Less than 8,192 tokens each would fit. Close apps until the "needed" figure is free, or start one model |
+| **Not enough memory for two models** | The 52% rule is the limit, or free memory could not be read. Choose smaller models or start one model; **Unload** a Chat model if one is loaded |
+| **Free memory could not be read** | `/usr/bin/vm_stat` failed; only the fixed 52% rule applies. Watch memory pressure |
+| **Free memory is low** | Other apps took memory the server counted on. Close apps, or restart the server for a smaller context. Nothing is unloaded just for this; the next model load may trim or evict |
+| **Loaded without enough memory** | A model was loaded on its own although it does not fit. Free memory or choose a smaller model |
+| **Keep prompts to … tokens or fewer** | Set the client's context to that figure or lower. The prompt cache holds about 2T tokens in total; above that, older prompts are dropped and read again. A longer conversation may push the other model's cache out, or be read again on every turn |
+| Chat load refused (`not enough memory` or `not enough free memory`) | Close apps, **Unload** the current Chat model, stop the API server or choose a smaller model |
+
+The context and the budget are set at start. After closing apps, restart the
+server to get more. A server started while a Chat model was loaded keeps the lower
+budget until it is restarted. If a restart is refused after the old server was
+stopped, it stays stopped and the reason is in the **API server stopped** notice.
 
 ### 3.5 Update the runtime
 
@@ -128,6 +149,12 @@ tail -40 ~/.mlx_studio/logs/launch.log
 | `ModuleNotFoundError: mlx` | Runtime missing | Setup tab → Install, or `pip install mlx mlx-lm` |
 | `ModuleNotFoundError: webview` | pywebview absent | `pip install pywebview`, or let it fall back to the browser |
 
+Unreleased: **"This page has no session"** means the page was opened without the
+app (typed address or bookmark). Open MLX Studio from its icon. In browser mode a
+second launch opens a new tab with a session; whether an icon click on the running
+app causes that was not checked live. If no tab opens, quit the app and open it
+again (quitting stops a server that is not in **Background**).
+
 ### 4.2 Port 8765 is in use
 
 ```bash
@@ -149,11 +176,14 @@ lsof -ti:8080 | xargs kill -9
 
 Common causes: a previous `mlx_lm server`, Ollama, or another local model server.
 
-### 4.4 An orphaned `mlx_lm server`
+### 4.4 An orphaned API server
+
+The app starts the server through `mlx_guard.py`; a server from an older build
+shows as `mlx_lm server`. Check the list before killing anything.
 
 ```bash
-pgrep -fl "mlx_lm server"
-pkill -f "mlx_lm server"
+pgrep -fl "mlx_guard.py|mlx_lm server"
+pkill -f "mlx_guard.py|mlx_lm server"
 ```
 
 The app terminates its child on window close; an orphan means the parent was
@@ -259,8 +289,10 @@ every browser download shows the prompt once.
 stopped unexpectedly (exited with status N)"* — and a desktop notification
 fires.
 
-**Cause.** The `mlx_lm server` child exited. Common reasons: out of memory while
-loading the model, a port clash on 8080, or the process was killed.
+**Cause.** The server child exited. Common reasons: out of memory while
+loading the model, a port clash on 8080, or the process was killed. Unreleased:
+the message names both models and adds "killed, possibly out of memory" when the
+process was killed. With two models, one crash stops both.
 
 **Diagnose.**
 
@@ -328,7 +360,7 @@ Collect these only when the app will not start at all:
   echo "== ports =="
   lsof -nP -iTCP:8765 -iTCP:8080 -sTCP:LISTEN
   echo "== processes =="
-  pgrep -fl "app.py|mlx_lm server"
+  pgrep -fl "app.py|mlx_guard.py|mlx_lm server"
   echo "== log folder =="
   ls -la ~/.mlx_studio/logs
   echo "== launch log =="

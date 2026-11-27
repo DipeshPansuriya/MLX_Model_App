@@ -102,7 +102,8 @@ flowchart TB
 | OpenAI server port | `127.0.0.1:8080` | `app.py`, `SERVER_PORT` |
 | Server is a child process | started through `mlx_guard.py` | `app.py`, `GUARD_SCRIPT` |
 | Inference is in-process | `stream_generate` | `app.py` |
-| One model slot | `State.loaded_repo` | `app.py`, class `State` |
+| One model slot in the app process | `State.loaded_repo` | `app.py`, class `State` |
+| Server child models | one in 2.0.9; up to two in the unreleased source, taking turns | `mlx_guard.py`, `install_multi` |
 | Logs are files | `~/.mlx_studio/logs/` | `app.py`, `LOG_DIR` |
 | Weights are a file tree | Hugging Face cache | `app.py`, `CACHE_DIR` |
 | Remote calls | search, download, install, version check | `search_hf`, `worker_download`, `worker_install`, `worker_check_versions` |
