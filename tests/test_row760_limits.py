@@ -703,14 +703,11 @@ NO_READ = "Free memory could not be read; using the fixed 52% rule."
 @needs_node
 def test_the_shrunk_estimate(tmp_path):
     words, spoken, disabled, hint, _ = ui(tmp_path, PAIR + ASK)
-    assert (
-        words
-        == spoken
-        == (
-            "Two models: about 10K tokens each (one model alone can use more). "
-            "Uses about 13.0 of 15.1 GB free. Close other apps for more."
-        )
+    assert words == (
+        "Two models: about 10K tokens each (one model alone can use more). "
+        "Uses about 13.0 of 15.1 GB free. Close other apps for more."
     )
+    assert spoken == "Shorter context: about 10K tokens per model. Close other apps for more."
     assert disabled is False
     assert "a about 10K" in hint and "b about 4K (model limit)" in hint
     assert "1010" not in hint and "986" not in hint
@@ -736,7 +733,8 @@ def test_refused_stays_on_screen_as_the_reason_start_is_off(tmp_path):
         ' 11.8 GB free.";'
     )
     words, spoken, disabled, hint, toasted = ui(tmp_path, PAIR + change + ASK)
-    assert words == spoken == "Not enough free memory for two models: 11.8 GB free."
+    assert spoken == "Not enough free memory for two models: 11.8 GB free."
+    assert words == "", "said once, on the card"
     assert disabled is True and hint == "" and toasted == 0
 
 
@@ -748,7 +746,7 @@ def test_the_fallback_words(tmp_path):
         "Uses about 13.0 GB. " + NO_READ
     )
     change = ' estimate.free_bytes = null; estimate.fits = false; estimate.refused = "No.";'
-    assert ui(tmp_path, PAIR + change + ASK)[0] == "No. " + NO_READ
+    assert ui(tmp_path, PAIR + change + ASK)[1] == "No. " + NO_READ
 
 
 @needs_node

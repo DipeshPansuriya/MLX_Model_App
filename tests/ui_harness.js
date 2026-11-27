@@ -9,7 +9,7 @@ function element(selector) {
   const el = {
     selector, writes: 0, _html: "", _text: "", textWrites: 0, value: "", hidden: false,
     className: "", disabled: false, checked: false, style: {}, dataset: {}, attrs: {},
-    children: [], listeners: {}, scrollTop: 0, clientHeight: 0, scrollHeight: 0,
+    children: [], listeners: {}, captured: {}, scrollTop: 0, clientHeight: 0, scrollHeight: 0,
     classList: {
       set: new Set(),
       add(c) { this.set.add(c); },
@@ -28,14 +28,17 @@ function element(selector) {
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return this.attrs[k] ?? null; },
     removeAttribute(k) { delete this.attrs[k]; },
-    addEventListener(name, fn) { this.listeners[name] = fn; },
+    addEventListener(name, fn, capture) {
+      this.listeners[name] = fn;
+      if (capture === true) this.captured[name] = true;
+    },
     querySelector(s) { return child(this, s); },
     querySelectorAll(s) { return buttons(this, s); },
     appendChild(c) { this.children.push(c); return c; },
     prepend(c) { this.children.unshift(c); return c; },
     remove() { this.removed = true; },
     click() {},
-    focus() {},
+    focus() { ctx.document.activeElement = this; },
     select() { this.selected = true; },
     contains() { return false; },
     dispatchEvent(e) { this.listeners[e.type]?.(e); return true; },

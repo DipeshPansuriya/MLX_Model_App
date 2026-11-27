@@ -3,6 +3,55 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.12] — 2026-11-27
+
+Not released: pre-release build; the released 2.0.9 app has none of these changes.
+It holds the 2.0.10 and 2.0.11 changes and those below. Checked with automated
+tests and the screen served with made-up data. No model was loaded and no API
+server was started. **The real-model and two-model memory tests have not been run.**
+
+### Changed
+
+- **Simpler API Server screen.** One card lists up to two models, each with its
+  context figure when known and a remove button; **+ Add model** opens the
+  searchable list. The **Also keep loaded** panel and the top-bar picker are gone.
+- One **Memory: X / Y GB** line; the longer explanations moved under **Details**.
+  A refusal or a shorter context is still shown on the card.
+- **Start Server** is off, with the reason, until a model is chosen. On a running
+  server the button is **Apply changes**, enabled only when the models or
+  **Background** differ, with a note that a reply in progress will be interrupted.
+- When the app opens with the server stopped, the card already holds the last
+  models whose start reported ready (kept in `~/.mlx_studio/server.last.json`),
+  so **Start Server** is one click; a model that is no longer installed completely
+  is left out. With nothing remembered the card starts empty; before, the first
+  installed model was preselected. Nothing is started by this.
+
+### Fixed
+
+- **Restart** leaves out remembered models that are no longer installed completely,
+  and a start naming such a model is refused. A damaged or planted
+  `server.last.json` (or its old temporary name) is ignored and never followed.
+- **A failed change brings the last working models back.** If the new server is
+  refused, cannot start, exits or cannot load its first model before it is ready,
+  the last models that worked are started again once and **Changes not applied**
+  says why. Applying again before the new server is ready keeps them as the
+  fallback; **Stop** forgets them. This is one try: if it fails, or the restored
+  server stops later, **API server stopped** gives the reasons and the server stays
+  stopped.
+- A start with one model that is not installed completely no longer stops the
+  running server first.
+- A first start that cannot run now shows **API server stopped** with the reason.
+- The second click of a double click on the API Server page does nothing, so it
+  can no longer start or restart the server, change **Background** or remove a
+  second model. A second press on **Restart** or **Restart now** while the first
+  is on its way no longer starts twice.
+- Models and **Background** changed while a start is under way stay on the card as
+  a change to apply.
+- **Restart** after a stop brings back the models and mode that last ran, not an
+  unapplied choice, which stays on the card.
+- Keyboard focus is no longer lost when **Stop** or a **Restart** button goes away.
+- In a browser window 480 px wide or less, a model's context moves under its name.
+
 ## [2.0.11] — 2026-11-27
 
 Not released: pre-release build; the released 2.0.9 app has none of these changes.

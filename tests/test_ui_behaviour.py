@@ -81,10 +81,10 @@ class TestModelCards:
         out = run(
             tmp_path,
             " const s = snap({ server: { running: true, repo: 'org/custom', lines: [] } });"
-            " render(s); const sel = document.querySelector('#serverModelSelect');"
-            " const first = sel.value; sel.value = 'org/other'; render(s); return [first, sel.value];",
+            " render(s); const first = serverSet(); editServerSet(['org/other']); render(s);"
+            " return [first, serverSet()];",
         )
-        assert out == ["org/custom", "org/other"]
+        assert out == [["org/custom"], ["org/other"]]
 
     def test_counts_match_the_cards_shown_while_downloading(self, tmp_path):
         out = run(
@@ -298,7 +298,7 @@ class TestUnguardedServerNotice:
             OLD_SERVER
             + f" const s = srv({{ unguarded: true, background: {str(background).lower()} }});"
             " respond = () => reply(s); state.snapshot = s; render(s);"
-            " $('#serverModelSelect').value = 'org/other';"
+            " editServerSet(['org/other']);"
             " await $('#serverUnguardedRestart').listeners.click();"
             " const c = calls.find((x) => x.path === '/api/server/start');"
             " return [JSON.parse(c.opts.body), c.opts.headers['X-MLX-Token']];",

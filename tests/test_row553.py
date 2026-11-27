@@ -12,6 +12,7 @@ import urllib.request
 
 import pytest
 from conftest import ROOT
+from test_row656_app import cache_model
 from test_ui_behaviour import needs_node, run
 
 REPO = "org/model"
@@ -254,6 +255,10 @@ class TestServedModels:
 
 # V9 ------------------------------------------------------------------------- #
 class TestStopBeatsQueuedStart:
+    @pytest.fixture(autouse=True)
+    def installed(self, app_module):
+        cache_model(app_module, REPO)  # a start is accepted for installed models only
+
     def test_stop_cancels_a_start_that_has_not_launched(self, server, app_module, monkeypatch):
         launched = []
         monkeypatch.setattr(app_module, "_launch_server", lambda *a: launched.append(a))

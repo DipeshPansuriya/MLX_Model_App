@@ -242,7 +242,7 @@ class TestToolbarButtons:
         flag = "true" if background else "false"
         out = go(
             tmp_path,
-            f"el('#serverModelSelect').value = 'org/x'; el('#serverBackground').checked = {flag};"
+            f"state.serverDraft = ['org/x']; el('#serverBackground').checked = {flag};"
             f" await click('{button}'); return posts();",
         )
         assert out == [["/api/server/start", {"repo": "org/x", "background": background}]]

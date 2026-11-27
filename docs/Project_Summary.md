@@ -1,6 +1,6 @@
 # MLX Studio - Project summary
 
-**Date:** 2026-11-27 | **Latest release:** 2.0.9 (2026-11-26, `v2.0.9`) | **Working source:** `APP_VERSION` 2.0.11, with the 2.0.10 and 2.0.11 changes not in the latest release ([CHANGELOG](../CHANGELOG.md))
+**Date:** 2026-11-27 | **Latest release:** 2.0.9 (2026-11-26, `v2.0.9`) | **Working source:** `APP_VERSION` 2.0.12, with the 2.0.10, 2.0.11 and 2.0.12 changes not in the latest release ([CHANGELOG](../CHANGELOG.md))
 
 ## Executive summary
 

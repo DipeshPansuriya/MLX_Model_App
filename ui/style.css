@@ -158,8 +158,24 @@ html, body {
 .topbar-right .picker-list { left: auto; right: 0; }
 /* Two model names in the state line must not squeeze the page title. */
 #view-server .title { white-space: nowrap; }
-/* Room for the "Selected:" line, which hangs below the box. */
-.server-pair .picker { max-width: 460px; margin-bottom: 26px; }
+/* The API Server card: the chosen models, then what to do with them. */
+.server-card .hint { margin: 0; }
+.server-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.server-card .picker { max-width: 460px; margin-top: 10px; }
+/* No "Selected:" line under this box, so the list opens right below it. */
+.server-card .search-field ~ .picker-list { top: calc(100% + 4px); }
+.model-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.model-list li {
+  display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 11px;
+  border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--panel-2);
+}
+.model-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-context { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
+.server-memory { margin: 14px 0 0; font-family: var(--mono); font-size: 12.5px; color: var(--text-2); }
+.server-why { margin: 8px 0 0; font-size: 12.5px; color: var(--amber); }
+.server-details { margin-top: 8px; }
+.server-details summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); width: fit-content; }
+.server-details .hint { margin-top: 8px; }
 .picker-list li {
   padding: 7px 9px; border-radius: 6px; font-size: 13px; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -441,6 +457,12 @@ html, body {
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 #toast.bad { border-color: #4a2b2b; color: #ffb3b3; }
+
+/* Browser mode only (the app window is wider): a long name keeps its own line. */
+@media (max-width: 480px) {
+  .model-list li { flex-wrap: wrap; }
+  .model-context { order: 1; flex-basis: 100%; }
+}
 
 @media (max-width: 900px) {
   .sidebar { width: 68px; flex-basis: 68px; padding-inline: 8px; }
