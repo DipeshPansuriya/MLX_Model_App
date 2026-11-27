@@ -1494,14 +1494,16 @@ def _snapshot_dir(repo: str) -> Path:
         return CACHE_DIR
     # Build path from validated components to satisfy static analysis.
     entry = CACHE_DIR / f"models--{org}--{name}"
+    # nosec: path built from validated components
     try:
-        commit = (entry / "refs" / "main").read_text("utf-8").strip()  # nosec: path built from validated components
+        commit = (entry / "refs" / "main").read_text("utf-8").strip()
     except (OSError, ValueError):
         commit = ""
     if commit:
         return entry / "snapshots" / commit
+    # nosec: path built from validated components
     try:
-        found = sorted((entry / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime)  # nosec: path built from validated components
+        found = sorted((entry / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime)
     except (OSError, ValueError):  # ValueError: a name with a NUL byte
         found = []
     return found[-1] if found else entry
