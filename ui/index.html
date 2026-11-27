@@ -353,6 +353,18 @@
           </div>
           <p class="hint">An empty field is automatic. Under a model, an empty field uses the All models value. Server limits apply at the next server start or Apply changes.</p>
           <p class="hint">With two models the lower value wins. The server reply cap and prompt cache come from the model or models the server starts with.</p>
+          <div class="notice" id="configEngine" hidden>
+            <div class="notice-body"><div class="notice-text">With the OptiQ engine these settings do not work as they do with MLX:</div>
+              <ul class="hint">
+                <li>Ignored: MLX buffer cache limit and Two-model context cap (OptiQ serves one model).</li>
+                <li>Max context tokens: older text is dropped, not refused. Empty: MLX Studio sets no limit.</li>
+                <li>Server max reply tokens: only a default; a client may ask for more.</li>
+                <li>Memory limit: only sampled; a sudden jump can pass it.</li>
+                <li>Prompt cache limit: empty means one eighth of this Mac's memory.</li>
+                <li>Performance mode and compression: passed to OptiQ, which does not report them back. The figures on this page were measured with MLX only.</li>
+              </ul>
+            </div>
+          </div>
           <div class="notice" id="configPending" hidden>
             <div class="notice-body"><div class="notice-text">Saved settings are not in the running API server yet.</div></div>
             <div class="notice-actions"><button type="button" class="btn btn-mini btn-primary" id="configApplyBtn">Apply changes</button></div>

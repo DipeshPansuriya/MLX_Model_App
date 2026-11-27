@@ -221,6 +221,7 @@ html, body {
   border-radius: var(--radius-sm); background: var(--panel);
   user-select: none;
 }
+.check[hidden] { display: none; }
 .check input { accent-color: var(--accent); cursor: pointer; margin: 0; }
 .check:hover { border-color: var(--line-2); color: var(--text); }
 

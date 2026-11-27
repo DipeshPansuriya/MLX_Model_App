@@ -503,17 +503,21 @@ function paintEngine(set) {
   paintClientSettings(set, engine);
 }
 
-function paintClientSettings(set, engine) {
+function paintClientSettings(set, picked) {
   const server = state.server;
+  // A running server's own settings, not those of a choice that waits for Apply.
+  const running = !!server.running;
+  const engine = running ? engineInfo(runningEngine()) : picked;
+  const repos = running && server.repos?.length ? server.repos : set;
   const direct = !!engine?.direct;
   const base = `http://127.0.0.1:${(direct ? engine.port : 8080) || 8080}`;
-  const model = direct ? "default_model" : set[0] || "(choose a model)";
-  const keyed = direct && server.running && runningEngine() === engine.id && server.ready;
+  const model = direct ? "default_model" : repos[0] || "(choose a model)";
+  const keyed = direct && running && server.ready;
   $("#copyKey").hidden = !keyed;
   $("#curlExample").hidden = direct;
   setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
     (direct ? "press Copy key (new at every start)" : "not needed"));
-  const claude = direct && anthropicWanted();
+  const claude = direct && (running ? !!server.anthropic : anthropicWanted());
   setText($("#claudeSettings"), claude
     ? [`export ANTHROPIC_BASE_URL=${base}`,
       "export ANTHROPIC_AUTH_TOKEN=<paste the copied key>",
@@ -847,6 +851,8 @@ function renderConfigPage(server) {
   // The button goes away once applied: leave the focus on something that stays.
   const held = document.activeElement === $("#configApplyBtn");
   $("#configPending").hidden = !behind;
+  const optiq = engineId() === "optiq" || (!!server.running && runningEngine() === "optiq");
+  $("#configEngine").hidden = !optiq;
   if (held && !behind) $("#configModelSelectSearch").focus();
 }
 
