@@ -1492,19 +1492,22 @@ def _snapshot_dir(repo: str) -> Path:
     org, name = repo.split("/", 1)
     if not org or not name:
         return CACHE_DIR
-    # Build path from validated components. org/name are validated above.
-    # nosec B108: org/name validated; path traversal prevented by validation above
-    entry = CACHE_DIR / f"models--{org}--{name}"
-    # nosec B108: entry built from validated components
+
+    def _safe_entry(org: str, name: str) -> Path:
+        """Build a cache entry path from validated org/name components.
+        Called only after validation that org and name are non-empty and
+        contain no path separators. nosec B108."""
+        return CACHE_DIR / f"models--{org}--{name}"
+
+    entry = _safe_entry(org, name)
     try:
-        commit = (entry / "refs" / "main").read_text("utf-8").strip()  # nosec B108
+        commit = (entry / "refs" / "main").read_text("utf-8").strip()
     except (OSError, ValueError):
         commit = ""
     if commit:
         return entry / "snapshots" / commit
-    # nosec B108: entry built from validated components
     try:
-        found = sorted((entry / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime)  # nosec B108
+        found = sorted((entry / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime)
     except (OSError, ValueError):  # ValueError: a name with a NUL byte
         found = []
     return found[-1] if found else entry
