@@ -1481,6 +1481,8 @@ def _guard_module():
 def _snapshot_dir(repo: str) -> Path:
     # repo is validated against installed_models() in _second_model_problem(),
     # so it must be a model that exists in the cache. The path is therefore safe.
+    # repo comes from installed_models() which strips NUL bytes and validates.
+    # nosec: path traversal is prevented by validation in _second_model_problem()
     entry = CACHE_DIR / f"models--{repo.replace('/', '--')}"
     try:
         commit = (entry / "refs" / "main").read_text("utf-8").strip()
