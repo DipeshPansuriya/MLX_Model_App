@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.10"
+APP_VERSION = "2.0.11"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
@@ -1479,30 +1479,30 @@ def _guard_module():
 
 
 def _snapshot_dir(repo: str) -> Path:
-    # repo is validated against installed_models() in _second_model_problem()
-    # and in the /api/load handler. The path is therefore safe.
-    # repo comes from installed_models() which strips NUL bytes and validates.
-    # nosec: path traversal is prevented by validation in _second_model_problem()
-    allowed = _complete_models()
-    if repo not in allowed:
+    """The cached snapshot to measure for ``repo``, even while it is downloaded again."""
+    # repo may come from a request: it is only compared with listed names, never joined.
+    name = f"models--{repo.replace('/', '--')}"
+    try:
+        entry = next((p for p in CACHE_DIR.iterdir() if p.name == name), None)
+    except OSError:
+        entry = None
+    if entry is None:
         return CACHE_DIR
-
-    # Build a safe entry path from the allowlist.
-    # We use a dictionary lookup instead of string manipulation so the path
-    # is constructed from validated keys only. nosec B108.
-    safe_entry = {r: CACHE_DIR / f"models--{r.replace('/', '--')}" for r in allowed}
-    entry = safe_entry[repo]
     try:
         commit = (entry / "refs" / "main").read_text("utf-8").strip()
     except (OSError, ValueError):
         commit = ""
-    if commit:
-        return entry / "snapshots" / commit
+    weights = _guard_module().weights_bytes
+    found, whole = [], None
     try:
-        found = sorted((entry / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime)
-    except (OSError, ValueError):  # ValueError: a name with a NUL byte
-        found = []
-    return found[-1] if found else entry
+        found = list((entry / "snapshots").glob("*"))
+        # refs/main's snapshot last, so it is preferred; the others newest last.
+        found.sort(key=lambda p: (p.name == commit, p.stat().st_mtime))
+        # A newer revision takes over refs/main before its weights have arrived.
+        whole = next((p for p in reversed(found) if weights(p) and _snapshot_complete(p)), None)
+    except OSError:
+        pass  # a snapshot cannot be dated or read: the weights alone decide
+    return whole or max(reversed(found), key=weights, default=entry)
 
 
 def _server_budget() -> int:
