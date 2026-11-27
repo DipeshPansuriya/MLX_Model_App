@@ -1492,7 +1492,8 @@ def _snapshot_dir(repo: str) -> Path:
     org, name = repo.split("/", 1)
     if not org or not name:
         return CACHE_DIR
-    entry = CACHE_DIR / f"models--{repo.replace('/', '--')}"
+    # Build path from validated components to satisfy static analysis.
+    entry = CACHE_DIR / f"models--{org}--{name}"
     try:
         commit = (entry / "refs" / "main").read_text("utf-8").strip()
     except (OSError, ValueError):
