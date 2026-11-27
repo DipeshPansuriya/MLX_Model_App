@@ -339,9 +339,10 @@ The rules below describe the MLX engine.
 
 ## Connect DeepSeek Harness or any OpenAI-compatible client
 
-The server offers the OpenAI-style API only. It has no `/v1/messages` route, so a
-client that speaks only the Anthropic API (such as Claude Code) cannot connect to
-it directly.
+The MLX server (the default) offers the OpenAI-style API only. It has no
+`/v1/messages` route, so a client that speaks only the Anthropic API (such as Claude
+Code) cannot connect to it directly. OptiQ has that route, switched on by default; see
+[docs/ENGINES.md](docs/ENGINES.md) (not yet tried with Claude Code itself).
 
 1. Download the model in MLX Studio, then start it in the **API Server** tab.
 2. Point the client at it:

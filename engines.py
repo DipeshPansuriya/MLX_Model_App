@@ -26,6 +26,7 @@ class Engine:
     port: int | None = None
     # (what, why it is missing) for everything the built-in MLX server does and this not.
     missing: tuple[tuple[str, str], ...] = ()
+    setting_keys: tuple[str, ...] = ()  # direct: the server settings its command takes
 
     def state(self, app_dir: Path) -> str:
         return "installed"
@@ -61,9 +62,10 @@ class Optiq(Engine):
     version = optiq_engine.VERSION
     key_env = optiq_engine.KEY_ENV
     request_model = "default_model"
+    setting_keys = tuple(key for key, _ in optiq_engine.SETTING_FLAGS)
     missing = (
-        ("80% memory limit and memory stop", "only the engine's own estimate"),
-        ("Memory limit and MLX cache limit settings", "not passed to this engine"),
+        ("Memory limit inside the server", "only sampled: a sudden jump can pass 80%"),
+        ("MLX cache limit setting", "not passed to this engine"),
         ("Long prompt refusal", "older text is dropped beyond the max context"),
         ("Reply token cap", "the setting is a default only"),
         ("Two models in one server", "one model"),

@@ -116,6 +116,9 @@ def install(app_dir: Path, emit, run=runtime.run_step) -> None:
     if not genuine:
         raise Refused("The shipped package lock is missing or changed. Reinstall MLX Studio.")
     folder, venv = engine_dir(app_dir), venv_dir(app_dir)
+    # The folder is removed before the download: never one that works.
+    if state(app_dir) == "installed":
+        raise Refused(runtime.ALREADY_INSTALLED)
     runtime.remove_folder(app_dir, folder)  # refuses links first
     home, tmp = folder / "install" / "home", folder / "install" / "tmp"
     for made in (home, tmp):
@@ -158,8 +161,35 @@ def remove(app_dir: Path) -> None:
     runtime.remove_folder(app_dir, engine_dir(app_dir))
 
 
+def _package(name: str, version: str) -> tuple[str, str]:
+    return re.sub(r"[-_.]+", "-", name).lower(), version
+
+
+def _unlocked_packages(venv: Path) -> list[str]:
+    """Installed packages the shipped lock does not name at that version, pip aside.
+
+    Names and versions only: the files inside a package are not checked.
+    """
+    try:
+        genuine = runtime.file_sha256(LOCK_FILE) == LOCK_SHA256
+        text = LOCK_FILE.read_text("utf-8")
+    except (OSError, ValueError):
+        genuine, text = False, ""
+    if not genuine:
+        raise Refused("The shipped package lock is missing or changed. Reinstall MLX Studio.")
+    locked = {_package(*pin) for pin in re.findall(r"^([A-Za-z0-9_.-]+)==([^\s;\\]+)", text, re.M)}
+    extra = []
+    for info in venv.glob("lib/python*/site-packages/*.dist-info"):
+        found = _package(*info.name.removesuffix(".dist-info").partition("-")[::2])
+        if found[0] != "pip" and found not in locked:
+            extra.append(info.name.removesuffix(".dist-info"))
+    return sorted(extra)
+
+
 def python_path(app_dir: Path) -> Path:
+    """The engine's Python, after the folder is checked again for this start."""
     venv = venv_dir(app_dir)
+    runtime.refuse_links(app_dir, venv)
     python = venv / "bin" / "python"
     found = sorted(venv.glob("lib/python*/site-packages/mlx_optiq-*.dist-info"))
     if not python.exists() or not found:
@@ -169,6 +199,11 @@ def python_path(app_dir: Path) -> Path:
     if state(app_dir) != "installed":
         raise Refused(
             "The OptiQ engine is not installed completely. Run Install / Update on Setup."
+        )
+    if extra := _unlocked_packages(venv):
+        raise Refused(
+            f"The OptiQ folder holds packages that are not in the reviewed lock: "
+            f"{', '.join(extra[:5])}. Remove the engine on Setup and install it again."
         )
     return python
 

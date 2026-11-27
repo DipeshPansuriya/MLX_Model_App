@@ -11,11 +11,13 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 from pathlib import Path
 
 HOST = "127.0.0.1"
 LSOF = "/usr/sbin/lsof"
 KEY_PATTERN = re.compile(r"sk-optiq-[A-Za-z0-9_-]{16,}")
+ALREADY_INSTALLED = "This engine is already installed. Remove it first to install it again."
 # All the built-in MLX server and the load test runner get of the app's environment.
 INHERITED = frozenset(
     [
@@ -230,3 +232,16 @@ def remove_folder(app_dir: Path, folder: Path) -> None:
     refuse_links(app_dir, folder / "venv")
     if folder.exists():
         shutil.rmtree(folder)  # links inside are removed, never followed
+
+
+def redact_stream(source, sink) -> None:
+    """Copy ``source`` to ``sink`` line by line, with keys hidden, until it ends."""
+    while line := source.readline(1 << 20):
+        sink.write(
+            redact(line.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape")
+        )
+        sink.flush()
+
+
+if __name__ == "__main__":  # the filter between a background server and its log
+    redact_stream(sys.stdin.buffer, sys.stdout.buffer)

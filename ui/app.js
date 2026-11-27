@@ -27,6 +27,7 @@ const state = {
   serverDraft: null,
   serverLast: [],
   serverLastBackground: null,
+  serverRan: null, // { engine, anthropic } of the server that ran last
   keptSet: false,
   keptBox: false,
   serverStartError: "",
@@ -281,6 +282,10 @@ function render(snap) {
   if (server.running) {
     state.serverLast = runningSet(server);
     state.serverLastBackground = !!server.background;
+    const engine = server.engine || "mlx";
+    // MLX has no Anthropic switch, so it says nothing about it.
+    const anthropic = engineInfo(engine)?.direct ? !!server.anthropic : undefined;
+    state.serverRan = { engine, anthropic };
   } else if (!state.serverLast.length) {
     // Just opened: the card starts with the last set that came up.
     state.serverLast = server.last_models || [];
@@ -426,22 +431,23 @@ function serverPending() {
 }
 
 // The model fields of a start request.
-function serverChoice(set = serverSet()) {
+function serverChoice(set = serverSet(), engine = engineId(), anthropic = anthropicWanted()) {
   const [repo = "", second] = set;
   const models = second ? { repo, also: [second] } : { repo };
-  const engine = engineId();
   // No engine named means MLX.
-  return engine === "mlx" ? models : { ...models, engine, anthropic: anthropicWanted() };
+  return engine === "mlx" ? models : { ...models, engine, anthropic };
 }
 
 /* ───────────── engines ───────────── */
 const engineList = () => state.server?.engines || [];
 const runningEngine = () => state.server?.engine || "mlx";
-const engineId = () => state.engine ||
-  (state.server?.running ? runningEngine() : state.server?.last_engine) || "mlx";
+const engineId = () => state.engine || (state.server?.running ? runningEngine()
+  : state.serverRan?.engine || state.server?.last_engine) || "mlx";
 const engineInfo = (id = engineId()) => engineList().find((engine) => engine.id === id);
-// On unless switched off here.
-const anthropicWanted = () => state.anthropic !== false;
+// The switch as the user left it; else as the server runs, or ran; else on.
+const anthropicWanted = () => state.anthropic ?? (state.server?.running
+  ? (engineInfo(runningEngine())?.direct ? !!state.server.anthropic : true)
+  : state.serverRan?.anthropic ?? state.server?.last_anthropic ?? true);
 
 function engineChanged() {
   const server = state.server;
@@ -534,7 +540,8 @@ function paintEngineCards(install) {
     const unsupported = engine.state === "unsupported";
     const note = !engine.installable ? engine.reason : unsupported ? engine.unsupported : "";
     const buttons = !engine.installable ? "" :
-      button("install", "Install / Update", unsupported ? " disabled" : "") +
+      button("install", "Install / Update",
+        unsupported || engine.state === "installed" ? " disabled" : "") +
       (["installed", "update", "broken"].includes(engine.state) ? button("remove", "Remove") : "");
     return `<div class="kv-row"><span>${esc(engine.name)}</span>` +
       `<span class="mono">${esc(engine.version || "—")}</span>` +
@@ -545,6 +552,9 @@ function paintEngineCards(install) {
 
 async function changeEngine(engine, action) {
   if (action === "remove" && !confirm("Remove this engine? Your models stay.")) return;
+  if (action === "install" && ["update", "broken"].includes(engineInfo(engine)?.state) &&
+    !confirm("The current engine folder is removed before the download. " +
+      "If the download fails, there is no engine until you install again. Continue?")) return;
   try {
     await api(`/api/engines/${action}`, { method: "POST", body: JSON.stringify({ engine }) });
     toast(action === "remove" ? "Engine removed" : "Install started");
@@ -2094,8 +2104,12 @@ function renderChatMode(server) {
   $("#chatMode").hidden = !perf;
   if (!perf) return;
   const model = server.running ? perf.models[$("#chatModelSelect").value] : null;
+  const direct = !!server.engines?.find((e) => e.id === server.engine)?.direct;
+  // OptiQ reports no mode back: only what is saved can be said.
+  const unreported = !direct ? "not reported yet"
+    : model ? `${model.saved} (saved; not reported by OptiQ)` : "not reported by OptiQ";
   setText($("#chatModeName"), server.running
-    ? model?.in_force || "not reported yet" : `${perf.saved} (used at the next Start)`);
+    ? model?.in_force || unreported : `${perf.saved} (used at the next Start)`);
   const behind = server.settings_pending && model?.in_force && model.saved !== model.in_force;
   setText($("#chatModeNote"), [
     behind ? `${model.saved} is saved but not applied yet.` : "",
@@ -2422,6 +2436,7 @@ async function sendStart(body, message, keep = {}) {
   if (stopped) {
     state.serverLast = [body.repo, ...(body.also || [])];
     state.serverLastBackground = body.background;
+    state.serverRan = { engine: body.engine || "mlx", anthropic: body.anthropic };
   }
   toast(message);
   refreshState().finally(() => { state.serverSending = false; });
@@ -2593,8 +2608,11 @@ function wire() {
     if (!set.length) { toast("Pick a model first", true); return; }
     const box = $("#serverBackground").checked;
     const background = state.serverLastBackground ?? box;
+    const ran = state.serverRan ||
+      { engine: state.server?.last_engine || "mlx", anthropic: state.server?.last_anthropic };
+    const choice = serverChoice(set, ran.engine, ran.anthropic ?? true);
     try {
-      await sendStart({ ...serverChoice(set), background }, "Restarting server…",
+      await sendStart({ ...choice, background }, "Restarting server…",
         { set: !!state.serverDraft, box: box !== background });
     } catch (err) { toast(err.message, true); }
   });

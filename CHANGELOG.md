@@ -13,8 +13,13 @@ model was loaded.
 - **Engines** ([docs/ENGINES.md](docs/ENGINES.md)): the API Server and Load Test can use
   OptiQ 0.8.6 beside MLX (default). Setup installs, updates and removes it from a hashed
   package lock. It has a key, an Anthropic route and fewer protections than MLX; the
-  card lists them. Splash and Rapid-MLX are shown as not available yet. Not tried with
-  a real engine from the app.
+  card lists them. Splash and Rapid-MLX are shown as not available yet. A live check over
+  the app's HTTP routes passed with a real model; the Setup install button, clicks in the
+  screens, a Claude Code client and the load test are untried.
+- Under OptiQ: the app stops the server when a memory reading is over the 80% limit (or
+  your lower one); sampling cannot guarantee the limit. The engine folder is checked at
+  each start, keys are hidden in the server log, and an installed engine is never
+  installed over. These were checked with fakes only.
 
 ### Changed
 

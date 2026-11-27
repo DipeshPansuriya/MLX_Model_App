@@ -1146,6 +1146,7 @@ class State:
                 "anthropic": self.server_anthropic,
                 "engines": [engine.view(APP_DIR) for engine in engines.REGISTRY],
                 "last_engine": _last_engine(),
+                "last_anthropic": _last_anthropic(),
                 "tool_support": tool_support(),
                 "lines": self.server_lines[-200:],
                 "background": self.server_background,
@@ -1559,6 +1560,8 @@ def _engine_change(action: str, body: dict) -> tuple[int, dict]:
         running = STATE.server_proc is not None or _pid_alive(STATE.server_pid)
         if STATE.server_pending or (running and STATE.server_engine == engine.id):
             return 409, {"error": "Stop the API server first."}
+        if action == "install" and engine.state(APP_DIR) == "installed":
+            return 409, {"error": engine_runtime.ALREADY_INSTALLED}
         if not STATE.reserve_install(f"{engine.id} {action}"):
             why = LOADTEST_BUSY if STATE.testing() else "install already running"
             return 409, {"error": why}
@@ -2640,12 +2643,29 @@ def _launch_stamp(settings: dict) -> str:
     return json.dumps(used, sort_keys=True)
 
 
+def _direct_stamp(engine: engines.Engine, settings: dict, repo: str) -> str:
+    """As ``_launch_stamp``, for a direct engine: only what its command is given.
+
+    The memory limit is left out: the watch reads it at every look.
+    """
+    used = {k: settings[k] for k in engine.setting_keys if settings.get(k) is not None}
+    if flags := performance_flags(repo)[0]:
+        used["performance"] = flags
+    return json.dumps(used, sort_keys=True)
+
+
 def _settings_pending(running: bool, view: dict) -> bool:
     """Whether the running server was started with other settings than are saved."""
     started = STATE.server_started_with
     if started is None:  # adopted: it says itself; an older one was given none
         started = view.get("started_with") or "{}"
-    return running and started != _launch_stamp(server_settings(list(STATE.server_repos)))
+    if not running:
+        return False
+    repos, engine = list(STATE.server_repos), _running_engine()
+    settings = server_settings(repos)
+    if engine.direct and repos:
+        return started != _direct_stamp(engine, settings, repos[0])
+    return started != _launch_stamp(settings)
 
 
 def _memory_rule(percent: int) -> str:
@@ -2760,6 +2780,15 @@ def _last_engine() -> str:
     return engine.id if engine and engine.selectable else "mlx"
 
 
+def _last_anthropic() -> bool:
+    """The Anthropic switch of the remembered start. On unless it was saved off."""
+    try:
+        raw = _read_small(_last_models_file(), LAST_MODELS_MAX_BYTES)
+        return json.loads(raw.decode("utf-8")).get("anthropic") is not False
+    except Exception:  # parsing can fail in more ways than ValueError
+        return True
+
+
 def _remember_models(pid: int) -> None:
     with STATE.lock:
         repos = list(STATE.server_repos) if STATE.server_pid == pid else []
@@ -2769,6 +2798,7 @@ def _remember_models(pid: int) -> None:
         saved = {"repos": repos}
         if _running_engine().direct:
             saved["engine"] = STATE.server_engine
+            saved["anthropic"] = STATE.server_anthropic
         _write_private(_last_models_file(), json.dumps(saved))
 
 
@@ -2832,6 +2862,24 @@ def _pump_output(proc: subprocess.Popen) -> None:
         STATE.server_last_error = f"exited with status {proc.returncode}"
 
 
+def _over_memory_ceiling() -> str | None:
+    """Why a direct engine's server must stop for memory, from one reading of this Mac.
+
+    The same ceiling MLX uses, but only looked at when the server is probed: memory can
+    pass it between two looks, so this cannot guarantee the limit. Unreadable: no stop.
+    """
+    guard = _guard_module()
+    percent = server_settings(list(STATE.server_repos))["memory_limit_percent"]
+    ceiling, used = guard.memory_ceiling(percent), guard.other_apps_bytes(None)
+    if used is None or used <= ceiling:
+        return None
+    ram = guard.ram_bytes()
+    return (
+        f"memory use on this Mac reached {round(100 * used / ram)}%, "
+        f"over the {round(100 * ceiling / ram)}% limit"
+    )
+
+
 def _probe_direct(pid: int) -> str | None:
     """Look at a direct engine's server once. Returns why it must be stopped, or None.
 
@@ -2841,6 +2889,8 @@ def _probe_direct(pid: int) -> str | None:
     engine, port = _running_engine(), STATE.server_port
     if STATE.server_pid != pid or not engine.direct:
         return None
+    if why := _over_memory_ceiling():
+        return why
     holders = engine_runtime.listeners(port)
     if holders is None:
         return None  # unknown: nothing is sent, and the next look tries again
@@ -3207,7 +3257,7 @@ def _launch_direct(
         raise engine_runtime.Refused(why)
     snapshot = _snapshot_dir(repo)
     settings = server_settings([repo])
-    stamp = _launch_stamp(settings)
+    stamp = _direct_stamp(engine, settings, repo)
     command = engine.command(
         engine.program(APP_DIR),
         snapshot,
@@ -3230,6 +3280,29 @@ def _launch_direct(
     if proc is None:
         _reset_engine()
     return proc
+
+
+def _redacting_pipe(log) -> int:
+    """A pipe into ``log`` that hides keys. It outlives the app, as the server does.
+
+    Returns the end to write to; the caller closes it.
+    """
+    source, sink = os.pipe()
+    try:
+        subprocess.Popen(
+            [sys.executable, "-I", engine_runtime.__file__],
+            stdin=source,
+            stdout=log,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env={},
+        )
+    except BaseException:
+        os.close(sink)
+        raise
+    finally:
+        os.close(source)
+    return sink
 
 
 def _spawn_server(
@@ -3257,15 +3330,21 @@ def _spawn_server(
                 SERVER_LOG.chmod(0o600)
             handle.write(f"\n=== {datetime.now():%Y-%m-%d %H:%M:%S} start {repo} ===\n")
             handle.flush()
-            proc = subprocess.Popen(
-                cmd,
-                stdout=handle,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-                env=env,
-                **where,
-            )
+            # A direct engine has a key: its output goes through a filter that hides it.
+            sink = _redacting_pipe(handle) if _running_engine().direct else None
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=handle if sink is None else sink,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                    env=env,
+                    **where,
+                )
+            finally:
+                if sink is not None:
+                    os.close(sink)  # the server holds the only other copy
         else:
             proc = subprocess.Popen(
                 cmd,

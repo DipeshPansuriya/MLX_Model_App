@@ -1,7 +1,11 @@
 # Engines
 
-The API Server runs one engine at a time. MLX is the default. Checked with fakes only:
-no OptiQ server was started and nothing was installed through the app.
+The API Server runs one engine at a time. MLX is the default.
+
+A live check of commit `ee4cbc6` over the app's HTTP routes passed with a real model on a
+copied engine folder: OptiQ start, key, Chat, OpenAI and Anthropic tool calls, Stop, then
+MLX. Still untried: the Setup install button, clicks in the screens, a Claude Code client
+and the load test. Changes made after that commit are checked with fakes only.
 
 | Engine | State |
 |---|---|
@@ -16,6 +20,8 @@ no OptiQ server was started and nothing was installed through the app.
 - Needs the app to run on CPython 3.15, Apple silicon, not free-threaded.
 - A newer engine version comes only with a newer MLX Studio.
 - A failed or stopped install shows "broken": remove it or install again.
+- An installed engine is never installed over: **Install / Update** is off. An update or a
+  repair asks first, because the old folder is removed before the download.
 - Refused while that engine serves, during a load test, or if the folder is a link.
 
 ## Running OptiQ
@@ -27,6 +33,19 @@ no OptiQ server was started and nothing was installed through the app.
   Any other listener stops the start, or the running server.
 - Ready means: calls without the key get 401 and one short reply with the key works.
 - One text model from the model cache. Image models and unreviewed model code are refused.
+- At each start the engine folder is checked again: no linked folder, the install marker
+  matches the shipped lock, and no package (pip aside) that the lock does not name at that
+  version. Files inside a package are not checked.
+- Memory: when the app looks at the server (every 2 seconds until ready, then about every
+  30) it compares the whole Mac's memory use with the memory limit (80%, or your lower
+  value) and stops the server with the reason. This is sampling: memory can pass the limit
+  between two looks, so it cannot be guaranteed. There is no look while the first request,
+  which loads the model, is running. Nothing watches while the app is closed.
+- Keys are replaced by `[key hidden]` in the server output, also in the background
+  `server.log`.
+- Only the max reply tokens, max context, prompt cache and performance settings are passed
+  to OptiQ; only a change to those asks for a restart. OptiQ reports no performance mode
+  back, so the saved one is shown as "not reported by OptiQ".
 - If the start fails, the previous server is started again with its own engine.
 
 ## Client settings
@@ -37,12 +56,13 @@ no OptiQ server was started and nothing was installed through the app.
 | Claude Code (OptiQ, Anthropic route on) | `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` | `ANTHROPIC_MODEL=default_model` | `ANTHROPIC_AUTH_TOKEN` |
 | MLX | `http://127.0.0.1:8080/v1` | the model id | none; no Anthropic route |
 
-A live connection from Claude Code or another client has not been tried.
+The OpenAI and Anthropic routes answered plain HTTP requests in the live check. A
+connection from Claude Code or another client program has not been tried.
 
 ## Protections OptiQ does not have
 
-The API Server card lists them (`engines.py`, `Optiq.missing`): no 80% memory limit or
-memory stop, long prompts drop older text, the reply cap is a default only, no web page
+The API Server card lists them (`engines.py`, `Optiq.missing`): no memory limit inside the
+server (only the sampled stop above), long prompts drop older text, the reply cap is a default only, no web page
 checks beyond the key, a key holder may send draft model or file paths, and `/health`,
 `/v1/optiq/context` and `OPTIONS` answer without the key.
 
