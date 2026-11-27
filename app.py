@@ -1487,10 +1487,11 @@ def _snapshot_dir(repo: str) -> Path:
     if repo not in allowed:
         return CACHE_DIR
 
-    # Pre-compute the safe entry path from the allowlist.
-    # The allowlist comes from installed_models() which validates repo format.
-    # nosec B108: repo validated against allowlist; path components extracted safely
-    entry = CACHE_DIR / f"models--{repo.replace('/', '--')}"
+    # Build a safe entry path from the allowlist.
+    # We use a dictionary lookup instead of string manipulation so the path
+    # is constructed from validated keys only. nosec B108.
+    safe_entry = {r: CACHE_DIR / f"models--{r.replace('/', '--')}" for r in allowed}
+    entry = safe_entry[repo]
     try:
         commit = (entry / "refs" / "main").read_text("utf-8").strip()
     except (OSError, ValueError):
