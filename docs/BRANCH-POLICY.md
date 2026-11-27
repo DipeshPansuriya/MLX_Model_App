@@ -33,7 +33,7 @@ described as done unless a bypass was attempted and failed.
 | Code scanning | **CodeQL default setup, 3 languages, weekly** | — | free for public |
 | Dependency updates | Dependabot actions + pip, weekly | — | free |
 | CI gates | 8 required checks listed, including automated review | — | free |
-| Release integrity | signature, manifest schema, bundle freshness | `2.0.1` rebuild | free |
+| Release integrity | signature, manifest schema, bundle freshness | — | free |
 
 **Nothing in force is paid.** Every control runs on the GitHub free tier for a
 public repository. §9 lists each one with its licence and cost.
@@ -246,7 +246,7 @@ check, a SHA-256 checksum and a bundle-freshness comparison (§8).
 | Version in one place | `APP_VERSION` in `app.py`, read by the builder and the manifest |
 | Signature | `codesign --verify --deep --strict`, ad-hoc |
 | Manifest schema | version, https url, 64-hex sha256, positive size |
-| Checksum | SHA-256 of the pkg in `release/latest.json`; published assets listed in `release/SHA256SUMS` (not created yet) |
+| Checksum | SHA-256 of the pkg in `release/latest.json`; published assets listed in `release/SHA256SUMS` (starts at 2.0.9; earlier releases not backfilled) |
 | Bundle freshness | `cmp` of every bundled file in `BUNDLED` (`app.py`, `mlx_guard.py`, `ui/index.html`, `ui/style.css`, `ui/app.js`) against source |
 | Asset re-verification | download and compare to the manifest |
 
@@ -254,8 +254,8 @@ check, a SHA-256 checksum and a bundle-freshness comparison (§8).
 before the security fixes and shipped the vulnerable code while the source looked
 clean. It now fails the audit until the bundle is rebuilt.
 
-**Planned:** `2.0.1` with the security fixes, a regenerated manifest and a new
-release.
+**Done:** the security fixes shipped in `2.0.1`
+([CHANGELOG.md](../CHANGELOG.md)). The latest release is `v2.0.9` (2026-11-26).
 
 ---
 
@@ -266,6 +266,7 @@ release.
 | Rulesets, branch and tag protection | GitHub | proprietary service, free tier | free |
 | Required status checks | GitHub Actions | free for public repos | free |
 | `ubuntu-latest` runners | GitHub Actions | free for public repos | free |
+| `macos-15` runner (`macOS build` job only) | GitHub Actions | hosted runner | billing not checked |
 | Secret scanning + push protection | GitHub | free for public repos | free |
 | CodeQL code scanning | GitHub + CodeQL | CodeQL CLI is free for open source | free |
 | Dependabot alerts, security and version updates | GitHub | free | free |
@@ -277,7 +278,7 @@ release.
 | `pywebview`, `mlx`, `mlx-lm` | upstream | BSD-3 / MIT / MIT | free |
 
 **Not used, because they are paid or unavailable on this plan:** Copilot code
-review, GitHub Advanced Security for private repos, macOS and Windows hosted
+review, GitHub Advanced Security for private repos, Windows hosted
 runners, malware scanning of release assets, non-provider secret patterns and
 validity checks.
 
@@ -305,7 +306,7 @@ validity checks.
 | # | Item | Blocker | Owner |
 |---|---|---|---|
 | P-1 | Approval gate at 1 | needs a second GitHub account | Dipesh |
-| P-2 | `2.0.1` release with the security fixes | none | Dipesh |
+| P-2 | `2.0.1` release with the security fixes | done, shipped in `2.0.1` | Dipesh |
 | P-3 | Tag creation gated by a release workflow | none | Dipesh |
 | P-4 | `require_code_owner_review` on | after P-1 | Dipesh |
 | P-5 | Non-provider secret patterns, validity checks | plan limitation | GitHub plan |

@@ -1,7 +1,7 @@
 ---
 type: Design
 title: "Design — MLX Studio interface"
-status: "Built at tag v2.0.0 (2026-11-24)"
+status: "Built at tag v2.0.0 (2026-11-24); unreleased API Server additions noted in 7.4; other 2.0.x changes not re-reviewed"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -129,7 +129,8 @@ every pill carries a word.
 | Table | `.table` | hover row tint; status cells coloured |
 | Console | `.console` | monospace on `#0f1115`, max-height 340 px |
 | Empty state | `.empty` | mark tile, heading, one-line hint |
-| Toast | `#toast` | bottom centre, 3.2 s, `.bad` variant |
+| Toast | `#toast` | bottom centre, 3.2 s, `.bad` variant. Unreleased: a refused or failed Load request uses the panel below instead |
+| Load-failure panel (unreleased) | `#loadProblemBox` | bottom right, red border, `role="alert"`; stays until **Dismiss** or the next load |
 
 ## 6. State vocabulary
 
@@ -196,6 +197,52 @@ This is the contract between backend and interface. Every surface derives from
 - Topbar: title, state pill, model select, **Start**/**Stop**.
 - Endpoint panel: monospace URL, **Copy**, one-line hint, `curl` example.
 - Output panel: live subprocess stdout, auto-scrolled only when already at bottom.
+- Unreleased (2.0.10 source):
+  - Panel **Also keep loaded (optional)**: a second searchable picker with
+    **None**, never offering the first model; a hint that models take turns.
+  - The second choice is kept when it is changed while the server runs.
+  - Estimate and safe-context lines. **Start** is disabled when the pair does not
+    fit, the refusal stays on screen (not a toast), and no context advice is shown
+    then. The estimate is asked again every 10 s while stopped; a running pair
+    keeps its answer, and a refused estimate is not shown while a server runs.
+  - Estimate words (GB to one decimal, K = context ÷ 1000, rounded down):
+
+    | Case | Words |
+    |---|---|
+    | Shorter context | **Two models: about 10K tokens each (one model alone can use more). Uses about X of Y GB free.** plus **Close other apps for more.** only when free memory is the limit |
+    | 32,768 | **Two models: 32K tokens each. Uses about X of Y GB free.** |
+    | Different pair while a server runs | **Uses about X of Y GB available.** or **Needs about X GB, Y GB would be available.** (free plus the running server's memory) |
+    | Same pair while a server runs | **Uses about X of Y GB available.** or **Needs about X GB, Y GB would be available.** (free plus the running server's memory) |
+    | Free memory unreadable | **Uses about X GB.** then **Free memory could not be read; using the fixed 52% rule.** |
+    | Refused, free memory | **Not enough free memory for two models: X GB free, Y GB needed for 8K each. Close other apps or start one model.** |
+    | Refused, 52% rule or unreadable | **Not enough memory for two models: X GB allowed for the API server, Y GB needed for 8K each. Choose smaller models or start one model.** |
+  - Under a running pair: **Keep prompts to T tokens or fewer. The prompt cache holds
+    about 2T tokens in total; above that, older prompts are dropped and read
+    again.** The cap is 2 × KV × T bytes, so by arithmetic a single conversation
+    up to about 2 × T can still be cached, pushing out the other; the line is the
+    safe limit, not the exact one (not tested).
+  - The visible estimate is hidden from screen readers; a status line that is
+    always in the page speaks it and describes **Start** and the second picker.
+  - A measured memory line: active, peak and budget with two models; active and
+    peak only with one, noting that the Chat tab model is not included. The
+    two-model line says **Measured by the API server, refreshed about every 10 s.**
+  - One notice, inside an always-present status region. The first that applies, in
+    this order: **One model at a time**; **Loaded without enough memory**; **Free
+    memory is low**; **Loaded models changed** (a model was replaced); **Second
+    model not preloaded**; **Loaded models changed** (unloaded to make room). The
+    pill lists the loaded models, current one first.
+
+    | Title | Text |
+    |---|---|
+    | **Loaded without enough memory** | Names the model, says it does not fit in the memory the API server may use now (with the GB figure and **with room for a T-token reply** when known), then **The other model was unloaded.** if an eviction of it is in the recent events. It ends **macOS may slow down or stop the API server. Free some memory or choose a smaller model.** |
+    | **Free memory is low** | **Other apps now use memory the API server was counting on (X GB short). Replies may slow down. Close apps, or restart the server for a smaller context.** |
+
+  - The **server unprotected** and **API server stopped** alerts sit above the
+    second picker.
+  - The Chat tab says that a Chat model loads only if it fits beside the two
+    models. A refused Load request shows in the load-failure panel (section 5).
+  - Without a session token the app shows one toast, "This page has no session.
+    Open MLX Studio from its app icon."
 
 ### 7.5 Activity
 

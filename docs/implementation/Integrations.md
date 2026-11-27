@@ -15,6 +15,10 @@
 `mlx_lm` can fetch image URLs found in a chat message. The guard on port 8080 passes only `data:`
 URLs and answers 400 to any other ([SECURITY.md](../SECURITY.md) section 4.2).
 
+Unreleased (2.0.10 source): for two models, the app and the guard read free memory
+from the macOS tool `/usr/bin/vm_stat` (local, no network). If it fails, the fixed
+52% memory rule is used.
+
 ## Details
 
 - The API server is started with `HF_HUB_OFFLINE=1`, so a request cannot make it download a model.
@@ -24,8 +28,9 @@ URLs and answers 400 to any other ([SECURITY.md](../SECURITY.md) section 4.2).
 
 ## Testing
 
-Test layout and isolation: [TESTING.md](../TESTING.md). Behaviour against the live Hub, PyPI and
-published release assets is UNVERIFIED for 2.0.9. There are no sandbox credentials.
+Test layout and isolation: [TESTING.md](../TESTING.md). The published 2.0.9 assets were downloaded
+and matched `release/SHA256SUMS` (2026-11-26). Behaviour against the live Hub and PyPI is UNVERIFIED.
+There are no sandbox credentials.
 
 ## Database
 

@@ -60,7 +60,7 @@ These are known and documented, not vulnerabilities:
 | Risk | Record |
 |---|---|
 | Ad-hoc signature, Gatekeeper warning on first launch | [ADR-007](docs/adr/ADR-007-adhoc-signing.md) |
-| No user authentication on the loopback ports: `/api/*` on 8765 needs a session token (except ping and focus), but any local process can read it from the app page; 8080 has no authentication | [docs/SECURITY.md](docs/SECURITY.md) §3, §5 |
+| No user authentication on the loopback ports: `/api/*` on 8765 needs a session token (except ping and focus), but in 2.0.9 any local process can read it from the app page (the unreleased source no longer serves it, which is still not user authentication); 8080 has no authentication | [docs/SECURITY.md](docs/SECURITY.md) §3, §5 |
 | The background API server's `server.log` can contain request content (the app's own chat log does not record prompts) | [docs/SECURITY.md](docs/SECURITY.md) §4.6 |
 | Zero required PR approvals (single maintainer) | [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md) §5 |
 
@@ -68,7 +68,17 @@ These are known and documented, not vulnerabilities:
 
 | Issue | Severity | Record |
 |---|---|---|
-| The page's Content-Security-Policy only sets `frame-ancestors`, so it adds no second line of defence against script injection. No live injection was found in the parts checked | Low (hardening) | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| In 2.0.9 the page's Content-Security-Policy only sets `frame-ancestors`, so it adds no second line of defence against script injection. No live injection was found in the parts checked. Fixed in the unreleased 2.0.10 source | Low (hardening) | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Unreleased source, browser mode (L1): the token could reach the `open` command line if `osascript` failed | Low, fixed in the unreleased source | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Unreleased source, browser mode (L2): the browser may keep the address with the token in its history (not checked live) | Low, documented known limit | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Unreleased source, two models: a model that does not fit the memory budget is loaded alone (with a warning), a switch between loaded models is not checked, and any local program can switch models through port 8080. The memory limits are calculated; their real two-model re-test has not run | Low (availability, local), known limit | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Unreleased source (I6): the policy allows inline style attributes; scripts are not affected | Info, documented known limit | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Unreleased source: the app process does not set `HF_HUB_OFFLINE`, so a Chat load may contact the Hub or prefer a same-named local folder | UNVERIFIED, not tested | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+
+Also fixed in the unreleased 2.0.10 source: port 8765 needs exactly one
+`Content-Type` on a POST; `PYWEBVIEW_LOG` is ignored; the memory budget file is
+written and read without following links, and bad values in it are ignored (N1,
+N2); `/api/load` accepts only a completely installed model (N3).
 
 ## More detail
 

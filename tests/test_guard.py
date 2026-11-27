@@ -6,6 +6,7 @@ load tests need mlx_lm (macOS) and skip without it. No model is loaded.
 
 from __future__ import annotations
 
+import gc
 import http.client
 import importlib.util
 import json
@@ -689,3 +690,152 @@ def test_identity_check_knows_old_and_new_servers(app_module, monkeypatch, comma
     monkeypatch.setattr(app_module, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(app_module, "_ps_field", lambda pid, field: command)
     assert app_module._is_our_server(4242, "org/model", None) is ours
+
+
+# Row 656: two models, checked against the installed mlx_lm ------------------ #
+class Weights(dict):
+    """mlx's nn.Module is a dict of its weights."""
+
+    def __init__(self, name):
+        super().__init__(weights=name)
+        self.name = name
+
+
+def studio_args():
+    return types.SimpleNamespace(
+        model="org/a", adapter_path=None, draft_model=None, trust_remote_code=False,
+        chat_template=None, use_default_chat_template=False, pipeline=False,
+    )  # fmt: skip
+
+
+@pytest.fixture
+def real(monkeypatch):
+    """The installed mlx_lm.server, put back as it was afterwards."""
+    pytest.importorskip("mlx_lm")
+    from mlx_lm import server
+
+    for cls, name in (
+        (server.ModelProvider, "_load"),
+        (server.ModelProvider, "load_default"),
+        (server.ResponseGenerator, "__init__"),
+        (server.ResponseGenerator, "_next_request"),
+    ):
+        monkeypatch.setattr(cls, name, getattr(cls, name))
+    return server
+
+
+class TestInstalledMlxLmTwoModels:
+    def test_hooks_are_where_the_guard_expects(self, guard, real):
+        assert guard.hook_problem(real) is None
+        assert guard.multi_problem(real) is None
+
+    def test_renamed_load_argument_is_reported(self, guard, real, monkeypatch):
+        def _load(self, path, adapter_path=None, draft_model_path=None):
+            pass
+
+        monkeypatch.setattr(real.ModelProvider, "_load", _load)
+        assert "_load" in guard.multi_problem(real)
+
+    def test_generation_loop_without_batch_generator_is_reported(self, guard, real, monkeypatch):
+        def _generate(self):
+            self.model_provider.load_default()
+            self.model_provider.load("x")
+
+        monkeypatch.setattr(real.ResponseGenerator, "_generate", _generate)
+        assert "_generate" in guard.multi_problem(real)
+
+    def test_a_missing_request_loop_hook_is_reported(self, guard, real, monkeypatch):
+        monkeypatch.delattr(real.ResponseGenerator, "_next_request")
+        assert "_next_request" in guard.multi_problem(real)
+
+    def test_missing_cache_trim_is_reported(self, guard, real, monkeypatch):
+        monkeypatch.setattr(real, "LRUPromptCache", type("Cache", (), {}))
+        assert "trim_to" in guard.multi_problem(real)
+
+    def test_real_classes_keep_two_models(self, guard, real, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(
+            real,
+            "load",
+            lambda path, **kw: calls.append(path) or (Weights(path), path, {}),
+        )
+        monkeypatch.setattr(real, "load_processor", lambda model, config: None)
+        monkeypatch.setattr(real, "make_prompt_cache", lambda model: [])
+        monkeypatch.setattr(real.Thread, "start", lambda self: None)
+        opts = guard.split_studio_args(
+            ["--studio-max-models", "2", "--studio-also-model", "org/b"]
+        )[1]
+        path = tmp_path / "r.json"
+        guard.install_multi(
+            real,
+            opts,
+            guard.status_writer(str(path)),
+            figures=lambda repo, tokens: (1000, 1000),
+            is_cached=lambda repo: True,
+        )
+        provider = real.ModelProvider(studio_args())
+        cache = real.LRUPromptCache(2)
+        real.ResponseGenerator(provider, cache)
+        assert provider._studio_prompt_cache is cache
+        provider.load_default()
+        provider.load("org/b")
+        provider.load("default_model")
+        assert calls == ["org/a", "org/b"]
+        assert provider.model.name == "org/a"
+        assert provider.model_key == ("org/a", None, None)
+
+    def test_a_cache_without_a_byte_limit_is_reported(self, guard, real, monkeypatch):
+        def insert_cache(self, model, tokens, prompt_cache, *, cache_type="assistant"):
+            pass
+
+        monkeypatch.setattr(real.LRUPromptCache, "insert_cache", insert_cache)
+        assert "bytes" in guard.multi_problem(real)
+
+    def test_the_real_cache_holds_the_byte_cap_on_a_serial_insert(
+        self, guard, real, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(real.Thread, "start", lambda self: None)
+        opts = guard.split_studio_args(["--studio-max-models", "2"])[1]
+        guard.install_multi(real, opts, guard.status_writer(None), None, None)
+        args = studio_args()
+        args.prompt_cache_bytes = 250
+        provider = real.ModelProvider(args)
+        cache = real.LRUPromptCache(10)
+        real.ResponseGenerator(provider, cache)
+
+        class Layer:
+            nbytes = 100
+
+            def is_trimmable(self):
+                return False
+
+        for token in range(5):  # insert_cache is what _serve_single calls
+            cache.insert_cache(("org/a", None, None), [token], [Layer()])
+            assert cache.nbytes <= 250
+        assert len(cache) == 2
+
+    def test_real_provider_reports_one_model(self, guard, real, monkeypatch, tmp_path):
+        monkeypatch.setattr(real, "load", lambda path, **kw: (Weights(path), path, {}))
+        monkeypatch.setattr(real, "load_processor", lambda model, config: None)
+        monkeypatch.setattr(real, "make_prompt_cache", lambda model: [])
+        path = tmp_path / "r.json"
+        guard.install_report(real, guard.status_writer(str(path)), 10**9)
+        provider = real.ModelProvider(studio_args())
+        provider.load_default()
+        data = json.loads(path.read_text("utf-8"))
+        assert data["resident"] == ["org/a"] and data["active_bytes"] >= 0
+
+    def test_releasing_a_real_module_frees_weights_still_referenced(self, guard, real):
+        import mlx.core as mx
+        from mlx import nn
+
+        gc.collect()
+        mx.clear_cache()
+        before = mx.get_active_memory()
+        model = nn.Sequential(nn.Linear(1024, 1024))
+        mx.eval(model.parameters())
+        assert mx.get_active_memory() - before >= 4 * 1024 * 1024
+        guard.release([model])
+        gc.collect()
+        mx.clear_cache()
+        assert mx.get_active_memory() - before < 1024 * 1024

@@ -21,6 +21,7 @@ cd MLX_Model_App
 
 - Install `mlx` and `mlx-lm` from the in-app **Setup** tab (pinned versions).
 - Optional native window: `python3 -m pip install pywebview`. Without it the app opens in a browser.
+  In the unreleased source, only the tab the app opens has a session: typing the address does not work.
 - If the system Python refuses `pip`, use a virtual environment and run from source with it.
 - Development tools: `python3 -m pip install pytest ruff`.
 - Git hooks: `./scripts/install_hooks.sh`, then `./scripts/install_hooks.sh --check`.

@@ -14,8 +14,11 @@ for DeepSeek Harness or any OpenAI-compatible client, and review a day-to-day
 activity log. It also reports installed versions and tells you when updates are
 available.
 
-> This page describes the **2.0.9 source**, which is not released yet. The
-> screenshots show an earlier version.
+> This page describes **2.0.9**, released on 2026-11-26 as the
+> [latest release](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
+> Text marked **unreleased** is in the working source for 2.0.10 only and is not
+> in the released app ([CHANGELOG](CHANGELOG.md)). The screenshots show an
+> earlier version.
 
 ![Chat view](screenshots/02-chat-loaded.png)
 
@@ -38,7 +41,7 @@ the old one, checks the signature, then swaps them and opens the app.
 | Note | Detail |
 |---|---|
 | Fails closed | No checksum line for the file, or a mismatch, means nothing is installed |
-| Availability | Needs a line for the version in `release/SHA256SUMS` on `main`. The file is not there yet: it starts with the built and verified 2.0.9, and 2.0.8 is not backfilled ([release steps](docs/DEPLOYMENT.md)). Versions with no line are refused |
+| Availability | Needs a line for the version in `release/SHA256SUMS` on `main`. The file lists the 2.0.9 dmg and pkg. 2.0.8 and older are not backfilled ([release steps](docs/DEPLOYMENT.md)). Versions with no line are refused |
 | Signature | Ad-hoc: it detects a damaged bundle, not who published it |
 | Options | `--version <x.y.z>`, `--dir ~/Applications`, `--no-launch` |
 
@@ -196,6 +199,7 @@ The double-clicked app does not look in that folder.
   the command line and start time still match.
 - If the server dies, the view shows a banner with **Restart** and records the
   event.
+- Unreleased: can keep [two models loaded](#one-or-two-models) at once.
 
 ### Activity
 - Filterable log of chats, loads, downloads, deletes, installs and server events.
@@ -255,7 +259,8 @@ Needs the Xcode command line tools (`clang`).
 ```
 
 The script compiles `packaging/launcher.c` for macOS 12.0 and stops if the binary
-reports a different minimum. Release files are generated from that exact build
+reports a different minimum. Unreleased: it also stops if `codesign` fails or
+`app.py` lacks exactly one `APP_VERSION = "X.Y.Z"` line. Release files are generated from that exact build
 (Python 3.11+), never edited by hand:
 
 ```bash
@@ -327,14 +332,78 @@ reject long input; too much context fails through memory or quality.
 
 The figures are for a 32 GB Mac and are **calculated from measured bytes per
 token, not load-tested**. They include the reply. 500K or 1M context is not
-proven and is not recommended here.
+proven and is not recommended here. They are for one model; with two models
+loaded (unreleased), use the safe context the API Server view shows.
 
-### One model at a time
+### One or two models
 
-The API server holds one model. A request naming another downloaded model makes it
-swap, after the running work finishes, which adds load time. The model loaded in
-the **Chat** tab is separate and uses its own memory; unload it if you only need
-the server.
+In the released 2.0.9 the API server holds one model. A request naming another
+downloaded model makes it swap, after the running work finishes, which adds load
+time. The model loaded in the **Chat** tab is separate and uses its own memory;
+unload it if you only need the server.
+
+**Unreleased (2.0.10 source):** the API Server tab has a second picker, **Also
+keep loaded (optional)**.
+
+| Point | Behaviour |
+|---|---|
+| Address | Both models answer on `http://127.0.0.1:8080/v1`; the client chooses by model name |
+| Turns | One model replies at a time. A request for the other waits for the running replies, then the server switches |
+| Third model | Naming another downloaded model evicts the least recently used one. If memory is still short, the server trims the prompt cache when that is enough; otherwise it evicts the other model too |
+| Context per model | Called **T** below. At most 32,768 tokens, rounded down to a multiple of 1,024, and never above a model's own limit. It is set at start and stays until the server is restarted |
+| Memory the pair may use | The smaller of 0.52 × RAM (less the Chat model's weights) and what is free now: the free, speculative, purgeable and file-backed pages reported by `/usr/bin/vm_stat`, minus 2 GB left for macOS and other apps. A running server's own memory counts as free, because a restart gives it back. If `vm_stat` cannot be read, only the 52% rule is used and the view says so |
+| How T is worked out | (budget − weights of both models − 1.4 GB margin) ÷ (5.1 × cache bytes per token), rounded down and capped. 5.1 is 2 for the prompt cache plus 3.1 for one reply. The larger of the two models' cache bytes per token is used |
+| Shrink or refuse | From 8,192 up to 32,767 the server starts with that smaller T and the estimate says so. Below 8,192 two models are refused: **Start** is disabled, or the start is refused (`409`), with the figures. Close other apps or start one model |
+| Prompt cache | Capped at 2 × cache bytes per token × T, room for about one conversation of T tokens per model. **Keep prompts to T tokens or fewer. The prompt cache holds about 2T tokens in total; above that, older prompts are dropped and read again.** Treat T as the safe limit: by the cap arithmetic a conversation up to about 2 × T can still be cached, but it pushes out the other one, and above that it is read again every turn (not tested with real models) |
+| After start | Each load of a model that is not in memory checks free memory again and may trim the cache, evict, or load alone. A switch between the two loaded models is not checked. Nothing is unloaded just because free memory drops |
+| Chat tab | A Chat model loads only if it passes both the 52% check and the live free-memory check beside the two models. Otherwise the load is refused (`409`) with the figures |
+| Refused Load | The reason stays in a panel at the bottom right until **Dismiss** or the next load |
+| Choosing **None** | One model, started with the same command as 2.0.9: no prompt cache byte cap, no live memory check and no memory refusal. The view adds a measured memory line |
+| Older or changed `mlx-lm` hooks | The server keeps one model and the app says why |
+
+What the view says about memory (unreleased):
+
+| Words | When |
+|---|---|
+| **Two models: about 10K tokens each (one model alone can use more). Uses about … of … GB free.** | T is below 32,768. **Close other apps for more.** is added only when free memory, not the 52% rule, is the limit |
+| **Two models: 32K tokens each. Uses about … of … GB free.** | T is 32,768 |
+| **Uses about … of … GB available.** or **Needs about … GB, … GB would be available.** | A server is running and holds memory; "available" counts the running server's memory (same pair or different) |
+| **Not enough free memory for two models: … GB free, … GB needed for 8K each. Close other apps or start one model.** | Refused because of free memory. "Needed" includes the 2 GB left for macOS |
+| **Not enough memory for two models: … GB allowed for the API server, … GB needed for 8K each. Choose smaller models or start one model.** | Refused by the 52% rule, or free memory could not be read |
+| **Free memory could not be read; using the fixed 52% rule.** | Added to the estimate when `vm_stat` fails |
+| **Free memory is low** | Notice on a running pair: other apps now use memory the server was counting on. It appears only after the loading of both models at server start has ended |
+| **Loaded without enough memory** | Notice: a model does not fit in the memory the server may use now, with room for a reply, and was loaded on its own |
+
+Example for a 32 GB Mac with two 7B 4-bit Qwen2.5 models (4.284 GB of weights
+and 57,344 cache bytes per token each), with no Chat model loaded and no server
+running. **Calculated, not measured:**
+
+| Free memory at start | T per model | Memory the server needs |
+|---|---|---|
+| 19.9 GB or more (the 52% rule is the limit) | 26,624 | about 17.75 GB |
+| 15.11 GB | 10,240 | about 12.96 GB |
+| 11.78 GB | refused | 8K each needs about 14.4 GB free |
+
+**The real two-model re-test of these limits has not run yet.** An earlier real
+run, made before these limits, drove system swap from 0 to 4.60 GB on a busy
+Mac; the limits were changed because of it. The 2 GB reserve, the 3.1 reply
+factor (one data point) and the `vm_stat` free figure are not proven.
+
+Known limits: real two-model memory use, cache trim, eviction, switch time and
+swap with the new limits are **not measured**. The memory budget never rises
+above the figure set at start, so restart the server to get a larger context
+after closing apps; a server started while a Chat model was loaded keeps the
+lower budget too, and a background server left running after you quit keeps a
+lowered budget until the app opens again. The Chat tab check counts the new
+model's weights, not its reply cache, and does not count the memory of the Chat
+model it replaces, so a swap may be refused until you **Unload**. If memory runs
+short between stopping the old server and starting the new one, the old server
+stays stopped and the reason is shown. Right after a server is killed, free
+memory may be read before macOS has returned it. A model whose own context limit
+is below 8,192 can make the "needed" figure too small. Screen readers may
+announce the notice or estimate again on later updates (not checked). Any local
+program using port 8080 can make the server switch models, and a switch between
+two loaded models does no memory check. More: [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -410,7 +479,7 @@ MLX_Model_App/
 ├── docs/                       # PRD, architecture, design, ADRs, diagrams
 ├── release/
 │   ├── latest.json             # update manifest served to installed copies
-│   └── SHA256SUMS              # per-file checksums (not created yet)
+│   └── SHA256SUMS              # per-file checksums, read by the installer
 ├── screenshots/                # captured views
 ├── Run_MLX_Manager.command     # Finder launcher
 ├── run.sh                      # terminal launcher
@@ -439,6 +508,13 @@ server on 8080 has the rules listed above. Neither has user authentication: othe
 programs on the same Mac can still use them, and one can fetch `/` on 8765 to read
 the token. Chat prompts are not written to the activity log.
 
+**Unreleased (2.0.10 source):** `/` no longer holds the token (it goes to the
+window in the URL fragment), every `Origin` header is checked, and replies carry a
+full `Content-Security-Policy`. A POST needs exactly one `Content-Type`, and
+`PYWEBVIEW_LOG` is ignored. In browser mode, if the browser cannot be opened, quit
+MLX Studio and open it again from its icon. This is still not user
+authentication. Remaining limits: [docs/SECURITY.md](docs/SECURITY.md) section 5.
+
 Known open risk: any local program can use port 8080 and switch between
 downloaded models.
 
@@ -462,8 +538,9 @@ results on every PR. See [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md).
 App API on `http://127.0.0.1:8765`, used by the window. Every `/api/*` request,
 GET and POST, needs the `X-MLX-Token` header (`403` without it); the exceptions
 are `GET /api/ping` and `POST /api/focus`. POSTs also need
-`Content-Type: application/json`. The app puts the token into its page, which any
-local program can fetch, so it is not user authentication.
+`Content-Type: application/json`. In 2.0.9 the app puts the token into its page,
+which any local program can fetch, so it is not user authentication. In the
+unreleased source the page no longer holds it.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -479,7 +556,7 @@ local program can fetch, so it is not user authentication.
 | GET | `/api/logs/files` | Files in the log folder |
 | GET | `/api/logs/export` | Zip of the log folder + `environment.json` |
 | POST | `/api/focus` | Raise the window (used by a second launch) |
-| POST | `/api/load` `{repo}` | Load a model |
+| POST | `/api/load` `{repo}` | Load a model. Unreleased: `400` if not installed completely, `409` if it does not fit beside a two-model server |
 | POST | `/api/unload` | Unload the model |
 | POST | `/api/chat` `{messages}` | SSE stream: `token`, `done`, `error` |
 | POST | `/api/chat/stop` | Cancel generation |
@@ -487,7 +564,8 @@ local program can fetch, so it is not user authentication.
 | POST | `/api/download/cancel` `{repo}` | Cancel a running download |
 | POST | `/api/delete` `{repo}` | Delete a cached model |
 | POST | `/api/reveal` `{repo}` | Show a cached model in Finder |
-| POST | `/api/server/start` `{repo, background}` | Start the API server |
+| POST | `/api/server/start` `{repo, background}` | Start the API server. Unreleased: optional `also` with one more model; `409` if the pair does not fit in memory |
+| POST | `/api/server/estimate` `{repo, also}` | Unreleased: memory estimate for the choice |
 | POST | `/api/server/stop` | Stop it |
 | POST | `/api/server/notice/clear` | Dismiss the "server stopped" banner |
 | POST | `/api/install` `{kind}` | `install` \| `update` \| `reinstall` |
@@ -506,6 +584,8 @@ local program can fetch, so it is not user authentication.
 | Launch log | `~/.mlx_studio/logs/launch.log` |
 | Background server output | `~/.mlx_studio/logs/server.log` |
 | Background server pid | `~/.mlx_studio/server.pid` |
+| Loaded models and memory (unreleased) | `~/.mlx_studio/server.resident.json`, removed on stop |
+| Two-model memory budget (unreleased) | `~/.mlx_studio/server.budget`, removed on stop |
 
 Logs rotate at 2 MB with three backups (`server.log` before a background start).
 The folder is `0700`. The activity, application, launch and server logs are
@@ -549,7 +629,13 @@ launcher needs Python 3.10+.
 in your default browser.
 
 **"invalid session token; reload the window"**: a window or tab from an earlier
-launch. Reload it.
+launch. Reload it. In the unreleased source the message is **"invalid session
+token; open MLX Studio again from its icon"**, and reloading does not help.
+
+**"This page has no session. Open MLX Studio from its app icon."** (unreleased):
+the page was opened without the app, for example from a bookmark. Open the app; in
+browser mode a second launch opens a new tab (not checked live: if an icon click
+only brings the running app forward, quit it and open it again).
 
 **Port 8765 busy**: another program holds it. A second MLX Studio launch only
 raises the first window.

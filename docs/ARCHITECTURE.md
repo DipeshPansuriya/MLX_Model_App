@@ -1,7 +1,7 @@
 ---
 type: Architecture
 title: "Architecture — MLX Studio"
-status: "Describes the 2.0.9 source, unreleased (2026-11-25)"
+status: "2.0.9 released 2026-11-26; parts marked unreleased describe the working source"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -99,8 +99,9 @@ Consequences:
 
 - **The UI never blocks.** Every long operation is a worker thread; the UI polls
   `/api/state` every 2 s and streams chat over its own connection.
-- **Only one model is resident.** `State.model` is a single slot; a second load
-  while one is in flight is refused with `409`.
+- **The app process holds one model.** `State.model` is a single slot; a second
+  load while one is in flight is refused with `409`. The server child holds one
+  model in 2.0.9; the unreleased source can keep two (section 6).
 - **`State` is guarded by a lock** for mutation, but readers take a snapshot
   without holding it for the whole render (`State.snapshot`).
 - **The server is deliberately out-of-process** so a crashed or wedged server
@@ -159,7 +160,7 @@ at 2 MB into three numbered backups and forces `0600` on every write:
 |---|---|---|
 | `activity.log` | `log_activity` | One JSON object per user-visible action |
 | `app.log` | `log_app` | `level` + `message` + fields: start/stop, HTTP ≥ 400, model load failure, download failure, install result, `api server started` / `died` / `stopped`, diagnostic export |
-| `launch.log` | `packaging/launcher.c` | Timestamped launcher steps and the child's stdout |
+| `launch.log` | `packaging/launcher.c` | Timestamped launcher steps and the child's stdout. Unreleased: an unwritable file is moved to `launch.log.1`, and parallel launches take turns |
 | `server.log` | guarded `mlx_lm` server (background only) | Raw server output, since a detached child has no pipe to the UI |
 
 `build_diagnostic_bundle()` zips the folder with a generated `environment.json`
@@ -210,9 +211,15 @@ generator checks it per token, and the partial answer is preserved.
 
 ```
 POST /api/load {repo}
-  → 409 if another load is in flight
+  → unreleased, repo not loaded yet:
+      400 if it is not installed completely
+      409 if it does not fit beside a two-model API server (section 6.3)
+  → 200 {ok, already: true} if it is already loaded
+  → 409 if a load or reply is in progress, or it is being deleted
   → 200 immediately {ok, loading: repo}
   → worker_load(repo) on a thread
+      release the old model
+      unreleased: rewrite server.budget (two-model server only)
       mlx_lm.load(repo)
       State.model / tokenizer / loaded_repo set under lock
   → UI observes the transition on its next 2 s poll
@@ -228,6 +235,7 @@ POST /api/server/start {repo, background}
   → worker_server_start(repo, background)
       stop_server()                          # idempotent
       child command: mlx_guard.py, HF_HUB_OFFLINE=1
+      unreleased: env also sets MLX_STUDIO_RESIDENT_FILE and MLX_STUDIO_BUDGET_FILE
       foreground: Popen(..., stdout=PIPE)    # pump into State.server_lines[-400:]
       background: Popen(..., stdout=server.log, start_new_session=True)
       write ~/.mlx_studio/server.pid {pid, repo, background, started_at, port, started}
@@ -244,6 +252,35 @@ cannot be proven (for example a conditional schema, or zero or several tools wit
 that name). All other output is passed on as the model wrote it. A tool that
 gives `null` its own meaning although its schema refuses it gets the argument
 left out.
+
+**Two models (unreleased, 2.0.10 source).** When a second model is chosen, one
+server process keeps up to two models in `mlx_lm`'s own `ModelProvider`; there is
+no router or second port.
+
+| Part | Behaviour |
+|---|---|
+| Slots | The guard wraps `ModelProvider._load` and `load_default`; the least recently used model goes first. The server starts on the first model and preloads the second only if both fit |
+| Turns | `mlx_lm` loads only when nothing is generating, so a request for the other model waits for the running replies, then switches |
+| Admission | Checked when a model is loaded: held memory (MLX active), plus the new weights, plus the largest reply room (3.1 × cache bytes per token × context), plus 1.4 GB margin (1 GB + 0.4 GB process overhead) must fit the budget. With both slots full the least recently used model goes first. If trimming the prompt cache alone then closes the gap, the cache is trimmed and the other model stays; else that model is evicted too, and the cache is trimmed to what fits. The guard measures and plans again after each eviction or trim. A model that still does not fit is loaded alone, with a warning. A switch between two loaded models is not checked |
+| Free memory | `free_bytes()` in `mlx_guard.py` runs `/usr/bin/vm_stat` (no shell, 2 s timeout) and adds the free, speculative, purgeable and file-backed pages. Any failure gives no figure, and the live check is skipped |
+| Budget at start | App: static = 0.52 × RAM less the Chat model's weights; live = a running server's active memory + free − 2 GB. The smaller one is used (static alone without a figure) and passed as `--studio-budget-bytes` |
+| Budget later | Guard: the smallest of the start budget, the `server.budget` file and its active memory + free − 2 GB. Worked out at each non-hit load, at the second preload and at each refresh. It never exceeds the start budget |
+| Context per model (T) | T = min(32,768, (budget − weights − 1.4 GB) / (5.1 × KV per token), rounded down to 1,024). KV per token is the larger of the two models' (131,072 bytes if unreadable). Below 8,192 the pair is refused; between 8,192 and 32,767 it starts shrunk and the UI says so. T is fixed until a restart and passed as `--studio-kv-tokens` |
+| Chat model beside it | `POST /api/load` answers 409 when either check fails (`chat_load_problem`): the server's memory plus the Chat weights above 0.52 × RAM, or the Chat weights plus what the server may still take above free − 2 GB. The Chat model's own reply cache is not counted |
+| Prompt cache | Cap of 2 × KV × T bytes, passed to `mlx_lm` as `--prompt-cache-bytes`. `mlx_lm` trims to it on the batch path; the guard also sets the cache's own byte limit (`max_bytes`), which applies at every insert. A one-model start passes no byte cap |
+| Preload | The guard writes `preload_done` to the status file when preload ends, whatever the result (`finally`) |
+| Free memory low | Only after `preload_done` and with a measurement, the snapshot sets `server.memory_low = {free_bytes, short_by_bytes}` when need − 0.4 GB − active is more than free − 2 GB. The app caches the free figure for 10 s. No automatic unload. `server.context_tokens` is set for any two-model server and does not depend on events |
+| Release | An evicted model object is emptied (`release`), because the generation thread still refers to it until the next load returns |
+| Fallback | If the hooked places in `mlx_lm` have moved, including the cache's byte limit and `ResponseGenerator._next_request`, one model is kept and the reason is reported. The request guard still fails closed |
+| Status | The guard writes `server.resident.json` with `context_tokens` (T), `free_bytes`, memory figures, `preload_done` and events. Besides loads, switches, evictions and trims, it refreshes the figures from `mlx_lm`'s request loop (`_next_request`) at most every 10 s, without an event. A reply served one at a time holds that loop, so no refresh runs during it. The app reads the file only for the running process id |
+| Shared formula | The app imports `mlx_guard.py` for its estimate with bytecode writing turned off, to protect the signed bundle. A lock covers this import |
+
+The one-model server is unchanged: no cache byte cap, no live memory check and no
+memory refusal. The real two-model re-test of these limits has not run yet; the
+figures are calculated, and cache trim, eviction, switch time and swap with the
+new limits are not measured.
+Design: [ADR-010](adr/ADR-010-two-models-one-process.md). Budget limits:
+[SECURITY.md](SECURITY.md) section 5.
 
 **Down detection.** `_watch_server` polls every 2 s. For a server this process
 started it polls the `Popen` handle, because a detached child stays a zombie and
@@ -296,7 +333,9 @@ a few KB and idempotent rendering removes a class of stale-state bugs.
 | [ADR-005](adr/ADR-005-jsonl-activity-log.md) | JSON-lines log, no database |
 | [ADR-006](adr/ADR-006-manifest-updates.md) | Manifest-based app updates |
 | [ADR-007](adr/ADR-007-adhoc-signing.md) | Ad-hoc code signature |
-| [ADR-008](adr/ADR-008-single-model-slot.md) | One resident model |
+| [ADR-008](adr/ADR-008-single-model-slot.md) | One resident model in the app process |
+| [ADR-009](adr/ADR-009-api-server-guard.md) | Request guard on the API server |
+| [ADR-010](adr/ADR-010-two-models-one-process.md) | API server keeps two models in one process (unreleased, 2.0.10) |
 
 ## 9. Module inventory
 
@@ -319,7 +358,7 @@ a few KB and idempotent rendering removes a class of stale-state bugs.
 | MLX is Apple Silicon only | No cross-platform build; `LSMinimumSystemVersion` 12.0 |
 | `mlx_lm` API is not stable | `stream_generate` and `make_sampler` signatures verified per release; version shown in Setup |
 | No bundled Python | The bundle locates a system interpreter; a missing one is a dialog, not a crash |
-| Loopback only | No remote access by design. Local processes can still reach both ports: `/api/*` on 8765 needs a session token (readable from `/`), 8080 has no authentication ([SECURITY.md](SECURITY.md) §3) |
+| Loopback only | No remote access by design. Local processes can still reach both ports: `/api/*` on 8765 needs a session token (readable from `/` in 2.0.9, no longer served in the unreleased source), 8080 has no authentication ([SECURITY.md](SECURITY.md) §3) |
 | No database | Log grows unbounded until cleared; acceptable for a desktop tool |
 | One process for UI and inference | A hard kill of the app frees model memory with the process |
 

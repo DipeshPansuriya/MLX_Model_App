@@ -1,6 +1,6 @@
 # MLX Studio - Project summary
 
-**Date:** 2026-11-25 | **Source version:** 2.0.9 (unreleased)
+**Date:** 2026-11-26 | **Latest release:** 2.0.9 (2026-11-26, `v2.0.9`) | **Working source:** `APP_VERSION` 2.0.9 plus unreleased changes for 2.0.10 ([CHANGELOG](../CHANGELOG.md))
 
 ## Executive summary
 
@@ -29,7 +29,7 @@ request guard for the API server (`mlx_guard.py`). No database, cloud service or
 | 15 | Tests and security | [TESTING.md](TESTING.md), [SECURITY.md](SECURITY.md) |
 | 16 | Rate limiting | None found in `app.py` or `mlx_guard.py`. Both ports are loopback only; busy actions return 409 |
 | 17 | Deployment and CI | [DEPLOYMENT.md](DEPLOYMENT.md) |
-| 18, 19 | Load and capacity | One user, one loaded model. Memory sizing: [README](../README.md). Not load-tested |
+| 18, 19 | Load and capacity | One user. One model in the app; the API server holds one, or up to two in the unreleased source. Memory sizing: [README](../README.md). Not load-tested |
 | 20 | Critique | Open risks below |
 | 21 | Self-check | Verification state below |
 
@@ -37,7 +37,7 @@ request guard for the API server (`mlx_guard.py`). No database, cloud service or
 
 | Topic | State |
 |---|---|
-| Supply chain | Versions pinned in `requirements.txt`; no hash pinning. Scan result for 2.0.9: UNVERIFIED |
+| Supply chain | Versions pinned in `requirements.txt`; no hash pinning. The CI `Security audit` job, which runs `pip-audit`, passed for the 2.0.9 release (2026-11-26) |
 | Cost | No hosted service in the app. CI and release hosting are on GitHub; plan cost not reviewed |
 | Bus factor | Single maintainer ([GITHUB-POLICY.md](GITHUB-POLICY.md)) |
 | Privacy | Chat runs on this Mac. Network use is listed in [Integrations](implementation/Integrations.md) |
@@ -45,15 +45,33 @@ request guard for the API server (`mlx_guard.py`). No database, cloud service or
 | Technical debt | Backend in one large file; `app.py:NNN` line references in older documents go stale |
 | Modernisation | Not assessed |
 
+## Unreleased changes (2.0.10 source, not released on 2026-11-26)
+
+| Change | Automated tests | Not verified |
+|---|---|---|
+| API server keeps two models | Passed with a fake loader and the real `mlx_lm` classes | Real models: memory, safe context, cache trim, eviction, switch time, swap |
+| Chat load refused beside two models; **Loaded without enough memory** warning; load-failure panel | Passed with stand-ins | Real memory, real window, VoiceOver |
+| Two-model memory limits: context per model from live free memory, shrink or refuse below 8,192, prompt cache cap, **Free memory is low** | Passed with a faked `vm_stat` and stand-in models | The real two-model re-test has not run; all figures are calculated. An earlier real run, before these limits, had swap rise from 0 to 4.60 GB |
+| Token handed over in the URL fragment | Passed; offscreen web view | Real window, live browser mode |
+| Full Content-Security-Policy | Passed; headless Chrome and offscreen web view | Real window |
+| Bundle name and icon in the Dock and confirm boxes | Passed with stubbed AppKit; offscreen alert | Real Dock, menu bar, permission prompts |
+| Unwritable launch log recovery; build stops on signing or version-line failure | Passed locally | Reaches users only with a new build |
+| macOS CI runs guard and packaging tests with no skips; behaviour-based packaging tests | Passed locally | First run on GitHub |
+
 ## Open risks and verification
 
 | Item | State |
 |---|---|
-| Token on 8765 is readable by any local program; 8080 has no authentication | Accepted ([SECURITY.md](SECURITY.md) section 5) |
+| Token on 8765 is readable by any local program (2.0.9; no longer served in the unreleased source); 8080 has no authentication | Accepted ([SECURITY.md](SECURITY.md) section 5) |
 | Ad-hoc signature, unsigned pkg, no notarisation | Accepted |
-| Rebuilt 2.0.9 app, GUI, macOS 12, CI on GitHub | UNVERIFIED |
-| Content-Security-Policy only sets `frame-ancestors` | Open, Low: known issue in 2.0.9 |
-| Full test run | 1059 passed reported 2026-11-26; not re-run for this document |
+| CI on GitHub and the released 2.0.9 app on one Mac (ping, guarded server, 403 refusals) | Passed 2026-11-26 ([DEPLOYMENT.md](DEPLOYMENT.md) sections 5.3 and 11) |
+| App window and UI clicks, pkg install, DeepSeek Harness end to end, macOS 12 | UNVERIFIED |
+| Content-Security-Policy only sets `frame-ancestors` | Known issue in 2.0.9; fixed in the unreleased source |
+| Browser-mode token history, inline style allowance; two-model limits (load without enough memory, unchecked switch, open port 8080, memory limits not re-tested) | Known limits, unreleased source; the token fallback is fixed ([SECURITY.md](SECURITY.md) section 5) |
+| App process without `HF_HUB_OFFLINE`: possible Hub contact or same-named local folder on a Chat load | UNVERIFIED |
+| Security review of the unreleased token, CSP and two-model changes, and re-check of the fixes | Verdict SHIP at source level (2026-11-26); three later fixes (N1 to N3) and the later memory limits have no security re-check recorded here |
+| Code review of the same changes | First review: Needs changes. Re-check of the fixes: Pass (F1 to F8, F10 to F12), 2026-11-26. A later re-check of the F9 and follow-up fixes passed. The review of the memory limits said needs changes; no completed re-check of the fixes made after it is recorded here |
+| Full test run | 2.0.9: 1059 passed reported. Unreleased tree with the memory limits: 1503 passed, 0 skipped, reported 2026-11-26; not re-run for this document |
 
 ## Team and tracking
 

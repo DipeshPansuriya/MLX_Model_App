@@ -3,6 +3,144 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.10] — 2026-11-27
+
+Not released: pre-release build; the released 2.0.9 app has none of these changes.
+Checked with automated tests, temporary instances and offscreen web views. The real
+app window was not launched. One earlier real-model run of two models led to the
+memory limits below; **the re-test of those limits has not run yet.**
+
+### Added
+
+- **API Server can keep two models loaded.** A second picker, **Also keep loaded
+  (optional)**, starts the server with two installed models on the same address.
+  Models take turns: a request for one waits until the other's replies finish,
+  then the server switches. A third downloaded model named by a client evicts
+  the least recently used one. If memory is still short, the prompt cache is
+  trimmed when that is enough; otherwise the other model is evicted too.
+- A memory estimate and a "safe context" estimate for the pair. **Context per
+  model** is at most 32,768 tokens, rounded down to a multiple of 1,024. It
+  follows the smaller of 0.52 × RAM (less the weights of the app's Chat model)
+  and live free memory from `/usr/bin/vm_stat`, less 2 GB left for macOS and
+  other apps. The sum keeps a 1.4 GB margin and 3.1 times one reply's cache.
+- Below 32,768 the pair starts with a shorter context and the view says so. Below
+  8,192 tokens each, two models are refused (`409`) with the figures. If
+  `vm_stat` cannot be read, only the 52% rule is used and the view says so.
+- Free memory is checked again at each load of a model that is not in memory and
+  when a Chat model is loaded. A **Free memory is low** notice appears when other
+  apps take memory the server was counting on, only after preload has ended.
+  Nothing is unloaded just for that.
+- The API Server view shows measured memory (with two models active, peak and
+  budget; with one model active and peak only), a line saying **keep prompts to
+  T tokens or fewer. The prompt cache holds about 2T tokens in total; above
+  that, older prompts are dropped and read again**, and a notice when a model is
+  replaced, unloaded to make room, not preloaded, **loaded without enough
+  memory**, free memory is low, or only one model can be kept.
+- While two models are served, a Chat-tab load that does not fit beside them, by
+  the 52% rule or by live free memory, is refused (`409`) with the figures. A
+  model that does not fit the server budget on its own is still loaded alone, with
+  a **Loaded without enough memory** warning.
+- In two-model mode the prompt cache is capped at 2 × cache bytes per token ×
+  context, about one long conversation per model, including requests run one at a
+  time. A one-model server gets no byte cap, as in 2.0.9.
+- API route `POST /api/server/estimate`, the `also` field on
+  `/api/server/start`, and the state files
+  `~/.mlx_studio/server.resident.json` and `~/.mlx_studio/server.budget`.
+
+### Security
+
+- Every reply from port 8765 carries a full `Content-Security-Policy`: scripts
+  load only from the app's own files, with no inline script or `eval`.
+- The session token is no longer written into the page. The app opens its window
+  with the token in the URL fragment, which is not sent to the server; the page
+  keeps it in `sessionStorage` and removes it from the address bar. `GET /` no
+  longer reveals it.
+- Every `Origin` header must be the app's own, not only the first.
+- A POST to port 8765 needs exactly one `Content-Type` header.
+- `PYWEBVIEW_LOG` is removed before the window library loads, so its debug
+  logging cannot be switched on.
+- Browser mode: if `osascript` fails, the address is opened inside the app's own
+  process. If that fails too, nothing is opened and the app says to quit and open
+  it again from its icon. The token is not put on a command line.
+- `/api/load` and a one-model memory estimate accept only a completely installed
+  model.
+- The server's name list and memory budget files are not opened through a link.
+
+### Changed
+
+- `POST /api/load` answers `400` for a name that is not installed completely.
+- A refused Load request on the Chat or Models view stays in a panel at the bottom
+  right until **Dismiss** or the next load, instead of a short message.
+- API Server view: the server warnings sit above the second picker, and the
+  estimate and model warnings are marked up for screen readers (VoiceOver not
+  checked).
+- A page opened without the token (a typed or bookmarked address) shows one
+  message, "This page has no session. Open MLX Studio from its app icon.", and
+  sends no requests. The refused-token message is now "invalid session token; open
+  MLX Studio again from its icon".
+- In browser mode (no native window), a second launch of the app opens a new
+  tab, at most once every 3 seconds. Not checked live: if macOS only brings the
+  running app forward on an icon click, no tab opens.
+- A crash notice names both models, and says "possibly out of memory" when the
+  server process was killed.
+
+### Fixed
+
+- In the app bundle, the app now sets its own icon and name at start, so the Dock
+  and confirmation boxes should no longer show Python's. Tested offscreen only:
+  the real Dock, menu bar and macOS permission prompts are unverified.
+- An unwritable `launch.log` no longer ends launch logging: it is moved to
+  `launch.log.1` and a new file is opened. Launches started together take turns at
+  opening and rotating the log.
+- The build stops when `codesign` fails, and when `app.py` does not hold exactly
+  one `APP_VERSION = "X.Y.Z"` line.
+
+### CI and tests
+
+- The macOS job installs the pinned `mlx`, `mlx-lm` and `huggingface-hub`, and
+  fails if a test in the guard or packaging files is skipped or left out. These
+  steps have not run on GitHub yet.
+- The packaging tests run the build and installer scripts instead of matching
+  their text. New test files cover the changes above.
+
+### Known limits
+
+- **The two-model memory limits have not been re-tested on real models.** Memory
+  figures, safe context, eviction, cache trim, switch time and swap use are
+  calculated or untested. One earlier real run, before these limits, drove system
+  swap from 0 to 4.60 GB on a busy Mac. The 2 GB reserve, the 3.1 reply factor
+  (one data point) and the `vm_stat` free figure are not proven.
+- The budget never rises above the figure set at start: restart the server to get
+  a larger context. A server started while a Chat model is loaded keeps the lower
+  budget until it is restarted, and a background server left running after the app
+  quits keeps a lowered budget until the app opens again.
+- The Chat-tab check counts the new model's weights, not its reply cache, and not
+  the memory of the Chat model it replaces, so a swap may be refused until
+  **Unload**.
+- At each load the server counts its 0.4 GB process overhead twice, so it trims
+  or evicts a little early.
+- If the check after stopping the old server refuses the start, the old server
+  stays stopped. Right after a killed server, free memory may be read before
+  macOS has returned it.
+- A model whose context limit is below 8,192 can make the "needed" figure too
+  small. Screen readers may announce notices again on later updates (not checked).
+- The prompt hint says **keep prompts to T tokens or fewer. The prompt cache
+  holds about 2T tokens in total; above that, older prompts are dropped and read
+  again**. By the arithmetic one conversation up to about twice the context can
+  still be cached, pushing out the other (not tested).
+- A switch between two loaded models does no memory check. A model that does not fit
+  the budget is still loaded on its own, and any local program using port 8080 can
+  make the server switch models. A killed server loses both models.
+- Browser mode only: the browser may keep the first address, with the token, in
+  its history, although the page removes it from the address bar (not checked in
+  a live browser). The token stops working when the app quits.
+- `style-src-attr 'unsafe-inline'` stays in the policy for inline styles such as
+  the download progress bar. Scripts are not affected.
+- UNVERIFIED, not tested: the app process itself does not set `HF_HUB_OFFLINE`, so
+  loading an installed model on the Chat tab may contact the Hugging Face Hub, and
+  `mlx_lm` may prefer a local folder with the same relative name in the app's
+  working folder.
+
 ## [2.0.9] — 2026-11-26
 
 Security, robustness and build fixes, plus model search and copy. Checked by
@@ -151,8 +289,8 @@ running without the new request checks until it is restarted.
 - Cancelling in the middle of a Xet-backed file was not tested.
 - The one-line installer needs a line for the version in `release/SHA256SUMS` on
   `main`. 2.0.8 is not backfilled: the file starts with the built and verified
-  2.0.9. Until 2.0.9 is promoted the default install fails, and 2.0.8 or older is
-  refused ([DEPLOYMENT.md](docs/DEPLOYMENT.md) section 5).
+  2.0.9, and 2.0.8 or older is refused ([DEPLOYMENT.md](docs/DEPLOYMENT.md)
+  section 5).
 - Known issue (low): the page's Content-Security-Policy only sets
   `frame-ancestors`. It has no `default-src` or `script-src`, so it would not stop
   an inline script if some text were left unescaped. The security check found no

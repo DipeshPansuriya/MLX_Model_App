@@ -2,7 +2,7 @@
 type: Index
 title: "MLX Studio — documentation index"
 date: 2026-11-24
-updated: "2026-11-25 — 2.0.9 source: API, data, implementation and summary documents added"
+updated: "2026-11-26 — release status updated for v2.0.9"
 author: "Dipesh Pansuriya"
 project: mlx-studio
 version: "2.0.9"
@@ -27,9 +27,10 @@ OpenAI-compatible HTTP server, a persistent activity log, and version/update
 reporting for both the app and its runtime packages.
 
 This directory holds the product, architecture and operational documentation. It is
-being kept current with the **2.0.9** source, which is not released. Dated records
-(audit, recorded test results, "Status at a glance" evidence) describe the release
-named in them. Where a document describes intent rather than code, it says so.
+being kept current with the **2.0.9** source, released on 2026-11-26 as `v2.0.9`.
+Dated records (audit, recorded test results, "Status at a glance" evidence)
+describe the release named in them. Where a document describes intent rather than
+code, it says so.
 
 ## Reading order
 
@@ -47,7 +48,7 @@ named in them. Where a document describes intent rather than code, it says so.
 | 5d | [REPO-HARDENING-CHECKLIST.md](REPO-HARDENING-CHECKLIST.md) | Reusable 79-item checklist: 11 areas, verify commands, cost, scorecard |
 | 6 | [TESTING.md](TESTING.md) | What was verified, how, and what remains unverified |
 | 7 | [RUNBOOK.md](RUNBOOK.md) | Operator procedures: start, stop, recover, rotate a release |
-| 8 | [adr/README.md](adr/README.md) | The decisions behind the design (up to [ADR-009](adr/ADR-009-api-server-guard.md)), with alternatives rejected |
+| 8 | [adr/README.md](adr/README.md) | The decisions behind the design (up to [ADR-010](adr/ADR-010-two-models-one-process.md)), with alternatives rejected |
 | 9 | [diagrams/README.md](diagrams/README.md) | Rendered views of the runtime, request paths and release flow |
 | 10 | [API.md](API.md) | Endpoints, request rules, chat stream |
 | 11 | [DATABASE.md](DATABASE.md) | Stored files (there is no database) |
@@ -85,8 +86,9 @@ named in them. Where a document describes intent rather than code, it says so.
 | Branch protection on `main` | Built — ruleset, no bypass; 8 required checks in the script, the eighth not yet applied | [BRANCH-POLICY.md](BRANCH-POLICY.md) §2 |
 | CodeQL code scanning | Built — 3 languages, weekly, 3 alerts fixed | [BRANCH-POLICY.md](BRANCH-POLICY.md) §7.2 |
 | Automated PR review | Built — sticky report comment | [GITHUB-POLICY.md](GITHUB-POLICY.md) §3.1 |
-| Automated CI build on tag | Workflow defined; run on GitHub UNVERIFIED | [DEPLOYMENT.md](DEPLOYMENT.md) §8 |
+| Automated CI build on tag | Built: the `v2.0.9` tag run passed 6 of 6 jobs (2026-11-26) | [DEPLOYMENT.md](DEPLOYMENT.md) §8 |
 | Multi-turn context trimming | Open | [PRD.md](PRD.md) §10 |
+| Unreleased (2.0.10 source): two models on the API server, token handoff, full CSP, Dock icon, launcher, build and CI fixes | In the 2.0.10 source, not released; real window and real two-model memory UNVERIFIED; the re-test of the new two-model memory limits has not run | [CHANGELOG](../CHANGELOG.md) |
 
 ## Source layout
 
@@ -103,6 +105,7 @@ MLX_Model_App/
 ├── .githooks/                  # pre-commit, pre-push
 ├── .github/                    # workflows (security, quality, pr-review), CODEOWNERS
 ├── release/latest.json         # update manifest served to installed copies
+├── release/SHA256SUMS          # release asset checksums, read by the installer
 ├── tests/                      # pytest suite and UI harness
 ├── docs/                       # this documentation set
 ├── screenshots/                # captured views referenced by DESIGN.md

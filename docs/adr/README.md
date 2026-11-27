@@ -2,7 +2,7 @@
 type: Index
 title: "Architecture decision records — index"
 date: 2026-11-24
-updated: "2026-11-24 — initial set for v2.0.0"
+updated: "2026-11-26 — ADR-010 added (unreleased, 2.0.10 source)"
 author: "Dipesh Pansuriya"
 project: mlx-studio
 related:
@@ -28,6 +28,7 @@ change of mind is a new record that supersedes the old one.
 | [ADR-007](ADR-007-adhoc-signing.md) | Ad-hoc code signature for distribution | Accepted, revisit | — |
 | [ADR-008](ADR-008-single-model-slot.md) | One resident model at a time | Accepted | — |
 | [ADR-009](ADR-009-api-server-guard.md) | Request guard on the API server | Accepted | — |
+| [ADR-010](ADR-010-two-models-one-process.md) | API server keeps two models in one process (unreleased, 2.0.10) | Accepted, revisit | — |
 
 ## Decision map
 
@@ -42,6 +43,7 @@ change of mind is a new record that supersedes the old one.
 | How the bundle is trusted | ADR-007 |
 | How many models are resident | ADR-008 |
 | What the API server accepts | ADR-009 |
+| How many models the API server keeps | ADR-010 |
 
 ## Status words
 

@@ -111,8 +111,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pytest
-        run: python3 -m pip install --upgrade pip pytest
+      # requirements.txt is used as a constraints file, so the MLX versions are
+      # pinned in one place.
+      - name: Install pytest and the pinned MLX packages
+        run: |
+          python3 -m pip install --upgrade pip pytest
+          python3 -m pip install -c requirements.txt mlx mlx-lm huggingface-hub
 
       # Compiles the launcher and fails if its minos differs from Info.plist.
       - name: Build app, dmg and pkg
@@ -123,7 +127,18 @@ jobs:
 
       # The macOS-only launcher and build tests skip themselves on Linux.
       - name: Run the suite on macOS
-        run: python3 -m pytest -q
+        run: python3 -m pytest -q -rs --junitxml="$RUNNER_TEMP/macos-tests.xml"
+
+      # Only this job checks mlx_guard.py against the real mlx_lm and runs the
+      # build and installer for real, so a skipped or deselected test in these
+      # files fails the build.
+      - name: Guard and packaging tests ran, none skipped
+        run: >-
+          python3 .github/scripts/require_no_skips.py "$RUNNER_TEMP/macos-tests.xml"
+          tests/test_guard.py
+          tests/test_guard_null_args.py
+          tests/test_app_robustness.py
+          tests/test_packaging.py
 
   release:
     name: Release consistency

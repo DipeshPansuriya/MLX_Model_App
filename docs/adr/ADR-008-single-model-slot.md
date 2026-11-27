@@ -61,6 +61,13 @@ header names the model, so the user knows what they are talking to.
   app process only.
 - No preloading or warming: the first token after a load pays the full load cost.
 
+**Update 2026-11-26 (unreleased, 2.0.10 source):** the single-slot rule for the
+app process is unchanged. The API server child can now keep up to two models,
+taking turns, within a memory budget (`mlx_guard.py`, `install_multi`). Real
+two-model memory use is unmeasured; limits are in
+[SECURITY.md](../SECURITY.md) section 5. Decision recorded in
+[ADR-010](ADR-010-two-models-one-process.md).
+
 ## 5. Revisit trigger
 
 Reconsider if machines with 64 GB or more become the common target, or if a

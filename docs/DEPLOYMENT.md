@@ -1,7 +1,7 @@
 ---
 type: Deployment
 title: "Deployment — MLX Studio"
-status: "Matches the 2.0.9 source tree (not released)"
+status: "2.0.9 released 2026-11-26; lines marked unreleased describe the working source"
 date: 2026-11-25
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -63,10 +63,10 @@ Needs `clang` (Xcode command line tools), on a Mac.
 
 | Step | Detail |
 |---|---|
-| 1 | Read `APP_VERSION`; abort if absent. Remove the old app and build record |
+| 1 | Read `APP_VERSION`; abort if absent (unreleased: needs exactly one line `APP_VERSION = "X.Y.Z"`, else it stops before writing anything). Remove the old app and build record |
 | 2 | Copy `app.py`, `mlx_guard.py`, the three UI files and the icon; write `Info.plist` |
 | 3 | Compile the launcher for arm64; fail if its `minos` differs from `LSMinimumSystemVersion` |
-| 4 | Ad-hoc `codesign` (the script does not stop if this fails) |
+| 4 | Ad-hoc `codesign`. In 2.0.9 the script does not stop if this fails; the unreleased script exits with `error: codesign failed` and packages nothing |
 | 5 | `dist/MLX.Studio-<version>.dmg` with an `Applications` shortcut and `Read Me.txt` |
 | 6 | `dist/MLX.Studio-<version>.pkg` with `pkgbuild` (unsigned), installs into `/Applications` |
 | 7 | `dist/SHA256SUMS`, the build record for both files |
@@ -85,20 +85,28 @@ It needs Python 3.10 or newer and prefers one that has `mlx_lm`, then
 `~/.mlx_studio/logs/launch.log`, the first place to look when a double-click
 does nothing.
 
+Unreleased launcher: a log it may not write is moved to `launch.log.1` (replacing
+the older one) and a new file is opened; a symlink or a folder is left alone.
+Launches started together take turns at this, waiting about 5 seconds at most.
+
 ## 5. Release
 
-### 5.1 What GitHub has (read on 2026-11-26, recorded by the DevOps check)
+### 5.1 What GitHub has (after the 2.0.9 release, 2026-11-26)
 
 | Item | State |
 |---|---|
-| Latest release | `v2.0.8`, published, dmg and pkg |
+| Latest release | `v2.0.9`, published, dmg and pkg |
+| `v2.0.9` tag | On `a954b91`, the merged 2.0.9 source |
+| `release/latest.json` on `main` (`20f9768`) | Says 2.0.9; `sha256` is that of the 2.0.9 pkg |
+| `release/SHA256SUMS` on `main` (`20f9768`) | Lists the 2.0.9 dmg and pkg |
 | `v2.0.8` tag | Holds the 2.0.7 source. Which source built its files is UNVERIFIED |
-| `v2.0.7` | No tag, no release; both asset URLs return 404 |
-| `release/latest.json` on `main` | Says 2.0.7; its checksum matches no published asset |
+| `v2.0.7` | No tag, no release; both asset URLs returned 404 when checked before the 2.0.9 release |
 
-The one-line installer on `main` today is very likely broken: it resolves 2.0.8
-and compares the dmg with the 2.0.7 manifest checksum (read from code and
-published metadata; not run live).
+After promotion, both assets were downloaded again and matched
+`release/SHA256SUMS`, and the pkg matched `release/latest.json`. Before this
+release the one-line installer was very likely broken: it compared the 2.0.8 dmg
+with the 2.0.7 manifest checksum (read from code and published metadata; not run
+live).
 
 ### 5.2 Checksum list: no backfill (decided 2026-11-26)
 
@@ -108,7 +116,7 @@ verified 2.0.9. No earlier release is added.
 | Effect | Detail |
 |---|---|
 | No download of unknown files | Nothing published before 2.0.9 is vouched for |
-| Default install | Stays failing until 2.0.9 is promoted |
+| Default install | Passed the staging test after 2.0.9 was promoted (2026-11-26) |
 | `--version` 2.0.8 or older | Refused: no checksum line |
 
 The release tool still has `--backfill`; this release does not use it.
@@ -116,8 +124,10 @@ The release tool still has `--backfill`; this release does not use it.
 ### 5.3 Release order (option A)
 
 Run from the project root, in this order. Steps marked **Yes** publish, download
-or change GitHub and need the owner's approval first. These steps have not been
-run, and whether `gh` is available is UNVERIFIED.
+or change GitHub and need the owner's approval first. They were run for 2.0.9 on
+2026-11-26, except the gate script in step 4; the result is recorded after the
+step 12 commands. `gh` was not available, so the release was created through the
+GitHub REST API.
 
 | Step | Action | Approval |
 |---|---|---|
@@ -172,12 +182,17 @@ Never edit either by hand. Until step 10 is merged, the installer refuses 2.0.9,
 because `main` has no checksum for it. CI cannot stop someone marking a release
 as latest before that; the pre-release flag in step 8 covers it.
 
-**Working tree on 2026-11-26:** 2.0.9 is not released. `release/latest.json` has
-an uncommitted 2.0.8 edit that matches the published `v2.0.8` pkg (checksum and
-size); the committed file says 2.0.7. `release/SHA256SUMS` does not exist.
-`release_manifest.py --check` therefore fails on the working tree (tag `v2.0.8`
-holds 2.0.7 source, and there is no checksum list). With the committed manifest it
-passes with the 2.0.7 note.
+**Result for 2.0.9 (2026-11-26):**
+
+| Steps | Result |
+|---|---|
+| 1 to 3, 5 | A test fix and a `packaging/launcher.c` fix were added to the pull request after the first CI run failed. All 15 checks then passed; pull request #26 was squash merged as `a954b91` |
+| 4 | `set_approval_gate.sh` was not run; no ruleset change |
+| 6 | Clean worktree build; full suite green; `--verify --release` and `--check --tag` passed; audit `--release`: 37 pass, 2 expected signing warnings, 0 fail |
+| 7 | Tag `v2.0.9` pushed on `a954b91`; tag run passed 6 of 6 jobs |
+| 8 | Published as a pre-release without a rebuild |
+| 9, 10 | Pull request #27: 15 of 15 checks passed, including download and verification of the published assets; squash merged as `20f9768` |
+| 11, 12 | Staging test passed with `--version 2.0.9`, then unchanged after promotion to latest |
 
 ## 6. Installer
 
@@ -208,7 +223,8 @@ shows a link; it does not install the update itself.
 ## 8. CI
 
 `.github/workflows/quality.yml` runs on pushes, pull requests and `v*` tags.
-Running these jobs on GitHub with the 2.0.9 changes is UNVERIFIED.
+For the 2.0.9 release it passed on GitHub, including the 6 of 6 jobs of the
+`v2.0.9` tag run (2026-11-26, section 5.3).
 
 | Job | Checks |
 |---|---|
@@ -218,6 +234,14 @@ Running these jobs on GitHub with the 2.0.9 changes is UNVERIFIED.
 | `release` (check name `Release consistency`) | Version, manifest, `SHA256SUMS` and tags agree, including one valid line for the manifest version's dmg (except the never-published 2.0.7 manifest); a pushed tag matches `APP_VERSION`; a change under `release/` must match the published assets |
 
 CI does not publish a release.
+
+Unreleased workflow change (not yet run on GitHub): `macos-build` installs `mlx`,
+`mlx-lm` and `huggingface-hub` pinned by `requirements.txt` and fails if a test in
+`test_guard.py`, `test_guard_null_args.py`, `test_app_robustness.py` or
+`test_packaging.py` was skipped or not run
+(`.github/scripts/require_no_skips.py`, which must be committed with the
+workflow). `macos-build` is not in the required checks that
+`scripts/set_approval_gate.sh` lists, so a failure there does not block a merge.
 
 ## 9. After an update
 
@@ -230,7 +254,7 @@ unprotected**, open API Server and press **Restart now** (same model, same mode)
 | Situation | Action |
 |---|---|
 | Before the step 5 merge | Close the pull request; `git stash pop` only if the 2.0.8 edit is wanted back |
-| The source merge is bad | `git revert <merge-sha>` through a pull request. This restores the old installer, which is very likely broken (5.1), so prefer a forward fix |
+| The source merge is bad | `git revert <merge-sha>` through a pull request. This restores the old installer, which compares the dmg with the manifest checksum (the pkg's since 2.0.9), so it would very likely fail. Prefer a forward fix |
 | `Release consistency` blocks wrongly | Delete the two `Release consistency` lines in `scripts/set_approval_gate.sh` and rerun step 4 (needs approval) |
 | 2.0.9 bad before promotion | Leave it as a pre-release; `git revert <release-pr-sha>` through a pull request |
 | 2.0.9 bad after promotion | `gh release edit v2.0.9 --prerelease` (latest returns to 2.0.8, which the new installer refuses: no checksum line), then the same revert |
@@ -245,9 +269,11 @@ Model weights stay in the Hugging Face cache and logs in `~/.mlx_studio`.
 |---|---|
 | 2.0.9 rehearsal in a scratch clone: build, generate, `--verify --release`, audit `--quick --release`; `minos 12.0` | Passed on 2026-11-25, before the guard was added |
 | Installer with a real dmg, stubbed download, temporary target, run twice | Exit 0 |
-| `release_manifest.py --check` on the working tree, 2026-11-25 | Failed; current state in section 5.3 |
-| Section 5 steps; `--backfill` against real assets (not used for 2.0.9) | UNVERIFIED |
-| Release build including the guard, launch of the built app, real release assets | UNVERIFIED |
+| `release_manifest.py --check` and `--check --tag v2.0.9` on the working tree, 2026-11-26 after the release | Passed |
+| Section 5 steps for 2.0.9, with real release assets | Run on 2026-11-26; see section 5.3 |
+| Released app installed over `/Applications` (equals the released dmg), 2026-11-26 | `/api/ping` shows `2.0.9`; server through the guard with the 1M model answered a chat; foreign `Origin` and `Host` got 403 |
+| App window and UI clicks, pkg install, DeepSeek Harness end to end | UNVERIFIED |
+| `--backfill` against real assets (not used for 2.0.9) | UNVERIFIED |
 
 ## 12. Sources read for this file
 

@@ -7,7 +7,7 @@ import re
 import pytest
 from test_ui_behaviour import CSS, HTML, needs_node, run
 
-MODEL_SELECTS = ["chatModelSelect", "serverModelSelect"]
+MODEL_SELECTS = ["chatModelSelect", "serverModel2Select", "serverModelSelect"]
 COPY = 'data-copy="{}"'
 
 # Picker helpers: render, then drive the search box like a user would.

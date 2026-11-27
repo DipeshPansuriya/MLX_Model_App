@@ -1,7 +1,7 @@
 ---
 type: Testing
 title: "Testing — MLX Studio"
-status: "Matches the 2.0.9 source tree (not released)"
+status: "2.0.9 released 2026-11-26; also covers unreleased changes in the working source"
 date: 2026-11-25
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -19,8 +19,8 @@ related:
 | Layer | Method |
 |---|---|
 | Backend and HTTP contract | `pytest`; the real request handler on a free loopback port |
-| API server guard | `pytest`; policy functions and the real `mlx_lm` handler (skipped without `mlx_lm`) |
-| UI behaviour | `ui/app.js` run under Node against a stub DOM (`tests/ui_harness.js`) |
+| API server guard | `pytest`; policy functions and the real `mlx_lm` handler (skipped without `mlx_lm`; the unreleased macOS job fails on such a skip) |
+| UI behaviour | `ui/app.js` run under Node against a stub DOM (`tests/ui_harness.js`); UI tests skip without Node |
 | Packaging, installer, release | `pytest` on the scripts; macOS-only tests skip elsewhere |
 | Live window, real models | Manual (§6) |
 
@@ -48,6 +48,9 @@ cleared Hugging Face cache variables, and asserts that the cache path is inside
 it. Tests marked `integration` touch macOS tooling or the filesystem outside the
 temporary folder.
 
+An automatic fixture in `tests/conftest.py` fakes `vm_stat`, so tests never read
+this Mac's free memory (unreleased).
+
 The build, release and scanner tests replace `pip_audit` with a stub, so the
 security audit test does not call the real one. If `HTTP_PROXY` or `HTTPS_PROXY`
 is set, also set `NO_PROXY=127.0.0.1,localhost`; without it some loopback tests
@@ -55,8 +58,9 @@ in `test_row553.py` fail.
 
 ## 4. Suite
 
-28 test files on 2026-11-26. The latest reported full run had 1059 tests, all
-passed.
+Working tree on 2026-11-26 (unreleased changes included): 38 test files and 1503
+collected tests (`pytest --collect-only`). The released 2.0.9 had 28 files, and
+its latest reported full run had 1059 tests, all passed.
 
 | File in `tests/` | Covers |
 |---|---|
@@ -78,11 +82,20 @@ passed.
 | `test_single_instance.py` | One running window |
 | `test_ui_behaviour.py`, `test_ui_features.py` | Front-end behaviour, copy name, type-to-filter dropdowns |
 | `test_ui_buttons.py` | Front-end button behaviour |
-| `test_packaging.py` | Build script, installer, pkg structure |
-| `test_c1_h4_build.py`, `test_m13_l1_launcher.py` | Minimum macOS, clean-clone build, native launcher |
+| `test_packaging.py` | Runs the build and installer scripts: bundle and pkg structure, version line, signing failure |
+| `test_m15_ci.py` | CI build and release gates, and the no-skip checker (`.github/scripts/require_no_skips.py`) |
+| `test_row550_launch.py` | Token in the URL fragment, browser mode, second launch (unreleased) |
+| `test_row603_csp.py` | Content-Security-Policy on every reply, no inline script, `pywebview` style hash (unreleased) |
+| `test_row652_icon.py` | Bundle name and icon at start, with stubbed AppKit (unreleased) |
+| `test_row656_guard.py`, `test_row656_app.py`, `test_row656_ui.py` | Two models: admission, cache trim before eviction, start and estimate routes, pickers and notices; fake loader, no real model (unreleased) |
+| `test_row713_fixes.py` | Two-model review and security fixes: Chat load refusal, budget file, cache byte limit, notices, browser fallback; stand-in models (unreleased) |
+| `test_row731_fixes.py` | Budget file safety, `/api/load` installed check, load-failure panel, screen-reader markup, budget on server adoption (unreleased) |
+| `test_row760_limits.py` | Two-model limits: free bytes, context tokens, guard budget, estimate, start, Chat load, `memory_low`, UI words; fake `vm_stat` (unreleased) |
+| `test_row815_preload.py` | `preload_done` however preload ends; context shown whatever the last status event was; no `memory_low` before preload ends; guard-to-app check (unreleased) |
+| `test_row817_review.py` | Pre-release review fixes: running-pair estimate, restart body, status refresh hook, words for oversize, cache hint, memory line; fake request loop (unreleased) |
+| `test_c1_h4_build.py`, `test_m13_l1_launcher.py` | Minimum macOS, clean-clone build, native launcher (unreleased: unwritable log, parallel launches) |
 | `test_c2_l3_installer.py`, `test_c3_h5_release.py` | Checksum verification, release manifest |
 | `test_h8_m14_secrets.py`, `test_l8_token.py` | Secret scanner, token handling |
-| `test_m15_ci.py` | CI build and release gates |
 
 The IDs in file names (C1, H4, M6 and so on) are findings from the 2.0.9 review.
 
@@ -91,7 +104,7 @@ The IDs in file names (C1, H4, M6 and so on) are findings from the 2.0.9 review.
 | Job | Runs |
 |---|---|
 | `tests` | Suite on Ubuntu, without MLX |
-| `macos-build` | Build, then the suite on macOS |
+| `macos-build` | Build, then the suite on macOS. Unreleased workflow: installs `mlx`, `mlx-lm` and `huggingface-hub` pinned by `requirements.txt`, then fails if a test in `test_guard.py`, `test_guard_null_args.py`, `test_app_robustness.py` or `test_packaging.py` was skipped or not run. Not yet run on GitHub |
 
 Other jobs are listed in [DEPLOYMENT.md](DEPLOYMENT.md) §8.
 
@@ -112,6 +125,9 @@ Other jobs are listed in [DEPLOYMENT.md](DEPLOYMENT.md) §8.
 
 | Date | Result | Limit |
 |---|---|---|
+| 2026-11-26 | Latest unreleased tree, with the memory limits and the preload fix: 1503 passed, 0 skipped; `ruff check`, format check, `node --check` and `git diff --check` clean | Reported by the preload fix run, temporary `HOME`; one new test file was reformatted during the run and its 23 cases passed again; no real model loaded |
+| 2026-11-26 | Earlier unreleased tree: 1406 passed, no skips; `ruff check`, format check, `node --check` and `git diff --check` clean | Reported by the latest fix run, temporary `HOME`; no real model loaded |
+| 2026-11-26 | Earlier unreleased tree: 1313 passed, 0 failed; `ruff check`, format check and `node --check` passed | Reported by the two-model build, temporary `HOME`; no real model loaded |
 | 2026-11-26 | 1059 passed, 0 failed, 0 skipped; `ruff check` and format check passed | Reported by the guard fix run (temporary `HOME`, offline); a security check repeated the suite, exit 0 |
 | 2026-11-26 | 909 passed | Reported by the UI change run; test files changed afterwards, so current totals are UNVERIFIED |
 | 2026-11-25 | 714 passed, 0 failed, 0 skipped; ruff and `node --check` passed | Reported by the fix run on this tree; temporary `HOME`, offline |
@@ -129,7 +145,9 @@ The suite was not re-run for this document.
 | No test with real model weights | `mlx_lm` behaviour differences missed |
 | One hardware profile used for manual checks | Other chips, memory sizes and older macOS untested |
 | No load or soak test | Memory growth over long sessions unknown |
-| Guard tests skip without `mlx_lm` (Ubuntu) | The real-handler part runs only where MLX is installed |
+| Guard tests skip without `mlx_lm` (Ubuntu) | The real-handler part runs only where MLX is installed. The unreleased macOS job runs it, but is not yet proven on GitHub and is not a required check |
+| Two models on real hardware | The re-test of the new memory limits has not run: memory peak, context, eviction, cache trim, tool calls, switch time and swap with these limits are unmeasured. All limit figures are calculated |
+| Real window for the unreleased changes | Dock icon, confirm boxes, token handoff and browser mode not run live |
 
 ## 9. Sources read for this file
 

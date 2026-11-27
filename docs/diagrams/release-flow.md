@@ -42,7 +42,7 @@ flowchart TD
 | Disk image | `dist/MLX.Studio-x.y.z.dmg` | app, `Applications` symlink, read-me |
 | Package | `dist/*.pkg` | installs the app into `/Applications` |
 | Manifest | `release/latest.json` | version, url, notes, published, sha256, size of the pkg |
-| Checksums | `release/SHA256SUMS` | assets listed by the release tool; not created yet. It starts with the built and verified 2.0.9; no backfill |
+| Checksums | `release/SHA256SUMS` | assets listed by the release tool. Starts at 2.0.9; no backfill |
 
 Steps, order and current release state: [DEPLOYMENT.md](../DEPLOYMENT.md) sections 5 and 6.
 

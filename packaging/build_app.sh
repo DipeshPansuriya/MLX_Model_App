@@ -17,7 +17,9 @@ APP_NAME="MLX Studio"
 BUNDLE_ID="com.mlxstudio.app"
 # One value for the plist and the compiler, checked against the binary below.
 MIN_MACOS="12.0"
-VERSION="$(grep -m1 '^APP_VERSION' "$ROOT/app.py" | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')"
+# Every line that assigns APP_VERSION. Checked below: there must be exactly one.
+VERSION_LINE="$(sed -n '/^APP_VERSION[[:space:]]*=/p' "$ROOT/app.py")"
+VERSION_RE='^APP_VERSION[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"[[:space:]]*(#.*)?$'
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 APP_ONLY=0
@@ -30,9 +32,13 @@ for arg in "$@"; do
     esac
 done
 
-if [ -z "$VERSION" ]; then
-    echo "Could not read APP_VERSION from app.py"; exit 1
+# A second line would reach the (#.*)? part of the pattern, so refuse it first.
+if [[ "$VERSION_LINE" == *$'\n'* || ! "$VERSION_LINE" =~ $VERSION_RE ]]; then
+    echo "Could not read APP_VERSION from app.py:" \
+        'need exactly one line APP_VERSION = "X.Y.Z"' >&2
+    exit 1
 fi
+VERSION="${BASH_REMATCH[1]}"
 
 echo "▸ MLX Studio $VERSION"
 APP="$DIST/$APP_NAME.app"
@@ -93,7 +99,11 @@ fi
 # ── codesign (ad-hoc by default) ─────────────────────────────────────────────
 if [ "$DO_SIGN" -eq 1 ]; then
     echo "▸ ad-hoc codesign"
-    codesign --force --deep --sign - "$APP" 2>&1 | sed 's/^/    /' || true
+    # pipefail passes codesign's status through sed. An unsealed app is never packaged.
+    if ! codesign --force --deep --sign - "$APP" 2>&1 | sed 's/^/    /'; then
+        echo "error: codesign failed, build stopped" >&2
+        exit 1
+    fi
 fi
 
 echo "▸ built $APP"

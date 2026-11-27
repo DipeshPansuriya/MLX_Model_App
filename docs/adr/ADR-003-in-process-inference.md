@@ -20,6 +20,9 @@ Chat inference runs **inside** the app process, on a worker thread, using
 runs as a **separate child process** (`python -m mlx_lm server`) on
 `127.0.0.1:8080`.
 
+**Update 2026-11-26:** since 2.0.9 the child is started through `mlx_guard.py`
+([ADR-009](ADR-009-api-server-guard.md)), not `python -m mlx_lm server` directly.
+
 ## 2. Context
 
 Two consumers need inference: the chat UI, which needs token-by-token streaming

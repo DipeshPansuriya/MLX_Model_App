@@ -1,7 +1,7 @@
 ---
 type: PRD
 title: "Product requirements — MLX Studio"
-status: "2.0.7 source (2026-11-25), held by tag v2.0.8; requirements derived from the shipped code, not from a prior specification"
+status: "2.0.7 source (2026-11-25), held by tag v2.0.8; requirements derived from the shipped code, not from a prior specification; unreleased two-model requirement added 2026-11-26, other rows not re-reviewed"
 date: 2026-11-24
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -135,6 +135,7 @@ person, one Mac, one process.
 | F22a | Run in the background | With **Background** ticked the child is detached (`start_new_session`), keeps serving after the window closes, and writes `~/.mlx_studio/logs/server.log` |
 | F22b | Survive an app restart | The pid is written to `~/.mlx_studio/server.pid`; the next launch adopts the running server instead of starting a second one |
 | F22c | Warn when the server dies | A 2 s watchdog flips state to stopped, shows a red banner with the exit status and a **Restart** button, fires a desktop notification, and logs `api server died` |
+| F22d | Keep two models loaded (unreleased, 2.0.10 source) | A second installed model can be chosen; both answer on one address and take turns. Context per model is at most 32,768 tokens in steps of 1,024, worked out from the smaller of 0.52 × RAM (less the Chat model) and live free memory less 2 GB; the estimate says when it is shorter. **Start** is refused below 8,192 tokens each. If free memory cannot be read, the 52% rule alone applies and the view says so. A later shortage shows **Free memory is low**; a model that does not fit is loaded alone with **Loaded without enough memory**; a Chat load that does not fit beside the pair is refused. The one-model server is unchanged. Figures are calculated; the real two-model re-test of these limits has not run |
 
 ### 5.6 Activity log
 
@@ -195,7 +196,7 @@ person, one Mac, one process.
 | Prompt libraries, RAG, embeddings, vector stores | Not required by the premise |
 | Cloud sync of settings or history | No account, no backend |
 | Notarised distribution | Requires an Apple Developer account; see [SECURITY.md](SECURITY.md) §5 |
-| Auto-download of updates | The app links to the DMG; installation stays a user action |
+| Auto-download of updates | The app links to the installer; installation stays a user action |
 
 ## 9. Open decisions
 
@@ -205,14 +206,14 @@ person, one Mac, one process.
 | OD-2 | CI builds the DMG on tag push? | Dipesh | Built locally by `packaging/build_app.sh` |
 | OD-3 | Context trimming for long conversations? | Dipesh | Full history sent; `max_tokens=2048` per turn |
 | OD-4 | Sampling defaults exposed in the UI? | Dipesh | Fixed at `temp=0.7`, `top_p=0.95` |
-| OD-5 | Multiple concurrent loaded models? | Dipesh | One model resident at a time |
+| OD-5 | Multiple concurrent loaded models? | Dipesh | Released: one model resident at a time. Unreleased source: the API server can keep up to two; the Chat tab still holds one |
 | OD-6 | Where is the manifest hosted long-term? | Dipesh | `raw.githubusercontent.com` on `main` |
 
 ## 10. Known limitations
 
 | Limitation | Consequence | Mitigation |
 |---|---|---|
-| One model resident | Switching models costs a reload | Unload is explicit and fast; cache is cleared |
+| One model resident (Chat tab; also the API server in released builds) | Switching models costs a reload | Unload is explicit and fast; cache is cleared. Unreleased: the API server can keep two |
 | No context trimming | Very long chats grow the prompt until the model's window is reached | New chat; OD-3 |
 | Chat history is in-memory | Closing the app loses the transcript | Activity log records actions and outcomes, not prompt text |
 | Port 8765 and 8080 are fixed | A second instance or another server conflicts | Documented in [RUNBOOK.md](RUNBOOK.md) §5 |

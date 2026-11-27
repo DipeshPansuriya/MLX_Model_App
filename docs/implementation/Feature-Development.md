@@ -27,6 +27,8 @@
 - A new top-level Python module must also be added to the build, release and compile-check lists
   (`packaging/`, workflows, hooks), as was needed for `mlx_guard.py`.
 - Do not log prompt or reply text.
+- Unreleased source: no inline script, event handler or `eval` in the UI (the
+  Content-Security-Policy blocks them). Recheck the style hash when `pywebview` changes.
 
 ## Feature flags
 

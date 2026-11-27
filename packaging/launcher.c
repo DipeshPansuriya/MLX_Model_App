@@ -15,6 +15,7 @@
  * packaging/build_app.sh compiles this file; the binary is never committed.
  */
 
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
@@ -23,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -39,6 +41,7 @@
 
 #define MAX_LOG_BYTES (2 * 1024 * 1024)
 #define PROBE_TIMEOUT_SECONDS 20
+#define LOCK_TRIES 500 /* 10 ms apart: about 5 seconds */
 
 /* Exit status of the probe: PROBE_BASE + score, anything else is unusable. */
 #define PROBE_BASE 20
@@ -75,6 +78,43 @@ static int open_log(const char *path) {
     return fd;
 }
 
+/* Let one launch at a time open and move the logs, or two started together can
+ * move each other's new log over the old one. The wait is bounded: a stuck lock
+ * delays the start but never stops it. Returns -1 when there is no lock. */
+static int lock_logs(const char *log_dir) {
+    int fd = open(log_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    for (int tries = 0; tries < LOCK_TRIES; tries++) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) return fd;
+        if (errno != EWOULDBLOCK) break;
+        usleep(10000);
+    }
+    close(fd);
+    return -1;
+}
+
+/* The log to append to, after moving aside one that is read only or full.
+ * Returns -1 when there is none. */
+static int current_log(const char *log, const char *old) {
+    int fd = open_log(log);
+    if (fd < 0) {
+        /* A log we may not write (read only, or left by another user) would end
+         * launch logging for good, so it is moved aside, whatever its size. A
+         * symlink or a directory fails with another error and stays put. */
+        if ((errno != EACCES && errno != EPERM) || rename(log, old) != 0) return -1;
+        return open_log(log);
+    }
+
+    /* Size the file that is actually open, not whatever the path names next.
+     * If rotation fails, keep appending to the descriptor already held. */
+    struct stat st;
+    if (fstat(fd, &st) == 0 && st.st_size >= MAX_LOG_BYTES && rename(log, old) == 0) {
+        close(fd);
+        fd = open_log(log);
+    }
+    return fd;
+}
+
 /* Point stdout and stderr at launch.log so a Finder launch can be diagnosed.
  * Best effort: on any failure the streams are left as they are. */
 static void redirect_to_log(void) {
@@ -95,17 +135,10 @@ static void redirect_to_log(void) {
     mkdir(app_dir, 0700);
     mkdir(log_dir, 0700);
 
-    int fd = open_log(log);
+    int lock = lock_logs(log_dir);
+    int fd = current_log(log, old);
+    if (lock >= 0) close(lock);
     if (fd < 0) return;
-
-    /* Size the file that is actually open, not whatever the path names next.
-     * If rotation fails, keep appending to the descriptor already held. */
-    struct stat st;
-    if (fstat(fd, &st) == 0 && st.st_size >= MAX_LOG_BYTES && rename(log, old) == 0) {
-        close(fd);
-        fd = open_log(log);
-        if (fd < 0) return;
-    }
 
     dup2(fd, STDOUT_FILENO);
     dup2(fd, STDERR_FILENO);

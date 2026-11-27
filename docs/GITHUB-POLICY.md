@@ -133,10 +133,11 @@ repository UI if the plan ever supports them. The local scanner covers the gap:
 | Workflow | Trigger | Jobs | Cost |
 |---|---|---|---|
 | `security.yml` | push to `main`, PR, dispatch | secret scan (tree + history), audit, hook installer | free |
-| `quality.yml` | push to `main`, PR, dispatch | lint and format, syntax gates, docs links | free |
+| `quality.yml` | push to `main`, `v*` tags, PR, dispatch | lint and format, syntax gates, tests, docs links, macOS build, release consistency | macOS billing not checked |
 | `pr-review.yml` | PR opened, synchronize, reopened, ready_for_review | one report job | free |
 
-All jobs run on `ubuntu-latest`. `macos-14` was tried and never starts on this
+All jobs run on `ubuntu-latest` except `macOS build` in `quality.yml`, which
+runs on `macos-15`. `macos-14` was tried and never starts on this
 repository — jobs are cancelled with zero steps and no runner assigned, while an
 `ubuntu-latest` job in the same workflow completes. The audit script is portable
 so it runs on Linux; `codesign` and `spctl` checks report `INFO` off macOS.
@@ -165,8 +166,9 @@ Everything here is on the free tier.
 | CodeQL / Copilot code review | **not used** — paid or unavailable on this plan |
 
 The workflows use `actions/checkout`, `actions/setup-python`,
-`actions/setup-node` and `actions/github-script`, all free for public repos. No
-job uses a macOS or Windows runner, which would consume paid minutes.
+`actions/setup-node` and `actions/github-script`, all free for public repos. One
+job, `macOS build`, uses a macOS runner; its billing was not checked here. No job
+uses a Windows runner.
 
 ## 5. Approval gate
 

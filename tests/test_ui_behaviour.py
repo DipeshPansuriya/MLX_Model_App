@@ -28,11 +28,12 @@ const reply = (body, ok = true) => Promise.resolve({ ok, statusText: "bad", json
 """
 
 
-def run(tmp_path, scenario):
+def run(tmp_path, scenario, **boot):
     path = tmp_path / "scenario.js"
     path.write_text(PRELUDE + scenario, encoding="utf-8")
+    harness = str(ROOT / "tests" / "ui_harness.js")
     proc = subprocess.run(
-        [NODE, str(ROOT / "tests" / "ui_harness.js"), str(ROOT / "ui" / "app.js"), str(path)],
+        [NODE, harness, str(ROOT / "ui" / "app.js"), str(path), json.dumps(boot)],
         capture_output=True,
         text=True,
         timeout=20,
@@ -308,7 +309,7 @@ class TestUnguardedServerNotice:
         notice = HTML[HTML.index('id="serverUnguarded"') :]
         notice = notice[: notice.index('id="serverToolsWarn"')]
         assert 'role="alert"' in notice and 'id="serverUnguardedRestart"' in notice
-        assert "Restart the API server to apply the 2.0.9 protection" in notice
+        assert "Restart the API server to apply the 2.0.10 protection" in notice
 
 
 @needs_node
@@ -324,3 +325,59 @@ def test_every_api_request_from_the_ui_carries_the_token(tmp_path):
     # /api/state is the poll the page sends while it boots.
     assert {"/api/state", "/api/logs/export", "/api/catalog"} <= {path for path, _ in out}
     assert [path for path, token in out if token != "test-token"] == []
+
+
+TOKEN = "Ab0_-" * 8 + "xyz"  # 43 characters, the shape token_urlsafe(32) makes
+
+# What the page did while booting: what it sent, kept and left in the address bar.
+SESSION = """
+return {
+  sent: calls.map((c) => c.opts.headers["X-MLX-Token"]),
+  stored: stored.get("mlx-token") ?? null,
+  replaced, hash: location.hash, intervals,
+  toast: document.querySelector("#toast").textContent,
+};
+"""
+
+
+@needs_node
+class TestSessionToken:
+    def test_the_fragment_token_is_used_kept_and_taken_out_of_the_url(self, tmp_path):
+        out = run(tmp_path, SESSION, hash=f"#t={TOKEN}", storage={})
+        assert out["sent"] and set(out["sent"]) == {TOKEN}
+        assert out["stored"] == TOKEN
+        assert out["replaced"] == ["/"]
+        assert out["hash"].endswith("chat") and TOKEN not in out["hash"]
+
+    def test_a_new_fragment_replaces_the_token_of_an_earlier_launch(self, tmp_path):
+        out = run(tmp_path, SESSION, hash=f"#t={TOKEN}", storage={"mlx-token": "old" * 12})
+        assert set(out["sent"]) == {TOKEN} and out["stored"] == TOKEN
+
+    def test_a_reload_takes_the_token_from_storage_and_keeps_the_view(self, tmp_path):
+        out = run(tmp_path, SESSION, hash="#models", storage={"mlx-token": TOKEN})
+        assert out["sent"] and set(out["sent"]) == {TOKEN}
+        assert out["replaced"] == []
+        assert out["hash"] == "#models"
+
+    def test_with_storage_off_the_token_still_works_for_this_load(self, tmp_path):
+        out = run(tmp_path, SESSION, hash=f"#t={TOKEN}", storageBroken=True)
+        assert out["sent"] and set(out["sent"]) == {TOKEN}
+        assert out["replaced"] == ["/"]
+
+    @pytest.mark.parametrize("fragment", ["", "#t=short", f"#t={TOKEN}!", f"#x&t={TOKEN}"])
+    def test_without_a_session_it_says_so_once_and_asks_for_nothing(self, tmp_path, fragment):
+        out = run(tmp_path, SESSION, hash=fragment, storage={})
+        assert out["stored"] is None
+        assert out["sent"] == []
+        assert out["intervals"] == []
+        assert out["toast"] == "This page has no session. Open MLX Studio from its app icon."
+
+    def test_with_a_session_the_page_polls(self, tmp_path):
+        # Boot waits for the first state reply before it starts the timer.
+        out = run(
+            tmp_path,
+            "await new Promise((r) => setTimeout(r, 20)); return intervals;",
+            storage={"mlx-token": TOKEN},
+            answered=True,
+        )
+        assert out == [2000]

@@ -1,6 +1,6 @@
 # MLX Studio - Data storage
 
-**Date:** 2026-11-25 | **Applies to:** 2.0.9 source (unreleased) | **Architecture:** [ARCHITECTURE.md](ARCHITECTURE.md)
+**Date:** 2026-11-25 | **Applies to:** 2.0.9 (released 2026-11-26) and rows marked unreleased | **Architecture:** [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## 1. Overview
 
@@ -17,6 +17,8 @@ memory (the `State` class in `app.py`) and in the files below.
 | API server output | `~/.mlx_studio/logs/server.log` | raw process output | background API server |
 | Server identity | `~/.mlx_studio/server.pid` | pidfile used to re-find a background server | `app.py` |
 | Served model names | `~/.mlx_studio/server.models` | model names the running API server accepted, one per line, mode `0600`, cleared at each server start | `mlx_guard.py` |
+| Loaded models and memory (unreleased) | `~/.mlx_studio/server.resident.json` | server `pid`, `resident`, `budget_bytes`, `active_bytes`, `peak_bytes`, recent `events`; with two models also `multi`, `reason`, `oversize` (models loaded alone although they do not fit), `context_tokens`, `free_bytes` (once a memory check has run) and `preload_done` (`true` once preload has ended, however it ended). Written at a model load or switch, with one model too; with two models also at evictions, trims, a skipped preload, the end of preload and about every 10 s from the server's request loop. Mode `0600`, removed at server start and stop | `mlx_guard.py` |
+| Server memory budget (unreleased) | `~/.mlx_studio/server.budget` | a byte count, never written below 1. Two-model server only: written at start, when the Chat model changes and when a background server is adopted. Mode `0600`, written to a new `server.budget.tmp` and then moved into place; removed at server start and stop | `app.py`; read by `mlx_guard.py` at each load of a model not in memory and at each periodic refresh |
 | Model weights | Hugging Face cache | Hugging Face layout | `huggingface_hub` |
 | Download marker | `<cache>/models--<org>--<name>/.mlx_studio_download.json` | JSON | `app.py` |
 
@@ -32,6 +34,7 @@ the default is under `~/.cache/huggingface`.
 | Permissions | Folders `0700`, files the app writes `0600` ([SECURITY.md](SECURITY.md) section 4.6) |
 | Sensitive content | `server.log` can contain request content ([SECURITY.md](SECURITY.md) section 4.6) |
 | Chat history | The server code writes no transcript to disk |
+| Budget file reading (unreleased) | The guard accepts only a plain file holding a number above 0 and never follows a link. It uses the lower of this number and the start budget |
 
 ## 4. Migration and backup
 
