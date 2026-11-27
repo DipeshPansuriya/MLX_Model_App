@@ -1486,6 +1486,12 @@ def _snapshot_dir(repo: str) -> Path:
     allowed = _complete_models()
     if repo not in allowed:
         return CACHE_DIR
+    # Explicitly validate path components to satisfy static analysis.
+    if repo.count("/") != 1:
+        return CACHE_DIR
+    org, name = repo.split("/", 1)
+    if not org or not name:
+        return CACHE_DIR
     entry = CACHE_DIR / f"models--{repo.replace('/', '--')}"
     try:
         commit = (entry / "refs" / "main").read_text("utf-8").strip()
