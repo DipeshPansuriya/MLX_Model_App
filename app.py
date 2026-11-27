@@ -1497,14 +1497,14 @@ def _snapshot_dir(repo: str) -> Path:
     entry = CACHE_DIR / f"models--{org}--{name}"
     # nosec B108: entry built from validated components
     try:
-        commit = (entry / "refs" / "main").read_text("utf-8").strip()
+        commit = (entry / "refs" / "main").read_text("utf-8").strip()  # nosec B108
     except (OSError, ValueError):
         commit = ""
     if commit:
         return entry / "snapshots" / commit
     # nosec B108: entry built from validated components
     try:
-        found = sorted((entry / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime)
+        found = sorted((entry / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime)  # nosec B108
     except (OSError, ValueError):  # ValueError: a name with a NUL byte
         found = []
     return found[-1] if found else entry
