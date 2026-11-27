@@ -3,6 +3,22 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.11] — 2026-11-27
+
+Not released: pre-release build; the released 2.0.9 app has none of these changes.
+It holds the 2.0.10 changes and the fix below. Checked with automated tests; no
+model was loaded. **The real two-model memory test has not been run.**
+
+### Fixed
+
+- **A model in use still counts while it is downloaded again.** In 2.0.10, a model
+  that turned incomplete (a partial file, or an unfinished download) counted as
+  0 GB with no configuration. A Chat model in that state was not taken off the
+  two-model server's budget, so the memory check could accept a pair or a Chat load
+  that does not fit. Its cached weights and configuration are now read. While a
+  newer revision is still arriving, the complete earlier one is measured; if no
+  revision is complete, the one holding the most model weights is.
+
 ## [2.0.10] — 2026-11-27
 
 Not released: pre-release build; the released 2.0.9 app has none of these changes.

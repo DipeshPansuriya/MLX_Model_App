@@ -16,9 +16,9 @@ available.
 
 > This page describes **2.0.9**, released on 2026-11-26 as the
 > [latest release](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
-> Text marked **unreleased** is in the working source for 2.0.10 only and is not
-> in the released app ([CHANGELOG](CHANGELOG.md)). The screenshots show an
-> earlier version.
+> Text marked **unreleased** came with the 2.0.10 source, is also in the 2.0.11
+> source, and is not in the released app ([CHANGELOG](CHANGELOG.md)). The
+> screenshots show an earlier version.
 
 ![Chat view](screenshots/02-chat-loaded.png)
 
