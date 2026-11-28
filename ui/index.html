@@ -331,17 +331,27 @@
           <p class="hint" id="mlxModelHint">Send the model name default_model. Another name makes the MLX server load that model instead.</p>
           <pre class="code" id="curlExample"></pre>
         </div>
-        <div class="panel">
+        <div class="panel" id="connectPanel" hidden>
           <div class="panel-head">
-            <span>Client settings</span>
+            <span>Connect your tool</span>
             <button class="btn btn-mini" type="button" id="copyKey" hidden>Copy key</button>
           </div>
-          <p class="hint">OpenAI-compatible clients (DeepSeek Harness and others)</p>
-          <pre class="code" id="openaiSettings"></pre>
-          <button class="btn btn-mini" type="button" id="copyOpenai">Copy OpenAI settings</button>
+          <p class="hint" id="connectState" role="status"></p>
+          <p class="hint">Copy these into your tool yourself: MLX Studio does not change any other app's settings files. The key is never shown here; use Copy key.</p>
           <p class="hint">Claude Code</p>
           <pre class="code" id="claudeSettings"></pre>
           <button class="btn btn-mini" type="button" id="copyClaude">Copy Claude Code settings</button>
+          <p class="hint">DeepSeek Harness (OpenAI compatible)</p>
+          <div class="setting">
+            <label for="dshContext">Context window (tokens), your choice</label>
+            <input type="number" step="1" min="1" inputmode="numeric" class="input" id="dshContext" aria-describedby="dshContextNote" />
+            <span class="hint" id="dshContextNote">A very long session can exhaust this Mac's memory and freeze or crash it. With OptiQ, a Context limit set for the server drops older text.</span>
+          </div>
+          <pre class="code" id="dshSettings"></pre>
+          <button class="btn btn-mini" type="button" id="copyDsh">Copy DeepSeek Harness settings</button>
+          <p class="hint">Other OpenAI-compatible clients</p>
+          <pre class="code" id="openaiSettings"></pre>
+          <button class="btn btn-mini" type="button" id="copyOpenai">Copy OpenAI settings</button>
         </div>
         <div class="panel">
           <div class="panel-head">

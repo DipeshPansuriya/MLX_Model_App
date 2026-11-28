@@ -1539,7 +1539,11 @@ def _engine_change(action: str, body: dict) -> tuple[int, dict]:
         if action == "install" and engine.state(APP_DIR) == "installed":
             return 409, {"error": engine_runtime.ALREADY_INSTALLED}
         if not STATE.reserve_install(f"{engine.id} {action}"):
-            why = LOADTEST_BUSY if STATE.testing() else "install already running"
+            why = (
+                LOADTEST_BUSY
+                if STATE.testing()
+                else "Another install is running. Wait for it to finish, then try again."
+            )
             return 409, {"error": why}
     if action == "install":
         threading.Thread(target=worker_engine_install, args=(engine,), daemon=True).start()
@@ -3849,7 +3853,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # Nothing else is launched, and a running server is not stopped for it.
             if repo not in _complete_models():
-                self._json({"error": f"{repo} is not installed completely"}, 400)
+                why = (
+                    f"{repo} is not installed completely. Finish it on the Download page, "
+                    "then press Start again."
+                )
+                self._json({"error": why}, 400)
                 return
             background = bool(body.get("background"))
             options = ()
@@ -3865,7 +3873,8 @@ class Handler(BaseHTTPRequestHandler):
                     STATE.server_pending.append(repo)
                     ticket = STATE.server_stops
             if deleting or testing:
-                why = "the model is being deleted" if deleting else LOADTEST_BUSY
+                gone = "the model is being deleted. Choose another model, then press Start."
+                why = gone if deleting else LOADTEST_BUSY
                 self._json({"error": why}, 409)
                 return
             threading.Thread(
@@ -3908,7 +3917,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/server/key":
             # Only when asked, only while our server alone holds the port; never logged.
             if not (_running_engine().direct and STATE.server_verdict == "ready"):
-                self._json({"error": "no server with a key is ready"}, 409)
+                self._json(
+                    {
+                        "error": "No key yet. Wait until the server is ready, then press Copy key again."
+                    },
+                    409,
+                )
                 return
             try:
                 header = _chat_headers()["Authorization"]
@@ -3933,7 +3947,11 @@ class Handler(BaseHTTPRequestHandler):
             kind = body.get("kind")
             kind = kind if isinstance(kind, str) and kind else "install"
             if not STATE.reserve_install(kind):
-                why = LOADTEST_BUSY if STATE.testing() else "install already running"
+                why = (
+                    LOADTEST_BUSY
+                    if STATE.testing()
+                    else "Another install is running. Wait for it to finish, then try again."
+                )
                 self._json({"error": why}, 409)
                 return
             threading.Thread(target=worker_install, args=(kind,), daemon=True).start()

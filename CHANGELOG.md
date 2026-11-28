@@ -5,6 +5,15 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [2.0.13] — unreleased
 
+### Easier server start and connect
+
+- OptiQ is the default engine on API Server and Load Test; the engine of the last ready
+  server is kept. A missing engine can be installed from the Start area, or use MLX.
+- **Run in background** is on by default and the saved choice is kept: the server keeps
+  running and holding memory until **Stop**.
+- Start shows a check panel before launching. New server setting `server_reasoning`.
+- **Connect your tool** gives copy-ready settings after a start. Clearer error messages.
+
 Checked with automated tests and the screen served against a fake API server. No
 model was loaded. The direct `mlx_lm` server below has never been started for real.
 

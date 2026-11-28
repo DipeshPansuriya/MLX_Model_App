@@ -147,6 +147,7 @@ numbers except `chat_temperature` and `chat_top_p`, which also take decimals.
 | `two_model_context_tokens` | Calculated, at most 32768 | 8192 to 32768 | Two models: a cap on the context for each, rounded down to a step of 1024. It only lowers it |
 | `memory_limit_percent` | 52% share for models, 80% ceiling | 30 to 80 | Share becomes the lower of 52 and this; ceiling becomes this. It only lowers them. A low figure can leave no room, and then every prompt is refused, also with `max_context_tokens` set |
 | `server_max_reply_tokens` | 8192 | 64 to 131072 | `--max-tokens`: the reply cap for a request that sends none |
+| `server_reasoning` | the model's own | `"on"` or `"off"` | `--chat-template-args` with `enable_thinking`; both engines. A model without a thinking switch ignores it |
 | `chat_max_reply_tokens` | 2048 | 64 to 131072 | `max_tokens` of a Chat request. Applies to the next message. A request value, so it can be above the server's default |
 | `chat_temperature` | 0.7 | 0 to 2 | `temperature` of a Chat request. Applies to the next message |
 | `chat_top_p` | 0.95 | 0.05 to 1 | `top_p` of a Chat request. Applies to the next message |

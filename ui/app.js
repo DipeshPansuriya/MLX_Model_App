@@ -213,7 +213,7 @@ function refreshState() {
 }
 
 function render(snap) {
-  state.setup = snap; // what the Start areas read about installs
+  state.snapshot = snap; // what the Start areas read about installs
   const { app, hardware, python, versions, models, server, downloads, install } = snap;
 
   // sidebar
@@ -247,7 +247,8 @@ function render(snap) {
   const notice = $("#serverNotice");
   if (server.down_notice) {
     notice.hidden = false;
-    setText($("#serverNoticeText"), server.down_notice);
+    setText($("#serverNoticeText"), `${server.down_notice} Next: read Server output below, ` +
+      "then press Restart, or choose the other engine or a smaller model.");
   } else {
     notice.hidden = true;
   }
@@ -496,7 +497,7 @@ const PACKAGE_KINDS = ["install", "update", "reinstall"];
 
 // What the engine still needs before it can start, or null.
 function engineNeed(id) {
-  const versions = state.setup?.versions || {};
+  const versions = state.snapshot?.versions || {};
   if (id !== "mlx") {
     const found = engineInfo(id)?.state;
     return ["not_installed", "unsupported", "broken", "update"].includes(found) ? found : null;
@@ -509,7 +510,7 @@ function paintInstall(prefix, id) {
   const need = engineNeed(id);
   $(`#${prefix}Install`).hidden = !need;
   if (!need) return;
-  const install = state.setup?.install || {};
+  const install = state.snapshot?.install || {};
   const kind = String(install.kind || "");
   const mine = id === "mlx" ? PACKAGE_KINDS.includes(kind) : kind.startsWith(`${id} `);
   const lines = install.lines || [];
@@ -547,7 +548,7 @@ function paintInstall(prefix, id) {
 // The same two actions as the Setup page.
 async function installEngine(id) {
   if (id !== "mlx") return changeEngine(id, "install");
-  const kind = state.setup?.versions?.mlx_missing ? "install" : "update";
+  const kind = state.snapshot?.versions?.mlx_missing ? "install" : "update";
   try {
     await api("/api/install", { method: "POST", body: JSON.stringify({ kind }) });
     toast("Install started");
@@ -573,6 +574,15 @@ function paintClientSettings(picked) {
   $("#mlxModelHint").hidden = direct;
   setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
     (direct ? "press Copy key (new at every start)" : "not needed"));
+  $("#connectPanel").hidden = !running;
+  setText($("#connectState"), running && !server.ready
+    ? "The server is still starting. Use these settings once it is ready." : "");
+  const typed = Number($("#dshContext").value);
+  const context = Number.isInteger(typed) && typed > 0 ? typed : null;
+  setText($("#dshSettings"), `Type: OpenAI compatible\nBase URL: ${base}/v1\nModel: ${model}\n` +
+    `Context window: ${context ?? "(type a number above)"}\nAPI key: ` +
+    (direct ? "press Copy key (new at every start)" : "not needed"));
+  $("#copyDsh").disabled = !context;
   const claude = direct && (running ? !!server.anthropic : anthropicWanted());
   setText($("#claudeSettings"), claude
     ? [`export ANTHROPIC_BASE_URL=${base}`,
@@ -631,7 +641,9 @@ async function copyServerKey() {
     const { key } = await api("/api/server/key", { method: "POST", body: "{}" });
     await navigator.clipboard.writeText(key);
     toast("Key copied. It changes at every start.");
-  } catch (err) { toast(err.message || "Copy failed", true); }
+  } catch (err) {
+    toast(err.message || "The key was not copied. Press Copy key again.", true);
+  }
 }
 
 function wireEngines() {
@@ -649,6 +661,7 @@ function wireEngines() {
     if (button) changeEngine(button.dataset.engine, button.dataset.action);
   });
   $("#copyKey").addEventListener("click", copyServerKey);
+  $("#dshContext").addEventListener("input", () => paintClientSettings(engineInfo()));
   $("#serverInstallBtn").addEventListener("click", () => installEngine(engineId()));
   $("#serverUseMlx").addEventListener("click", () => {
     state.engine = "mlx";
@@ -657,17 +670,17 @@ function wireEngines() {
   $("#ltInstallBtn").addEventListener("click", () => installEngine($("#ltEngine").value));
   $("#ltUseMlx").addEventListener("click", () => {
     state.lt.engine = "mlx";
-    if (state.setup) renderLoadTest(state.setup);
+    if (state.snapshot) renderLoadTest(state.snapshot);
   });
   $("#ltEngine").addEventListener("change", () => {
     state.lt.engine = $("#ltEngine").value;
     paintLoadTestControls();
   });
   for (const [button, box] of [["#copyOpenai", "#openaiSettings"],
-    ["#copyClaude", "#claudeSettings"]]) {
+    ["#copyClaude", "#claudeSettings"], ["#copyDsh", "#dshSettings"]]) {
     $(button).addEventListener("click", async () => {
       try { await navigator.clipboard.writeText($(box).textContent); toast("Settings copied"); }
-      catch (_) { toast("Copy failed", true); }
+      catch (_) { toast("Copy failed. Select the text and press Command-C.", true); }
     });
   }
 }
@@ -1167,7 +1180,8 @@ function renderLoadTest(snap) {
   // What blocked a start may be over: it is asked for again below.
   if (changed && lt.view) lt.view = { ...lt.view, blocked: null };
   // The user's pick, else the saved engine of the API Server.
-  $("#ltEngine").value = (testing && run.engine) || lt.engine || snap.server?.last_engine || "mlx";
+  $("#ltEngine").value = testing ? run.engine || "mlx"
+    : lt.engine || snap.server?.last_engine || "mlx";
   paintProgress(run);
   paintLoadTestControls();
   if (state.view === "loadtest" && (changed || (!testing && lt.view?.blocked))) loadLoadTest();
@@ -2234,7 +2248,7 @@ async function sendStart(body, message, keep = {}) {
 async function startFromCard() {
   if (state.serverSending) return;
   const set = serverSet();
-  if (!set.length) { toast("No model selected", true); return; }
+  if (!set.length) { toast("No model chosen. Press + Add model, then Start.", true); return; }
   const background = $("#serverBackground").checked;
   const applying = !!state.server?.running;
   state.serverStartError = "";
@@ -2493,7 +2507,7 @@ function wire() {
     let set = usable(state.serverLast);
     if (!set.length) set = serverSet();
     if (!set.length) set = usable([state.snapshot?.server?.repo].filter(Boolean));
-    if (!set.length) { toast("Pick a model first", true); return; }
+    if (!set.length) { toast("No model chosen. Press + Add model, then Start.", true); return; }
     const box = $("#serverBackground").checked;
     const background = state.serverLastBackground ?? box;
     const ran = state.serverRan ||

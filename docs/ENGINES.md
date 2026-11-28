@@ -55,6 +55,18 @@ passes and one first request is answered. `/health` 503, a failed first request 
 answer without the key stops it at once. A server kept from an earlier run is stopped
 too when its port owner cannot be read for 600 seconds.
 
+## Starting and connecting
+
+- **Start Server** and **Apply changes** first show a check panel: engine, model, context
+  limit, reasoning, vision, prompt cache, KV bits, reply tokens and background. Edits are
+  saved as that model's settings; **Cancel** saves and starts nothing. MLX has no context
+  limit and neither engine serves images, so those are off. Reasoning and the other flags
+  were read in the installed engine source, not tried with a running engine.
+- **Run in background** is on by default; the choice of the last ready server is kept.
+- **Connect your tool** appears while a server runs: Claude Code (OptiQ with the Anthropic
+  route), DeepSeek Harness (you choose the context window) and other OpenAI clients. The
+  app writes no other app's settings file and shows no key.
+
 ## Client settings
 
 | Client | Base URL | Model | Key |

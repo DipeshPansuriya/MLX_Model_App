@@ -270,3 +270,74 @@ return openStartConfirm().then(() => {
 """,
         )
         assert out == [True, 0]
+
+
+# A ready server of one engine, and what the connect area then shows.
+CONNECT = (
+    CARD
+    + """
+const live = (over) => ({ running: true, ready: true, pid: 5, repo: "org/custom",
+  repos: ["org/custom"], ...over });
+"""
+)
+
+
+@needs_node
+class TestRow888Connect:
+    def test_the_area_appears_only_after_a_start(self, tmp_path):
+        out = run(
+            tmp_path,
+            CONNECT
+            + """
+draw();
+const before = el("#connectPanel").hidden;
+draw(live({ ready: false }));
+const loading = [el("#connectPanel").hidden, el("#connectState").textContent];
+draw(live());
+return [before, loading, el("#connectState").textContent];
+""",
+        )
+        assert out[0] is True and out[1][0] is False
+        assert "still starting" in out[1][1] and out[2] == ""
+
+    def test_the_harness_context_window_is_the_users_own(self, tmp_path):
+        out = run(
+            tmp_path,
+            CONNECT
+            + """
+draw(live({ engine: "optiq", anthropic: true }));
+const empty = [el("#dshSettings").textContent, el("#copyDsh").disabled];
+el("#dshContext").value = "65536";
+el("#dshContext").listeners.input();
+const chosen = [el("#dshSettings").textContent, el("#copyDsh").disabled];
+el("#dshContext").value = "-3";
+el("#dshContext").listeners.input();
+return [empty, chosen, el("#copyDsh").disabled, el("#claudeSettings").textContent];
+""",
+        )
+        empty, chosen, bad, claude = out
+        assert "Base URL: http://127.0.0.1:8080/v1" in empty[0] and "default_model" in empty[0]
+        assert "type a number above" in empty[0] and empty[1] is True
+        assert "Context window: 65536" in chosen[0] and chosen[1] is False
+        assert bad is True and "ANTHROPIC_BASE_URL=http://127.0.0.1:8080" in claude
+        assert "sk-optiq" not in empty[0] + chosen[0] + claude
+
+    def test_mlx_says_there_is_no_claude_route_and_nothing_writes_files(self, tmp_path):
+        out = run(
+            tmp_path,
+            CONNECT + 'draw(live()); return [el("#claudeSettings").textContent];',
+        )
+        assert "MLX engine has no Anthropic route" in out[0]
+        words = " ".join(PAGE.split())
+        assert "Connect your tool" in words and "exhaust this Mac's memory" in words
+        assert "does not change any other app's settings" in words
+        assert 'id="dshContext"' in PAGE and 'value="' not in PAGE.split('id="dshContext"')[1][:200]
+
+
+class TestRow888Messages:
+    def test_a_refused_start_says_the_next_step(self, base_url):
+        from test_row874_app import _post
+
+        status, body = _post(base_url, "/api/server/start", {"repo": "org/none"})
+        assert status == 400
+        assert "not installed completely" in body["error"] and "Download" in body["error"]

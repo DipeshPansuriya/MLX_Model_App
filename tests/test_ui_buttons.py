@@ -199,8 +199,8 @@ class TestToolbarButtons:
     @pytest.mark.parametrize(
         ("button", "message"),
         [
-            ("#serverStartBtn", "No model selected"),
-            ("#serverRestartBtn", "Pick a model first"),
+            ("#serverStartBtn", "No model chosen. Press + Add model, then Start."),
+            ("#serverRestartBtn", "No model chosen. Press + Add model, then Start."),
         ],
     )
     def test_no_model_chosen(self, tmp_path, button, message):
@@ -211,10 +211,12 @@ class TestToolbarButtons:
     @pytest.mark.parametrize("background", [True, False])
     def test_server_start_sends_model_and_mode(self, tmp_path, button, background):
         flag = "true" if background else "false"
+        # Start shows the check panel first; Restart does not.
+        confirm = " await click('#confirmStartBtn');" if button == "#serverStartBtn" else ""
         out = go(
             tmp_path,
             f"state.serverDraft = ['org/x']; el('#serverBackground').checked = {flag};"
-            f" await click('{button}'); return posts();",
+            f" await click('{button}');{confirm} return posts();",
         )
         assert out == [["/api/server/start", {"repo": "org/x", "background": background}]]
 
