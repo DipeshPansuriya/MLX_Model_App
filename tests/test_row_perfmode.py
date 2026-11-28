@@ -5,18 +5,13 @@ Everything is fake: no model is loaded and no server is started.
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import json
-import types
 from pathlib import Path
 
 import pytest
-import test_row838_prompt_limit as shared
 from test_row838_settings import OTHER, REPO, write
 
-guard = shared.guard
-ENV = "MLX_STUDIO_MODEL_PERFORMANCE"
 SAVE = {"kv_bits": 8, "prefill_step_size": 256}
 FLAGS = ("--kv-bits", "--kv-group-size", "--prefill-step-size")
 PLAIN = {"num_hidden_layers": 2, "num_attention_heads": 4, "hidden_size": 512}
@@ -26,6 +21,11 @@ ODD_HEAD = {**PLAIN, "head_dim": 96}
 
 def after(cmd, flag):
     return cmd[cmd.index(flag) + 1]
+
+
+def stamp(app_module, repo=REPO):
+    settings = app_module.server_settings([repo])
+    return app_module._launch_stamp(app_module.engines.MLX, settings, repo)
 
 
 def command(app_module, repo=REPO):
@@ -117,10 +117,10 @@ class TestSettings:
 class TestFlags:
     @pytest.mark.parametrize("saved", [{}, {"performance_mode": "standard", "kv_bits": 4}])
     def test_standard_adds_nothing(self, app_module, configs, saved):
-        plain_stamp = app_module._launch_stamp(app_module.server_settings([REPO]))
+        plain_stamp = stamp(app_module)
         write(app_module, saved)
         assert not set(FLAGS) & set(command(app_module))
-        assert app_module._launch_stamp(app_module.server_settings([REPO])) == plain_stamp
+        assert stamp(app_module) == plain_stamp
 
     def test_save_memory(self, app_module, configs):
         before = command(app_module)
@@ -148,20 +148,14 @@ class TestFlags:
         )
         assert app_module.performance_flags(REPO) == ({}, None)
         assert app_module.performance_flags(OTHER) == (SAVE, None)
-        assert app_module._model_performance([REPO]) == {REPO: {}}
-        stamp = json.loads(app_module._launch_stamp(app_module.server_settings([REPO])))
-        assert stamp["performance"] == SAVE
-        assert stamp["model_performance"] == {REPO: {}}
+        assert not set(FLAGS) & set(command(app_module))
+        assert after(command(app_module, OTHER), "--kv-bits") == "8"
+        assert "performance" not in json.loads(stamp(app_module))
+        assert json.loads(stamp(app_module, OTHER))["performance"] == SAVE
 
-    def test_min_merge_leaves_the_choices_alone(self, app_module, configs):
+    def test_server_settings_leaves_the_choices_to_the_flags(self, app_module, configs):
         write(app_module, {"models": {REPO: {"performance_mode": "save_memory"}}})
-        merged = app_module.server_settings([REPO, OTHER])
-        assert merged["performance_mode"] is None
-
-    def test_environment_carries_each_models_flags(self, app_module):
-        env = app_module._server_env("{}", Path("s"), Path("r"), {}, {}, {REPO: SAVE})
-        assert json.loads(env[ENV]) == {REPO: SAVE}
-        assert json.loads(app_module._server_env("{}", Path("s"), Path("r"), {}, {})[ENV]) == {}
+        assert app_module.server_settings([REPO])["performance_mode"] is None
 
     def test_fingerprint_changes_only_with_flags(self, app_module, configs, monkeypatch):
         monkeypatch.setattr(app_module, "_snapshot_dir", lambda _: Path("rev1"))
@@ -181,7 +175,7 @@ class TestBlocked:
         write(app_module, {"performance_mode": "save_memory"})
         flags, reason = app_module.performance_flags(REPO)
         assert flags == {} and words in reason
-        assert app_module._model_performance([REPO]) == {REPO: {}}
+        assert not set(FLAGS) & set(command(app_module))
         view = app_module.config_view(REPO)["performance"]
         assert words in view["blocked"]["save_memory"] and words in view["reason"]
 
@@ -215,11 +209,11 @@ class TestBlocked:
             ({"text_config": SLIDING}, True),
             ({"model_type": "gpt_oss", **PLAIN}, True),
             ({**PLAIN, "layer_types": ["sliding_attention", "full_attention"]}, True),
-            ({}, False),  # unread: the guard looks again once the model is loaded
+            ({}, False),  # unread: nothing is known, so nothing is blocked
         ],
     )
-    def test_from_the_config(self, guard, config, blocked):
-        assert bool(guard.kv_problem(config)) is blocked
+    def test_from_the_config(self, app_module, config, blocked):
+        assert bool(app_module.model_info.kv_problem(config)) is blocked
 
 
 # What is shown ------------------------------------------------------------- #
@@ -239,13 +233,17 @@ class TestShown:
     def test_labels(self, app_module, flags, label):
         assert app_module.performance_label(flags) == label
 
-    def test_in_force_is_what_the_server_reports(self, app_module, configs, monkeypatch):
-        reported = {"performance": {REPO: {**SAVE, "note": None}}}
-        monkeypatch.setattr(app_module, "_read_resident", lambda _: reported)
+    def serving(self, app, started, verdict="ready"):
+        app.STATE.server_repos = [REPO]
+        app.STATE.server_started_with, app.STATE.server_verdict = started, verdict
+
+    def test_in_force_is_what_the_server_was_started_with(self, app_module, configs):
+        write(app_module, {"performance_mode": "save_memory"})
+        self.serving(app_module, stamp(app_module))
         assert app_module.performance_in_force(REPO) == "Save memory"
-        assert app_module.performance_in_force(OTHER) is None  # not loaded yet
+        assert app_module.performance_in_force(OTHER) is None  # not served
         write(app_module, {"performance_mode": "standard"})
-        view = app_module._performance_view([REPO, OTHER], 1)
+        view = app_module._performance_view([REPO, OTHER])
         assert view["saved"] == "Standard"
         assert view["models"][REPO] == {
             "saved": "Standard",
@@ -254,9 +252,12 @@ class TestShown:
         }
         assert view["models"][OTHER]["in_force"] is None
 
-    @pytest.mark.parametrize("reported", [{}, {"performance": []}, {"performance": {REPO: 3}}])
-    def test_unknown_stays_unknown(self, app_module, monkeypatch, reported):
-        monkeypatch.setattr(app_module, "_read_resident", lambda _: reported)
+    @pytest.mark.parametrize(
+        ("started", "verdict"),
+        [(None, "ready"), ("{}", None), ("{}", "failed"), ("not json", "ready"), ("[]", "ready")],
+    )
+    def test_unknown_stays_unknown(self, app_module, started, verdict):
+        self.serving(app_module, started, verdict)
         assert app_module.performance_in_force(REPO) is None
 
     def test_stats_from_usage_and_the_clock(self, app_module):
@@ -285,131 +286,13 @@ class TestShown:
         assert app_module._reply_stats(many, 0.0, 1.0, 1.001, None)["tps"] is None
 
 
-# The guard ----------------------------------------------------------------- #
-class KVCache:
-    pass
-
-
-class RotatingKVCache:
-    pass
-
-
-def fake_server(caches=None):
-    cli = types.SimpleNamespace(kv_bits=None, kv_group_size=64, prefill_step_size=2048)
-
-    class ModelProvider:
-        def __init__(self):
-            self.cli_args, self.model_key, self.model = cli, None, None
-            self._model_map = {"default_model": REPO}
-
-        def _load(self, model_path, adapter_path=None, draft_model_path=None):
-            self.model_key, self.model = (model_path, adapter_path, draft_model_path), model_path
-
-    class ResponseGenerator:
-        def __init__(self, provider):
-            self.model_provider, self.cli_args = provider, provider.cli_args
-
-        def _is_batchable(self, args):
-            return args.seed is None and self.cli_args.kv_bits is None
-
-    return types.SimpleNamespace(
-        ModelProvider=ModelProvider,
-        ResponseGenerator=ResponseGenerator,
-        make_prompt_cache=lambda model: (caches or {}).get(model, [KVCache()]),
-    )
-
-
-def request(model):
-    return types.SimpleNamespace(seed=None, model=types.SimpleNamespace(model=model))
-
-
-def installed(guard, flags, configs=None, caches=None, cli=None):
-    server, seen = fake_server(caches), {}
-    guard.read_config = lambda path: (configs or {}).get(str(path), PLAIN)
-    assert guard.install_performance(server, lambda **f: seen.update(f), flags, Path) is None
-    provider = server.ModelProvider()
-    vars(provider.cli_args).update(cli or {})
-    return provider, server.ResponseGenerator(provider), seen
-
-
-class TestGuard:
-    def test_each_model_gets_its_own_flags(self, guard):
-        provider, _, seen = installed(guard, {OTHER: SAVE})
-        provider._load(REPO)
-        assert (provider.cli_args.kv_bits, provider.cli_args.prefill_step_size) == (None, 2048)
-        provider._load(OTHER)
-        assert (provider.cli_args.kv_bits, provider.cli_args.prefill_step_size) == (8, 256)
-        assert provider.cli_args.kv_group_size == 64
-        provider._load(REPO)
-        assert (provider.cli_args.kv_bits, provider.cli_args.prefill_step_size) == (None, 2048)
-        assert seen["performance"] == {REPO: {"note": None}, OTHER: {**SAVE, "note": None}}
-
-    def test_the_command_line_is_the_default(self, guard):
-        provider, _, seen = installed(guard, {OTHER: {}}, cli=SAVE)
-        provider._load(OTHER)
-        assert (provider.cli_args.kv_bits, provider.cli_args.prefill_step_size) == (None, 2048)
-        provider._load(REPO)
-        assert (provider.cli_args.kv_bits, provider.cli_args.prefill_step_size) == (8, 256)
-        assert seen["performance"][REPO] == {**SAVE, "note": None}
-
-    @pytest.mark.parametrize(
-        ("configs", "caches"),
-        [({REPO: SLIDING}, None), (None, {REPO: [KVCache(), RotatingKVCache()]})],
-    )
-    def test_a_model_that_cannot_runs_standard_and_says_why(self, guard, capsys, configs, caches):
-        provider, _, seen = installed(guard, {}, configs, caches, cli=SAVE)
-        provider._load(REPO)
-        assert (provider.cli_args.kv_bits, provider.cli_args.prefill_step_size) == (None, 2048)
-        assert "sliding window" in seen["performance"][REPO]["note"]
-        assert "Standard" in capsys.readouterr().err
-
-    def test_the_first_request_after_a_switch_is_not_batched(self, guard):
-        provider, generator, _ = installed(guard, {OTHER: SAVE})
-        provider._load(REPO)
-        assert generator._is_batchable(request("default_model"))
-        assert not generator._is_batchable(request(OTHER))  # before it is loaded
-        provider._load(OTHER)
-        assert not generator._is_batchable(request(OTHER))
-
-    def test_a_changed_server_is_said(self, guard):
-        server = types.SimpleNamespace()
-        assert "changed" in guard.install_performance(server, None, {}, Path)
-
-    @pytest.mark.parametrize(
-        ("text", "kept"),
-        [
-            (None, {}),
-            ("not json", {}),
-            ("[]", {}),
-            (json.dumps({REPO: SAVE, "bad id": SAVE}), {REPO: SAVE}),
-            (json.dumps({REPO: {}}), {REPO: {}}),
-            (json.dumps({REPO: {"kv_bits": 5}}), {}),
-            (json.dumps({REPO: {"prefill_step_size": 0}}), {}),
-            (json.dumps({REPO: {"other": 1}}), {}),
-        ],
-    )
-    def test_environment_is_checked(self, guard, text, kept):
-        assert guard.read_model_performance(text) == kept
-
-    def test_the_app_and_guard_agree(self, app_module, guard):
-        assert app_module.SETTINGS["prefill_step_size"] == guard.PREFILL_RANGE
-        assert app_module.CHOICE_SETTINGS["kv_bits"] == guard.KV_BITS
-        assert app_module.CHOICE_SETTINGS["kv_group_size"] == guard.KV_GROUPS
-
-    def test_installed_mlx_lm_still_has_what_is_used(self):
-        """Reads mlx_lm's source: the names and defaults the guard relies on."""
-        root = Path(importlib.util.find_spec("mlx_lm").origin).parent
-        source = (root / "server.py").read_text("utf-8")
-        methods = {
-            (node.name, item.name)
-            for node in ast.parse(source).body
-            if isinstance(node, ast.ClassDef)
-            for item in node.body
-            if isinstance(item, ast.FunctionDef)
-        }
-        assert {("ModelProvider", "_load"), ("ResponseGenerator", "_is_batchable")} <= methods
-        assert "return self.model_provider.cli_args" in source
-        assert "and self.cli_args.kv_bits is None" in source
-        for flag in FLAGS:
-            assert f'"{flag}"' in source
-        assert "default=2048" in source and "make_prompt_cache" in source
+# mlx_lm's own server -------------------------------------------------------- #
+def test_installed_mlx_lm_still_takes_the_flags_passed(app_module, configs):
+    """Reads mlx_lm's source: every flag of the command, and the read step default."""
+    root = Path(importlib.util.find_spec("mlx_lm").origin).parent
+    source = (root / "server.py").read_text("utf-8")
+    write(app_module, {"prompt_cache_size": 2, "prompt_cache_bytes": 10**9})
+    passed = {part for part in command(app_module) if part.startswith("--")}
+    for flag in {*passed, *FLAGS}:
+        assert f'"{flag}"' in source
+    assert "default=2048" in source
