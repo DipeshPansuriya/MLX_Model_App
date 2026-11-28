@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/style.css" />
 <link rel="stylesheet" href="/projects.css" />
 <link rel="stylesheet" href="/download.css" />
+<link rel="stylesheet" href="/features.css" />
 </head>
 <body>
 <div id="app">
@@ -448,6 +449,20 @@
           <p class="hint" id="mlxModelHint">Send the model name default_model. Another name makes the MLX server load that model instead. No password: any program on this Mac, and a website open in your browser, can send it requests while it runs.</p>
           <pre class="code" id="curlExample"></pre>
         </div>
+<div class="panel" id="livePanel" hidden>
+  <div class="panel-head">
+    <span>Memory and speed</span>
+    <span class="pill" id="livePressure"></span>
+  </div>
+  <div class="kv">
+    <div class="kv-row"><span>This Mac's memory</span><span class="mono" id="liveMacMem">unknown</span></div>
+    <div class="kv-row"><span>Server process memory</span><span class="mono" id="liveServerMem">unknown</span></div>
+    <div class="kv-row"><span>Last chat reply in this app</span><span class="mono" id="liveChat">unknown</span></div>
+    <div class="kv-row"><span>Saved load test</span><span class="mono ft-lines" id="liveTest">unknown</span></div>
+  </div>
+  <p class="hint">Measured only. Requests from other apps are not measured.</p>
+</div>
+
         <div class="panel">
           <div class="panel-head">
             <span>Test connection</span>
@@ -765,6 +780,15 @@
           </div>
         </div>
         <div id="ltResults"></div>
+<div class="panel" id="ltComparePanel" hidden>
+  <div class="panel-head">
+    <span>MLX and OptiQ side by side</span>
+    <span class="pill" id="ltCompareBadge" role="status"></span>
+  </div>
+  <p class="hint" id="ltCompareReasons"></p>
+  <p class="hint" id="ltCompareRuns"></p>
+  <div id="ltCompareTables"></div>
+</div>
       </div>
     </section>
 
@@ -911,6 +935,25 @@
           </div>
         </div>
 
+<div class="panel">
+  <div class="panel-head">
+    <span>New MLX Studio release</span>
+    <button class="btn btn-mini" type="button" id="ftUpdateBtn">Check GitHub for a new release</button>
+  </div>
+  <p class="hint">Asks GitHub only when you press the button. Nothing is downloaded.</p>
+  <p class="hint" id="ftUpdateMsg" role="status"></p>
+  <button class="btn btn-mini btn-ghost" type="button" id="ftUpdateOpen" hidden>Open release page</button>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <span>Install or update everything</span>
+    <button class="btn btn-mini btn-primary" type="button" id="planBtn" disabled>Install or update all</button>
+  </div>
+  <ul class="ft-list" id="planItems"></ul>
+  <p class="hint" id="planWhy" role="status"></p>
+</div>
+
         <div class="panel">
           <div class="panel-head">
             <span>Runtime packages</span>
@@ -950,6 +993,7 @@
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="/download.js"></script>
+<script src="/features.js"></script>
 <script src="/app.js"></script>
 <script src="/projects.js"></script>
 </body>

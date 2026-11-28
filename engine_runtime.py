@@ -355,6 +355,11 @@ def _judge_tool(message: dict) -> dict[str, str]:
             f"The tool call arrived, but the model sent null for: {names}. Some tools "
             "reject this, and MLX Studio does not change replies.",
         )
+    # Imported here: the log filter runs this file with -I, which cannot see its folder.
+    import tool_null_text
+
+    if text_null := tool_null_text.check(calls, [TEST_TOOL]):
+        return _result("warn", text_null["warning"])
     return _result(
         "pass",
         "The tool call arrived in the expected form. One pass does not prove it always will.",

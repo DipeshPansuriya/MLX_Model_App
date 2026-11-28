@@ -38,7 +38,7 @@ MSG
 fi
 
 # Syntax gates, so a broken file never reaches a commit.
-if ! "$PY" -m py_compile app.py model_info.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py 2>/dev/null; then
+if ! "$PY" -m py_compile app.py model_info.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py feature_routes.py 2>/dev/null; then
     echo "pre-commit: app.py, model_info.py, mlx_loadtest.py or an engine module does not compile" >&2
     exit 1
 fi

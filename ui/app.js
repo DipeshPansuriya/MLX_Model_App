@@ -441,6 +441,7 @@ function render(snap) {
   renderCatalog();
   renderConfigPage(server);
   renderLoadTest(snap);
+  globalThis.renderFeatures?.(snap);
   paintEngineCards(install);
 }
 
@@ -1072,6 +1073,7 @@ function setLoadTestModel(repo) {
   ltError("");
   setHTML($("#ltSizes"), "");
   setHTML($("#ltResults"), "");
+  globalThis.renderCompare?.(null);
   setText($("#ltRange"), "");
   $("#ltOutcome").hidden = true;
 }
@@ -1111,6 +1113,7 @@ function paintLoadTest() {
     `This model takes ${min} to ${max} tokens. Up to ${LT_MAX_SIZES} sizes in one test.`);
   paintLoadTestControls();
   paintResults();
+  globalThis.renderCompare?.(view.compare);
 }
 
 // The settings' sizes, the ones used last and the ones typed now.
@@ -3011,6 +3014,7 @@ async function stopServer() {
 /* ───────────── wiring ───────────── */
 function wire() {
   wireEngines();
+  globalThis.wireFeatures?.();
   $("#testBtn").addEventListener("click", testConnection);
   $("#setDefault").addEventListener("click", setDefaultModel);
   $("#autostartSwitch").addEventListener("change", switchAutostart);

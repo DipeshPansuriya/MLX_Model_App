@@ -33,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import urllib.parse
 import urllib.request
 import zipfile
@@ -48,6 +49,8 @@ import catalog_routes  # noqa: E402
 import chat_store  # noqa: E402
 import engine_runtime  # noqa: E402
 import engines  # noqa: E402
+import feature_routes  # noqa: E402
+import loadtest_compare  # noqa: E402
 import login_agent  # noqa: E402
 import model_info  # noqa: E402
 import project_routes  # noqa: E402
@@ -1173,6 +1176,8 @@ class State:
                 "starting": bool(self.server_pending),
                 **_server_readiness(),
                 "pid": self.server_pid,
+                # globals(), not sys.modules: the module may be loaded unregistered.
+                **feature_routes.server_stats(types.SimpleNamespace(**globals())),
             },
             "downloads": downloads,
             "loadtest": loadtest_summary(),
@@ -1376,6 +1381,7 @@ def stream_chat(
     if system.strip():
         messages = [{"role": "system", "content": system}, *messages]
     asked_body, port = _chat_target(repo, messages, {**chat_settings(repo), **(own or {})})
+    served = (STATE.server_engine, STATE.server_pid)  # whose speed the reply measures
     body = json.dumps(asked_body).encode("utf-8")
     conn = http.client.HTTPConnection(HOST, port, timeout=CHAT_CONNECT_SECONDS)
     try:
@@ -1424,18 +1430,17 @@ def stream_chat(
             ended = time.monotonic()
             elapsed = max(ended - first, 1e-6) if first else 0
             mode = performance_in_force(repo)
-            yield (
-                "done",
-                {
-                    "tokens": tokens,
-                    "tps": round(tokens / elapsed, 1) if elapsed else 0.0,
-                    "elapsed": round(elapsed, 2),
-                    "stopped": stop.is_set(),
-                    "truncated": data["finish"] == "length",
-                    "repo": repo,
-                    "stats": _reply_stats(data["usage"], asked, first, ended, mode),
-                },
-            )
+            done = {
+                "tokens": tokens,
+                "tps": round(tokens / elapsed, 1) if elapsed else 0.0,
+                "elapsed": round(elapsed, 2),
+                "stopped": stop.is_set(),
+                "truncated": data["finish"] == "length",
+                "repo": repo,
+                "stats": _reply_stats(data["usage"], asked, first, ended, mode),
+            }
+            feature_routes.record_chat_speed(sys.modules[__name__], done, *served)
+            yield ("done", done)
             return
     finally:
         # Shutting the socket down wakes the reader and tells the server to stop.
@@ -1605,63 +1610,19 @@ def install_specs() -> list[str]:
 
 def worker_install(kind: str) -> None:
     STATE.install = {"running": True, "kind": kind, "lines": []}
-    log_activity("install", "mlx + mlx-lm", "running", f"{kind} started")
-
-    cmd = [sys.executable, "-m", "pip", "install"]
-    if kind == "reinstall":
-        cmd += ["--force-reinstall"]
-    else:
-        cmd += ["--upgrade"]
-    cmd += install_specs()
-
-    STATE.install["lines"].append("$ " + " ".join(cmd))
-    ok = False
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-        )
-        if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
-            STATE.install["lines"].append("error: no stdout stream")
-            proc.kill()
-            return
-        for line in proc.stdout:
-            STATE.install["lines"].append(line.rstrip())
-        ok = proc.wait() == 0
-        if not ok and any("externally-managed-environment" in x for x in STATE.install["lines"]):
-            STATE.install["lines"].append(
-                "This Python is managed by the system and refuses pip. Create a virtual "
-                "environment (python3 -m venv ~/mlx-venv) and run MLX Studio with it."
-            )
-    except Exception as exc:
-        STATE.install["lines"].append(f"error: {exc}")
-
-    log_activity("install", "mlx + mlx-lm", "success" if ok else "failed", f"{kind} finished")
-    log_app(
-        "info" if ok else "error",
-        f"package {kind} {'succeeded' if ok else 'failed'}",
-        tail=STATE.install["lines"][-5:],
-    )
-    STATE.install["running"] = False
+        feature_routes.pip_install(sys.modules[__name__], kind, STATE.install["lines"])
+    finally:
+        STATE.install["running"] = False
     worker_check_versions()
 
 
 def worker_engine_install(engine: engines.Engine) -> None:
     """Install an engine from the lock the app ships; Setup shows the lines."""
-    lines = STATE.install["lines"]
-    log_activity("install", engine.name, "running", f"{engine.version} started")
-    ok = False
     try:
-        engine.install(APP_DIR, lines.append)
-        lines.append(f"{engine.name} {engine.version} is installed.")
-        ok = True
-    except engine_runtime.Refused as exc:
-        lines.append(str(exc))
-    except Exception as exc:
-        lines.append(f"error: {exc}")
+        feature_routes.engine_install(sys.modules[__name__], engine, STATE.install["lines"])
     finally:
         STATE.install["running"] = False
-    log_activity("install", engine.name, "success" if ok else "failed", "install finished")
-    log_app("info" if ok else "error", "engine install finished", engine=engine.id, ok=ok)
 
 
 def _engine_change(action: str, body: dict) -> tuple[int, dict]:
@@ -1875,7 +1836,10 @@ def _engine_refusal(engine_id, repos: list[str], port_too: bool = True) -> str |
         return _port_refusal(SERVER_PORT) if port_too else None
     if len(repos) > 1:
         return f"{engine.name} serves one model. Remove the second one."
-    if STATE.install["running"] and STATE.install["kind"].startswith(engine.id):
+    kind = STATE.install.get("kind") or ""
+    if STATE.install["running"] and (
+        kind == feature_routes.INSTALL_KIND or kind.startswith(engine.id)
+    ):
         return f"{engine.name}: an install is running."
     try:
         engine.program(APP_DIR)
@@ -3290,7 +3254,7 @@ def _read_loadtest() -> list[dict]:
 
 
 def _save_loadtest(record: dict) -> None:
-    """Store one run, keeping the last few of each model."""
+    """Store one run, keeping the last few of each model and engine."""
     runs = _read_loadtest()
     for at, run in enumerate(runs):
         if run["id"] == record["id"]:
@@ -3298,11 +3262,7 @@ def _save_loadtest(record: dict) -> None:
             break
     else:
         runs.append(record)
-    kept, seen = [], {}
-    for run in reversed(runs):
-        seen[run["repo"]] = seen.get(run["repo"], 0) + 1
-        if seen[run["repo"]] <= LOADTEST_RUNS_KEPT:
-            kept.insert(0, run)
+    kept = loadtest_compare.trim_history(runs, LOADTEST_RUNS_KEPT)
     text = json.dumps({"runs": kept})
     while kept and len(text.encode("utf-8")) > LOADTEST_RESULT_BYTES:
         del kept[0]
@@ -3784,6 +3744,7 @@ def loadtest_view(repo: str) -> dict:
         "load_test": values,
         "thinking": thinking_support(repo),
         "blocked": blocked,
+        "compare": loadtest_compare.side_by_side(_stored_runs(repo), repo),
     }
 
 
@@ -4104,6 +4065,10 @@ class Handler(BaseHTTPRequestHandler):
             code, answer = project_routes.handle_get(sys.modules[__name__], path, query)
             self._json(answer, code)
             return
+        if path in feature_routes.GET_ROUTES:
+            code, answer = feature_routes.handle_get(sys.modules[__name__], path)
+            self._json(answer, code)
+            return
         if path in ("/api/chats", "/api/chats/get"):
             try:
                 if path == "/api/chats":
@@ -4203,6 +4168,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in REPO_ROUTES and not repo:
             self._json({"error": "repo required (a string)"}, 400)
+            return
+
+        if path in feature_routes.POST_ROUTES:
+            code, answer = feature_routes.handle_post(sys.modules[__name__], path, body)
+            self._json(answer, code)
             return
 
         if path == "/api/chat":

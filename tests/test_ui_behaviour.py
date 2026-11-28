@@ -33,7 +33,7 @@ def run(tmp_path, scenario, **boot):
     path.write_text(PRELUDE + scenario, encoding="utf-8")
     harness = str(ROOT / "tests" / "ui_harness.js")
     ui = tmp_path / "ui.js"  # the page's scripts, in its load order
-    names = ("download.js", "app.js", "projects.js")
+    names = ("download.js", "features.js", "app.js", "projects.js")
     ui.write_text("\n".join((ROOT / "ui" / name).read_text() for name in names))
     proc = subprocess.run(
         [NODE, harness, str(ui), str(path), json.dumps(boot)],

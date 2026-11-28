@@ -36,8 +36,9 @@ const sent = () => calls.slice(booted).map((c) => `${c.opts?.method || "GET"} ${
 
 def ui(tmp_path, scenario):
     page = tmp_path / "page.js"
+    names = ("download.js", "features.js", "app.js")  # the page's load order
     page.write_text(
-        SCRIPT.read_text(encoding="utf-8") + (ROOT / "ui" / "app.js").read_text(encoding="utf-8"),
+        "\n".join((ROOT / "ui" / n).read_text(encoding="utf-8") for n in names),
         encoding="utf-8",
     )
     path = tmp_path / "scenario.js"

@@ -86,6 +86,7 @@ SHIPPED = (
     "update_check.py",
     "catalog_routes.py",
     "project_routes.py",
+    "feature_routes.py",
     "ui",
     "packaging",
 )
@@ -107,6 +108,7 @@ BUNDLED = (
     "update_check.py",
     "catalog_routes.py",
     "project_routes.py",
+    "feature_routes.py",
     "packaging/optiq-lock.txt",
     "ui/index.html",
     "ui/style.css",
@@ -115,6 +117,8 @@ BUNDLED = (
     "ui/projects.css",
     "ui/download.js",
     "ui/download.css",
+    "ui/features.js",
+    "ui/features.css",
 )
 
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
