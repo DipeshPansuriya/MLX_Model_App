@@ -14,3 +14,7 @@
   overflow-wrap: anywhere; border: 1px solid currentColor; border-radius: 6px; padding: 8px; }
 .project-warn:empty { display: none; }
 .project-warn { font-weight: 600; }
+/* Same side space as the composer under it. */
+.project-panel, #projectAttached, #projectDetach { margin-inline: 22px; }
+#projectAttached:empty { display: none; }
+#projectDetach { align-self: flex-start; }

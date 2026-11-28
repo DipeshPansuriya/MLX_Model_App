@@ -10,7 +10,7 @@ import pytest
 from test_row837_chat import DONE, ONE, USAGE, chunk, post, upstream  # noqa: F401
 from test_row1092_chats import chats  # noqa: F401
 from test_row1092_chats_ui import PAGE, ui
-from test_ui_behaviour import needs_node
+from test_ui_behaviour import ROOT, needs_node
 
 import project_routes
 import projects
@@ -171,3 +171,9 @@ def test_the_page_has_the_panel_before_the_composer():
     assert PAGE.index('id="projectPanel"') < PAGE.index('class="composer"')
     assert PAGE.index('src="/app.js"') < PAGE.index('src="/projects.js"')
     assert 'href="/projects.css"' in PAGE
+
+
+def test_the_panel_lines_up_with_the_composer():
+    css = (ROOT / "ui" / "projects.css").read_text(encoding="utf-8")
+    assert ".project-panel, #projectAttached, #projectDetach { margin-inline: 22px; }" in css
+    assert "#projectDetach { align-self: flex-start; }" in css
