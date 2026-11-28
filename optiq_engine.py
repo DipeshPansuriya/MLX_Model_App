@@ -193,7 +193,10 @@ def python_path(app_dir: Path) -> Path:
     python = venv / "bin" / "python"
     found = sorted(venv.glob("lib/python*/site-packages/mlx_optiq-*.dist-info"))
     if not python.exists() or not found:
-        raise Refused(f"The OptiQ engine is not installed in {venv}.")
+        raise Refused(
+            f"The OptiQ engine is not installed completely in {venv}. "
+            "Run Install / Update on Setup."
+        )
     if [p.name for p in found] != [f"mlx_optiq-{VERSION}.dist-info"]:
         raise Refused(f"Only OptiQ {VERSION} has been reviewed; {venv} holds another version.")
     if state(app_dir) != "installed":

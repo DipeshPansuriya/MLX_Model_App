@@ -71,6 +71,8 @@ checks beyond the key, a key holder may send draft model or file paths, and `/he
 Choose the engine before **Start test**. The OptiQ test uses a spare port, without the
 Anthropic route. A run fails a size if the server drops part of the prompt.
 **Apply** is offered for MLX results only.
+**Thinking** is sent to both engines as `chat_template_kwargs.enable_thinking` (read
+in the installed mlx_lm and OptiQ source; not tried with a running engine).
 
 ## Adding an engine
 

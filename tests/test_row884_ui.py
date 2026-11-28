@@ -1,5 +1,6 @@
 """Rows 884 to 886: QA findings F1 to F3, thinking and context sizes (fake DOM)."""
 
+import re
 from pathlib import Path
 
 from test_row874_ui import SERVER
@@ -135,3 +136,26 @@ def test_thinking_is_offered_only_with_a_switch(tmp_path):
 def test_the_page_says_large_sizes_take_long():
     page = (UI / "index.html").read_text("utf-8")
     assert "Large sizes take long" in page and "3600 seconds" in page
+
+
+@needs_node
+def test_low_findings_on_setup_load_test_and_chat(tmp_path):
+    cards, run_panel, mlx_panel, note = run(
+        tmp_path,
+        SERVER
+        + """
+        const live = { ...server, running: true, repos: ["org/a"], repo: "org/a",
+          engine: "optiq", anthropic: true, ready: true,
+          performance: { saved: "Standard", models: {} } };
+        render(snap({ server: live }));
+        const old = { time: "t", status: "done", rows: [], flags: [] };
+        return [document.querySelector("#engineCards").innerHTML,
+          resultRun({ ...old, engine: "optiq", thinking: false }, false), resultRun(old, false),
+          document.querySelector("#chatModeNote").textContent];
+        """,
+    )
+    assert re.search(r'data-action="remove"[^>]*disabled', cards)
+    assert "Stop the API server to remove" in cards
+    assert "(OptiQ), thinking off" in run_panel and "Apply saves" not in run_panel
+    assert "(MLX)" in mlx_panel and "Apply saves" in mlx_panel
+    assert "drops older text" in note

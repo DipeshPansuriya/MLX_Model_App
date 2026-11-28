@@ -345,6 +345,12 @@ A served model's card carries a green `served` tag.
 
 - Sizes are check boxes from the settings, the last used and typed ones; none is
   ticked on opening. A size over the model's limit is off and says why.
+- Offered sizes double from 4096 to 1,048,576. A line under them says large sizes
+  take long and get 3600 seconds above 32768.
+- **Thinking** check box: on by default; off and disabled, with the reason, where the
+  chat template has no `enable_thinking`. Its note says it uses the reply tokens. The
+  run title says "thinking on" or "off"; memory figures of the other choice are not
+  reused.
 - Run values sit in a closed disclosure and are saved when a test starts.
 - Only a new step or the end is announced. Counts and memory change silently.
 - Table columns: Size, Status, Read tok/s, First token, Write tok/s, Peak memory,

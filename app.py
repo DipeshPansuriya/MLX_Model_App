@@ -75,7 +75,6 @@ APP_DIR = Path.home() / ".mlx_studio"
 LOG_DIR = APP_DIR / "logs"
 ACTIVITY_LOG = LOG_DIR / "activity.log"
 APP_LOG = LOG_DIR / "app.log"
-LAUNCH_LOG = LOG_DIR / "launch.log"
 SERVER_LOG = LOG_DIR / "server.log"
 UI_DIR = Path(__file__).resolve().parent / "ui"
 # The API server starts through this wrapper, which checks every request.
@@ -3027,6 +3026,7 @@ def _watch_server(
         STATE.server_background = False
         STATE.server_started_at = None
         STATE.server_unguarded = False
+        engine = _running_engine()
         _reset_engine()
         STATE.server_last_error = (
             f"exited with status {code}" if code is not None else "process gone"
@@ -3038,6 +3038,8 @@ def _watch_server(
         STATE.server_down_notice = (
             f"API server for {names} stopped unexpectedly ({STATE.server_last_error})"
         )
+        if engine.direct:
+            STATE.server_down_notice += f". Engine: {engine.name}; see Server output."
         if STATE.server_apply_notice:  # a restored server: one notice, not two
             STATE.server_down_notice = f"{STATE.server_apply_notice} {STATE.server_down_notice}"
             STATE.server_apply_notice = None

@@ -542,11 +542,14 @@ function paintEngineCards(install) {
       `data-action="${action}" aria-label="${words} ${esc(engine.name)}"${off || disabled}>` +
       `${words}</button>`;
     const unsupported = engine.state === "unsupported";
-    const note = !engine.installable ? engine.reason : unsupported ? engine.unsupported : "";
+    const serving = !!state.server?.running && runningEngine() === engine.id;
+    const note = !engine.installable ? engine.reason : unsupported ? engine.unsupported
+      : serving ? "Stop the API server to remove this engine." : "";
     const buttons = !engine.installable ? "" :
       button("install", "Install / Update",
         unsupported || engine.state === "installed" ? " disabled" : "") +
-      (["installed", "update", "broken"].includes(engine.state) ? button("remove", "Remove") : "");
+      (["installed", "update", "broken"].includes(engine.state)
+        ? button("remove", "Remove", serving ? " disabled" : "") : "");
     return `<div class="kv-row"><span>${esc(engine.name)}</span>` +
       `<span class="mono">${esc(engine.version || "—")}</span>` +
       `<span class="pill">${busy ? "working…" : ENGINE_STATES[engine.state] || ""}</span>` +
@@ -1024,7 +1027,7 @@ function paintLoadTestControls() {
   else cancel.removeAttribute("aria-disabled");
   const stopServing = $("#ltStopServerBtn");
   stopServing.hidden = !(serving && !testing);
-  for (const id of ["#ltModelSelectSearch", "#ltCustom", "#ltAddBtn",
+  for (const id of ["#ltModelSelectSearch", "#ltCustom", "#ltAddBtn", "#ltEngine",
     ...LT_NUMBERS.map((key) => `#lt-${key}`)]) {
     $(id).disabled = none || testing;
   }
@@ -1125,7 +1128,8 @@ function resultRun(run, testing) {
     "Peak memory", "Settings used"].map((h) => `<th scope="col">${h}</th>`).join("");
   const thinking = typeof run.thinking === "boolean"
     ? `, thinking ${run.thinking ? "on" : "off"}` : "";
-  const engine = (run.engine ? ` (${esc(run.engine)})` : " (MLX)") + thinking;
+  const named = run.engine ? engineInfo(run.engine)?.name || run.engine : "MLX";
+  const engine = ` (${esc(named)})${thinking}`;
   return `<section class="panel lt-run"><h2>${esc(name)}${engine}: ${esc(ended)}` +
     `${run.stale ? ' <span class="pill warn">stale</span>' : ""}</h2>` +
     (run.stale ? '<p class="hint">Settings, software or the model changed since this run. ' +
@@ -1138,8 +1142,8 @@ function resultRun(run, testing) {
     "</tbody></table></div>" +
     `<p class="hint">Server flags: <span class="mono">${esc((run.flags || []).join(" "))}` +
     "</span></p>" +
-    '<p class="hint">Apply saves the size as this model\'s max context (one-model mode). ' +
-    "A pass is a measurement, not a guarantee.</p></section>";
+    `<p class="hint">${run.engine ? "" : "Apply saves the size as this model's max context " +
+      "(one-model mode). "}A pass is a measurement, not a guarantee.</p></section>`;
 }
 
 function paintResults() {
@@ -2135,6 +2139,7 @@ function renderChatMode(server) {
   setText($("#chatModeNote"), [
     behind ? `${model.saved} is saved but not applied yet.` : "",
     model?.note || "",
+    server.running && direct ? "In a long chat OptiQ drops older text." : "",
   ].filter(Boolean).join(" "));
 }
 

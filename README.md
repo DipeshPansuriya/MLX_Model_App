@@ -253,8 +253,14 @@ reason, and runs in Standard. The automatic prompt limit is the same in every mo
 2.0.13 source (unreleased). Measures one model on this Mac. **Not yet run with a
 real model.** [How to run it safely](docs/RUNBOOK.md#37a-run-a-load-test-safely).
 
-- Tick context sizes or type your own (up to 8 in one test). The API server must
-  be stopped; the page says so and offers **Stop API server**.
+- Tick context sizes (4096 up to 1,048,576) or type your own (up to 12 in one
+  test); a size over the model's limit is off. The API server must be stopped; the
+  page says so and offers **Stop API server**.
+- Large sizes take long (1M can take an hour or more). A size above 32768 tokens
+  is stopped after 3600 seconds; fewer rounds make it shorter.
+- **Thinking** (on or off) is offered where the model's chat template has the
+  `enable_thinking` switch. Thinking uses the reply token budget. Each result says
+  which it was.
 - Shows live progress and memory, and **Cancel test**. A size is not sent when
   memory is projected over the gate (75%), and the test server is ended at 77%.
   Memory is sampled, so staying under 80% cannot be guaranteed.

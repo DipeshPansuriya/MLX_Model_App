@@ -21,6 +21,18 @@ model was loaded.
   each start, keys are hidden in the server log, and an installed engine is never
   installed over. These were checked with fakes only.
 
+- Load Test: sizes up to 1,048,576 (up to 12 in one test), with 3600 seconds for a
+  size above 32768; at the model's own limit the prompts stop short so the replies
+  fit. A **Thinking** switch where the chat template has `enable_thinking`; results
+  say which it was. Checked with fakes only.
+
+### Fixed
+
+- The Anthropic switch is hidden under MLX; client settings and **Copy key** follow
+  the running engine; Configuration says what OptiQ ignores or treats differently.
+- **Remove** is off while that engine serves; the Load Test engine is locked during a
+  run; OptiQ messages name the next step; Chat says OptiQ drops older text.
+
 ### Changed
 
 - The MLX server and load test processes no longer inherit the app's whole environment:

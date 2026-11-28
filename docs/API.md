@@ -355,12 +355,12 @@ whole block removes it). Saving and resetting other settings keep the block.
 
 | `load_test` key | Default | Range |
 |---|---|---|
-| `sizes` (offered) | 4096, 8192, 16384, 32768 | 1 to 8 different sizes from 4096 |
+| `sizes` (offered) | 4096, doubled up to 1048576 | 1 to 12 different sizes from 4096; a saved list stays as saved |
 | `last_sizes` | empty | as `sizes`, may be empty |
 | `reply_tokens` | 256 | 32 to 1024 |
 | `rounds` | 2 | 1 to 3 |
 | `margin_percent` | 5 | 5 to 20 |
-| `timeout_seconds` (per size) | 900 | 60 to 3600 |
+| `timeout_seconds` (per size) | 900 | 60 to 3600; a size above 32768 always gets 3600 |
 
 ## 6c. Configuration and Load Test
 
@@ -371,7 +371,7 @@ Origin and Content-Type rules as every other route.
 |---|---|
 | `GET /api/config?repo=` | `settings` (for each key `value`, `own`, `inherited`, `effective`, `min`, `max`, `decimal`, `global_only`), `applied_context`, `context_message`, `load_test`. Without `repo`: the global values |
 | `GET /api/loadtest?repo=` | `status`, `rows`, `results` (stored runs, each with `stale`), `sizes` the model allows, `load_test`, `blocked` |
-| `POST /api/loadtest/start` | `{"repo", "sizes"}`: 1 to 8 different sizes from 4096 to the model's limit. 400 bad input or model not installed completely; 409 while the API server is running, starting or adopted, a test runs, an install runs, or the model is downloading or being deleted |
+| `POST /api/loadtest/start` | `{"repo", "sizes"}` and optional `"thinking"` (true or false; default on where `GET /api/loadtest` says `thinking.supported`, sent as `chat_template_kwargs.enable_thinking`; `true` is a 400 where it is not): 1 to 12 different sizes from 4096 to the model's limit. 400 bad input or model not installed completely; 409 while the API server is running, starting or adopted, a test runs, an install runs, or the model is downloading or being deleted |
 | `POST /api/loadtest/cancel` | `{}`; 404 when no test runs |
 | `POST /api/loadtest/apply` | `{"repo", "run_id", "size"}`: saves `max_context_tokens` for the model, only from a stored, passed size of a run that is not stale. 400, 404 or 409 otherwise |
 
