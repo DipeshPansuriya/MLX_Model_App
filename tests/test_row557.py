@@ -20,7 +20,7 @@ except ImportError:  # CI installs only pytest: stand in for what the search rea
         return SimpleNamespace(safetensors=info, **data)
 
 
-MODEL_SELECTS = ["chatModelSelect", "serverModelSelect"]
+MODEL_SELECTS = ["serverModelSelect", "configModelSelect", "ltModelSelect"]
 
 
 def hit(repo, parameters=None, tags=(), pipeline_tag="text-generation"):
@@ -148,9 +148,9 @@ class TestSearchCards:
         out = searched(tmp_path, "{ repo: 'org/big', size_gb: 90, fit: 'too-large' }")
         assert re.search(r'data-cat-download="org/big" disabled>Needs more RAM<', out)
 
-    def test_installed_models_offer_load(self, tmp_path):
+    def test_installed_models_say_installed(self, tmp_path):
         out = searched(tmp_path, "{ repo: 'org/custom' }", models="[{ repo: 'org/custom' }]")
-        assert "Installed" in out and 'data-cat-load="org/custom"' in out
+        assert "Installed" in out and "data-cat-load" not in out
 
     def test_polls_update_the_buttons_and_leave_unchanged_cards_alone(self, tmp_path):
         out = searched(
@@ -165,7 +165,7 @@ class TestSearchCards:
             " poll(s); return [a, same, b, w.innerHTML];",
         )
         assert "Downloading…" in out[0] and out[1] is True
-        assert 'data-cat-load="org/m"' in out[2]
+        assert ">Installed<" in out[2] and "data-cat-download" not in out[2]
         assert ">Download<" in out[3]
 
     def test_an_older_slower_search_does_not_replace_a_newer_one(self, tmp_path):
@@ -252,10 +252,12 @@ class TestDownloadsSection:
 
 PICK = """
 const q = (s) => document.querySelector(s);
-const sel = q('#chatModelSelect'); const box = q('#chatModelSelectSearch');
-const list = q('#chatModelSelectList'); const clear = q('#chatModelSelectClear');
-const chosen = q('#chatModelSelectChosen'); const status = q('#chatModelSelectStatus');
-const s = snap(); sel.value = 'org/custom'; render(s);
+const sel = q('#testSelect'); const box = q('#testSelectSearch');
+const list = q('#testSelectList'); const clear = q('#testSelectClear');
+const chosen = q('#testSelectChosen'); const status = q('#testSelectStatus');
+list.hidden = true; createPicker('#testSelect');
+const paint = (x) => fillSelect('#testSelect', x.models.map((m) => m.repo), null);
+const s = snap(); sel.value = 'org/custom'; paint(s);
 const type = (text) => { box.value = text; box.listeners.input(); };
 const enter = () => box.listeners.keydown({ key: 'Enter', preventDefault() {} });
 """
@@ -273,7 +275,7 @@ class TestSearchField:
     def test_choosing_updates_the_selected_line_and_announces_it(self, tmp_path):
         out = run(
             tmp_path,
-            PICK + "type('other'); const shown = !clear.hidden; enter(); render(s); render(s);"
+            PICK + "type('other'); const shown = !clear.hidden; enter(); paint(s); paint(s);"
             " return [shown, sel.value, box.value, clear.hidden, chosen.textContent,"
             " status.textContent, list.hidden];",
         )
@@ -292,7 +294,7 @@ class TestSearchField:
             tmp_path,
             PICK + "type('other'); let kept = false;"
             " clear.listeners.mousedown({ preventDefault: () => { kept = true; } });"
-            " clear.listeners.click(); render(s);"
+            " clear.listeners.click(); paint(s);"
             " return [kept, box.value, clear.hidden, list.hidden, list.innerHTML, sel.value];",
         )
         assert out[:4] == [True, "", True, False]
@@ -302,7 +304,7 @@ class TestSearchField:
     def test_without_models_the_field_says_so(self, tmp_path):
         out = run(
             tmp_path,
-            PICK + "sel.value = ''; render(snap({ models: [] }));"
+            PICK + "sel.value = ''; paint(snap({ models: [] }));"
             " return [box.placeholder, box.readOnly, chosen.textContent, clear.hidden];",
         )
         assert out == ["No models installed", True, "Selected: none", True]
@@ -319,7 +321,7 @@ class TestSearchFieldMarkup:
         assert 'placeholder="Search models…"' in box
         assert re.search(r'aria-label="Search [^"]*model', box)
         # The API Server's picker adds to a list: it keeps no chosen model to describe.
-        keeps_choice = select == "chatModelSelect"
+        keeps_choice = select != "serverModelSelect"
         assert (f'aria-describedby="{select}Chosen"' in box) is keeps_choice
         clear = re.search(rf'<button[^>]*id="{select}Clear"[^>]*>', field).group(0)
         for attribute in ('type="button"', 'aria-label="Clear model search"', "hidden"):

@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "ADR-010 — API server keeps two models in one process"
-status: "Accepted, revisit (unreleased: 2.0.10 source)"
+status: "Superseded (2.0.13, unreleased)"
 date: 2026-11-26
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -16,6 +16,9 @@ related:
 ---
 
 # ADR-010 — API server keeps two models in one process
+
+> **Superseded on 2026-11-28 (row 887, the owner's decision):** two models in one process is removed in
+> 2.0.13, with no replacement. [What is no longer protected](../../README.md#protections-removed-in-2013).
 
 > **Not released.** This is work planned for 2.0.10. Version 2.0.9 and earlier
 > serve one model at a time. The memory limits of §4.5 have **not** been re-tested

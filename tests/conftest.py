@@ -10,43 +10,34 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
-import subprocess
 import sys
 import threading
-import types
 import urllib.request
 import uuid
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import portguard
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))  # app.py imports its sibling modules
+portguard.install()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    problems = [*portguard.VIOLATIONS, *portguard.kill_leftovers()]
+    if problems:
+        print("\nThe run used a reserved port or left a process behind:")
+        print("\n".join(problems))
+        session.exitstatus = 1
 
 
 @pytest.fixture(autouse=True)
-def free_memory(monkeypatch):
-    """No test reads this Mac's free memory: vm_stat answers what the test sets.
-
-    Set ``.bytes`` (None: it cannot be read); ``.reads`` counts the calls.
-    """
-    fake = types.SimpleNamespace(bytes=100 * 10**9, reads=0)
-    real = subprocess.run
-
-    def run(cmd, *args, **kwargs):
-        if not (isinstance(cmd, list) and cmd[:1] == ["/usr/bin/vm_stat"]):
-            return real(cmd, *args, **kwargs)
-        fake.reads += 1
-        if fake.bytes is None:
-            raise OSError("vm_stat is not available")
-        pages = ("free", "speculative", "purgeable")
-        text = "Mach Virtual Memory Statistics: (page size of 1 bytes)\n"
-        text += f"File-backed pages: {fake.bytes}.\n"
-        text += "".join(f"Pages {name}: 0.\n" for name in pages)
-        return subprocess.CompletedProcess(cmd, 0, text, "")
-
-    monkeypatch.setattr(subprocess, "run", run)
-    return fake
+def reserved_ports():
+    """The test that touches 8765 or 8080 is the one that fails."""
+    before = len(portguard.VIOLATIONS)
+    yield
+    assert portguard.VIOLATIONS[before:] == []
 
 
 @pytest.fixture
@@ -74,13 +65,14 @@ def app_module(tmp_path, monkeypatch):
         assert cache == module.CACHE_DIR
         yield module
     finally:
+        portguard.shut_down(module)
         sys.modules.pop(name, None)
 
 
 @pytest.fixture
 def server(app_module):
     """Run the real request handler on an ephemeral loopback port."""
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app_module.Handler)
+    httpd = app_module.LocalServer(("127.0.0.1", 0), app_module.Handler)
     httpd.daemon_threads = True
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

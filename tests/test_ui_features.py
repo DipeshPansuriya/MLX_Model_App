@@ -7,15 +7,15 @@ import re
 import pytest
 from test_ui_behaviour import CSS, HTML, needs_node, run
 
-MODEL_SELECTS = ["chatModelSelect", "serverModelSelect"]
+MODEL_SELECTS = ["serverModelSelect", "configModelSelect", "ltModelSelect"]
 COPY = 'data-copy="{}"'
 
 # Picker helpers: render, then drive the search box like a user would.
 PICKER = """
-const $s = document.querySelector('#chatModelSelect');
-const box = document.querySelector('#chatModelSelectSearch');
-const list = document.querySelector('#chatModelSelectList');
-const status = document.querySelector('#chatModelSelectStatus');
+const $s = document.querySelector('#testSelect');
+const box = document.querySelector('#testSelectSearch');
+const list = document.querySelector('#testSelectList');
+const status = document.querySelector('#testSelectStatus');
 const models = (...names) => names.map((repo) => ({ repo, path: '/c', size_h: '1 KB' }));
 const three = snap({ models: models('org/Qwen3-4bit', 'org/Llama-8bit', 'org/Qwen3-8bit') });
 const key = (k, extra = {}) => {
@@ -26,7 +26,9 @@ const key = (k, extra = {}) => {
 const type = (text) => { box.value = text; box.listeners.input(); };
 const options = () => [...list.innerHTML.matchAll(/data-value="([^"]*)"/g)].map((m) => m[1]);
 const isOpen = () => !list.hidden;
-render(three);
+list.hidden = true; createPicker('#testSelect');
+const paint = (x) => fillSelect('#testSelect', x.models.map((m) => m.repo), null);
+paint(three);
 """
 
 
@@ -156,10 +158,10 @@ class TestModelSearch:
         )
         assert out[0] == 3
         assert re.search(
-            r'id="chatModelSelect-opt-1"[^>]*aria-selected="true"[^>]*data-value="org/Llama-8bit"',
+            r'id="testSelect-opt-1"[^>]*aria-selected="true"[^>]*data-value="org/Llama-8bit"',
             out[1],
         )
-        assert out[2] == "chatModelSelect-opt-1"
+        assert out[2] == "testSelect-opt-1"
 
     def test_enter_picks_the_highlighted_model(self, tmp_path):
         out = pick(
@@ -211,9 +213,9 @@ class TestModelSearch:
     def test_polling_keeps_typed_text_and_highlight(self, tmp_path):
         out = pick(
             tmp_path,
-            "type('qwen'); key('ArrowDown'); const writes = list.writes; render(three);"
+            "type('qwen'); key('ArrowDown'); const writes = list.writes; paint(three);"
             " const same = list.writes === writes;"
-            " render(snap({ models: models('org/Aaa', 'org/Qwen3-4bit', 'org/Qwen3-8bit') }));"
+            " paint(snap({ models: models('org/Aaa', 'org/Qwen3-4bit', 'org/Qwen3-8bit') }));"
             " const out = [same, box.value, isOpen(), options()]; key('Enter');"
             " return [...out, $s.value];",
         )
@@ -228,23 +230,15 @@ class TestModelSearch:
     def test_polling_keeps_the_chosen_model(self, tmp_path):
         out = pick(
             tmp_path,
-            "type('llama'); key('Enter'); render(three); render(three);"
-            " return [$s.value, document.querySelector('#chatModelSelectChosen').textContent];",
+            "type('llama'); key('Enter'); paint(three); paint(three);"
+            " return [$s.value, document.querySelector('#testSelectChosen').textContent];",
         )
         assert out == ["org/Llama-8bit", "Selected: org/Llama-8bit"]
-
-    def test_selected_line_follows_the_app_when_another_model_loads(self, tmp_path):
-        out = pick(
-            tmp_path,
-            "render({ ...three, loaded: { repo: 'org/Qwen3-8bit' } });"
-            " return document.querySelector('#chatModelSelectChosen').textContent;",
-        )
-        assert out == "Selected: org/Qwen3-8bit"
 
     def test_no_installed_models(self, tmp_path):
         out = pick(
             tmp_path,
-            "render(snap({ models: [] })); box.listeners.click();"
+            "paint(snap({ models: [] })); box.listeners.click();"
             " return [box.value, box.placeholder, box.readOnly, isOpen(), $s.value];",
         )
         assert out == ["", "No models installed", True, False, ""]
@@ -284,7 +278,8 @@ class TestMarkup:
 
     def test_every_model_select_has_a_search_box(self):
         found = re.findall(r'<select[^>]*id="(\w*[Mm]odel\w*)"', HTML)
-        assert sorted(found) == MODEL_SELECTS
+        # Chat lists at most the two served models: a plain select, no search box.
+        assert sorted(found) == sorted(["chatModelSelect", *MODEL_SELECTS])
 
     def test_list_scrolls_and_highlight_is_styled(self):
         assert re.search(r"\.picker-list\s*\{[^}]*overflow-y:\s*auto", CSS)

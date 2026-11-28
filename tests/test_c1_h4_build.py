@@ -30,7 +30,15 @@ def clone(target: Path) -> Path:
     """Copy only what a fresh checkout would contain (no ignored binary)."""
     (target / "packaging").mkdir(parents=True)
     (target / "ui").mkdir()
-    for name in ("app.py", "mlx_guard.py"):
+    for name in (
+        "app.py",
+        "model_info.py",
+        "mlx_loadtest.py",
+        "optiq_engine.py",
+        "engine_runtime.py",
+        "engines.py",
+        "packaging/optiq-lock.txt",
+    ):
         shutil.copy(ROOT / name, target / name)
     for name in ("index.html", "style.css", "app.js"):
         shutil.copy(ROOT / "ui" / name, target / "ui" / name)
@@ -65,9 +73,9 @@ def test_fresh_checkout_builds_with_the_promised_minimum(tmp_path):
     assert info["LSMinimumSystemVersion"] == "12.0"
     assert minos(contents / "MacOS" / "MLXStudio") == "12.0"
     assert not (contents / "Resources" / "launcher.py").exists()
-    # M6: the app starts the API server through this file; without it no server runs.
-    bundled = contents / "Resources" / "mlx_guard.py"
-    assert bundled.read_bytes() == (root / "mlx_guard.py").read_bytes()
+    # app.py imports this file; without it the app does not start.
+    bundled = contents / "Resources" / "model_info.py"
+    assert bundled.read_bytes() == (root / "model_info.py").read_bytes()
 
 
 def test_build_fails_when_minimum_versions_disagree(tmp_path):

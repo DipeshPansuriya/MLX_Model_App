@@ -3,6 +3,214 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.13] — 2026-11-28
+
+Not released as the latest version: pre-release build; the released 2.0.9 app has none
+of these changes. It holds the 2.0.10, 2.0.11 and 2.0.12 changes and those below.
+
+### Read before you use it
+
+- The MLX server on port 8080 has **no password**. Any program or user on this Mac can
+  use it while it runs.
+- **A website open in your browser can also send it requests**, even though it normally
+  cannot read the answer. Such a request can make it work hard, switch to another
+  downloaded model or a folder on this Mac, and so **freeze or crash the Mac**.
+- With a known web trick (DNS rebinding), a website **may also read** the answers and the
+  list of your downloaded models. The "allowed origins" setting does not stop this.
+- There is **no memory limit**. Save your work before trying a large model or a long
+  prompt.
+- **Stop the API server when you are not using it.** **Run in background** is off by
+  default for MLX: keep it off. With it on, the open server keeps running after you close
+  the app. It is on by default for OptiQ. After a crash or force quit, open the app again,
+  check the server and press **Stop**.
+- If you must leave a server running while browsing, use the OptiQ engine, which asks
+  for a key.
+- Do not expose port 8080 to your network or through a tunnel or proxy.
+- The server log can contain text from bad requests. Check it before sharing logs.
+
+### What was and was not tried with real models
+
+One check on one Mac (Apple M6, 32 GB) on 2026-11-28, with one model per engine and
+outgoing network blocked, before the version number and the background default changed:
+
+- Both engines started, answered chat and made tool calls. This includes the direct
+  `mlx_lm` server.
+- OptiQ: Claude Code answered and wrote a file; one 4096-token load test passed; calls
+  without the key or with a wrong one were refused.
+- **Not tried:** DeepSeek Harness, the Install button, the native window, closing it with
+  background on, **Apply changes**, **Restart**, the copy buttons, an MLX request naming
+  another downloaded model, other load test sizes and long contexts.
+
+The automated tests use fakes only.
+
+### Known limits
+
+- OptiQ's `/v1/models` (key needed) lists the served model by its **full folder path**,
+  which includes your user name, plus `:think` and `:no-think` forms. OptiQ 0.8.6 has no
+  option to rename it. Send `default_model`.
+
+### Easier server start and connect
+
+- OptiQ is the default engine on API Server and Load Test; the engine of the last ready
+  server is kept. A missing engine can be installed from the Start area, or use MLX.
+- **Run in background** is on by default for OptiQ and off for MLX, and follows the
+  engine you pick. The choice you last started a ready server with is kept for that
+  engine. A background server keeps running and holding memory until **Stop**; a
+  background MLX server has no password.
+- The MLX connect and client lines carry an open-server warning.
+- Start shows a check panel before launching. New server setting `server_reasoning`.
+- **Connect your tool** gives copy-ready settings after a start. Clearer error messages.
+
+### Removed (protections: read before upgrading)
+
+MLX is now `mlx_lm`'s own server. MLX Studio's request guard (`mlx_guard.py`) and the
+80% memory rule are gone, with no replacement. Entries further down that describe
+them for this version are superseded by this list
+([full table](README.md#protections-removed-in-2013)).
+
+- No memory limit anywhere: a large model or prompt can freeze or crash the Mac.
+  The OptiQ memory stop and the Load Test size gate are removed too.
+- No MLX prompt limit, long prompt refusal or reply token cap.
+- One model per server; no two-model mode.
+- No `Host`, JSON-only or `Origin` checks and no request size limits on port 8080;
+  only `--allowed-origins`.
+- A request can make the server load another cached model, a local folder, an
+  adapter or a draft model.
+- Settings removed: memory limit, MLX buffer cache limit, two-model context cap.
+  Max context is used by OptiQ only.
+- No memory estimates, loaded-model readout or **Apply this size to config**
+  (`/api/server/estimate` and `/api/loadtest/apply` are removed).
+
+Kept: `127.0.0.1` only, OptiQ key and port checks, the app page's request checks,
+clean offline server environment, process cleanup, key hiding. The Load Test still
+stops on critical memory pressure, swap growth over 0.5 GB, unreadable memory or a
+sampling gap over 1 second. Clients should send the model name `default_model`.
+
+### Changed
+
+- An MLX server that is not ready after 600 seconds is now **stopped** and the replaced
+  one is started again (the rule OptiQ has); earlier builds left it running. This also
+  covers a server kept from an earlier run whose port owner cannot be read.
+
+### Added
+
+- **Engines** ([docs/ENGINES.md](docs/ENGINES.md)): the API Server and Load Test can use
+  OptiQ 0.8.6 (now the default) beside MLX. Setup installs, updates and removes it from a hashed
+  package lock. It has a key, an Anthropic route and fewer protections than MLX; the
+  card lists them. Splash and Rapid-MLX are shown as not available yet. What was tried
+  with a real model is listed at the top of this entry.
+- Under OptiQ: the engine folder is checked at each start, keys are hidden in the
+  server log, and an installed engine is never installed over. These were checked
+  with fakes only.
+
+- Load Test: sizes up to 1,048,576 (up to 12 in one test), with 3600 seconds for a
+  size above 32768; at the model's own limit the prompts stop short so the replies
+  fit. A **Thinking** switch where the chat template has `enable_thinking`; results
+  say which it was. The new sizes and the switch were checked with fakes only.
+
+### Fixed
+
+- The Anthropic switch is hidden under MLX; client settings and **Copy key** follow
+  the running engine; Configuration says what OptiQ ignores or treats differently.
+- **Remove** is off while that engine serves; the Load Test engine is locked during a
+  run; OptiQ messages name the next step; Chat says OptiQ drops older text.
+
+### Changed
+
+- The MLX server and load test processes no longer inherit the app's whole environment:
+  only paths, locale, Python, Hugging Face cache and offline variables and
+  `MLX_STUDIO_*`. Keys and tokens are not passed on.
+- **API Server is first in the menu, Chat second**, and the app opens on the API
+  Server page.
+- **Chat uses the running API server.** No second copy of a model is loaded, and
+  the **Load** and **Unload** buttons are gone from Chat, Models and Download. The
+  Model list holds only the served models; one model is selected already. While the
+  server is stopped Chat offers **Go to API Server**; while it starts, typing is
+  off. A busy server shows a waiting line, and **Stop** closes the request.
+- Reasoning (`reasoning` field or `<think>` text) shows in a collapsed
+  **Thinking** block. A reply with no end of thinking is shown in full; thinking
+  alone is not kept in the chat history.
+- Each reply reports `tokens · tok/s`; peak memory is no longer shown.
+- The memory estimate no longer counts a Chat model.
+- `/api/load` and `/api/unload` are removed; `/api/chat` needs `repo`.
+
+### Added
+
+- **Load Test page.** Tick or type context sizes, watch progress and memory,
+  cancel, compare results with earlier runs and apply a passed size to the model's
+  config. `mlx_loadtest.py` tests the sizes with its own guarded server while the
+  API server is stopped; routes `/api/config` and `/api/loadtest`. It stops at 77% of memory and sends nothing
+  projected above 75%; sampling cannot guarantee 80%. Not run with a real model.
+  [Routes and limits](docs/API.md#6c-configuration-and-load-test).
+- **Configuration page**, for all models or one: it replaces the Settings box on
+  the API Server card, which now links to it. Menu: API Server, Chat, Models,
+  Download, Configuration, Load Test, Activity, Setup.
+- **User settings**, kept in `~/.mlx_studio/settings.json`: max
+  context tokens, two-model context cap, memory limit percent (30 to 80), server
+  and Chat reply caps, prompt cache size and bytes, MLX buffer cache limit. Empty
+  means automatic. A max context above the memory ceiling (80% of RAM, or the
+  memory percent, by the app's formula) is lowered to it, and the app says which
+  figure applies. Each model's own max context also applies after the server
+  switches models. Chat temperature and top-p can be set. Ports, hosts, the token and security
+  checks cannot be set. The file and `/api/server/settings` also take overrides per
+  model (all keys but the memory percent); two models use the stricter value. [Keys and ranges](docs/API.md#6b-user-settings).
+- **The API server refuses a too long prompt at once** (`400`,
+  `context_length_exceeded`) instead of reading it for minutes. The limit is shown
+  on the API Server card and is never above the model's own. Two models: the
+  context the server was started with. One model: what fits in 80% of RAM after
+  taking off the memory other apps hold when the server starts. If that cannot be
+  read: what fits in 52% of RAM, at least 32,768 (or the model's smaller limit),
+  but never more than fits in 80%.
+- **The one-model memory figure is higher and the context lower.** Reply room is
+  6.4 times the cache bytes per token (was 3.1), fitted to measurements of one
+  model on one Mac (Qwen2.5-7B 4-bit, Apple M6, 32 GB); other models and Macs are
+  calculated. On that Mac the automatic limit is about 21,000 tokens with other
+  apps at 41% and 12,600 at 50% (calculated). Below 4096 every prompt is refused
+  (code `insufficient_memory`) with the memory in use and a message to close other
+  apps, then press **Stop**, then **Start Server**. A set Max context follows the
+  same rule, other apps included; there is no override.
+  Not run with a real model, and no guarantee that memory stays under 80%.
+- **Performance mode** on Configuration, for all models or one: **Standard
+  (recommended)** changes nothing; **Save memory** passes `--kv-bits 8
+  --prefill-step-size 256`, which uses less memory but reads new prompts about half
+  as fast (measured on one model and one Mac); **Advanced** sets `--kv-bits` (8 or
+  4, with a warning for 4), `--kv-group-size` (32, 64, 128) and
+  `--prefill-step-size` (64 to 2048). Used by the API server and the load test.
+  A model that cannot compress its cache is refused the choice, with the reason,
+  and runs in Standard. The automatic prompt limit is not raised.
+- **Chat reply stats**: time to the first answer, writing speed, prompt size and
+  mode under each reply (unknown figures are left out), and the mode in force at the
+  top of the page.
+- **MLX buffer cache limit** (`mlx_cache_limit_mb`, Configuration page, global and
+  per model; also used by the load test): `mx.set_cache_limit` in decimal MB. Empty
+  keeps MLX's default. Its effect on speed and memory is not measured.
+
+### Fixed
+
+Pre-release review, security and browser findings:
+
+- A reply is capped so that prompt plus reply stays within the prompt limit (at
+  least one token).
+- The prompt cache holds 2 conversations by default (`--prompt-cache-size 2`) and
+  has a byte cap with one model too: 2 times cache bytes per token times the limit.
+  `prompt_cache_bytes` only lowers it.
+- A model that accepts no prompt is shown as such on the API Server card. The card
+  sizes one model at what it will serve, not always 32,768 tokens.
+- Load test: a size above what the server accepts is **skipped**, and requests go
+  only to a port held by the test's own server. A cancel marks the remaining sizes
+  cancelled.
+- Chat: an unreadable progress line no longer ends the reply; no prompt is sent to
+  an adopted server that is no longer ours; a double click on **Send** does not
+  stop the reply; a stopped reply is announced as stopped; focus moves off a
+  **Stop** button that goes away; a failed model load is said on both pages.
+- Configuration shows the applied max context and the one-model memory rule.
+  "Chat only" hints are read with their fields.
+
+- Reading the remembered model set no longer leaks a file descriptor when its path
+  is a folder.
+- In a narrow browser window the Load Test page no longer scrolls sideways, and
+  **New chat** stays on screen in Chat.
+
 ## [2.0.12] — 2026-11-27
 
 Not released: pre-release build; the released 2.0.9 app has none of these changes.

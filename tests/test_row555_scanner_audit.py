@@ -303,7 +303,8 @@ class Audit:
             "app.py",
             'HOST = "127.0.0.1"\n'
             "# STATIC_FILES.get(rel) _build_static_allowlist MAX_BODY\n"
-            "# unload the model first; truststore.inject_into_ssl\n",
+            "# stop the API server first; truststore.inject_into_ssl\n"
+            '# "--allowed-origins" "HF_HUB_OFFLINE": "1"\n',
         )
         self.write(".gitignore", "dist/\n*.dmg\n*.app/\n__pycache__/\n.env\n*.safetensors\n")
         # The real pip-audit reaches PyPI, so every run gets a stand-in that
@@ -363,6 +364,22 @@ def test_a_clean_tree_passes_the_whole_audit(audit):
     audit.bundle()
     code, output = audit.run(platform="linux")
     assert code == 0, output
+
+
+def test_sa05_finds_the_delete_guard_by_its_current_words(audit):
+    # The words app.py answers with when a held model is to be deleted.
+    real = (ROOT / "app.py").read_text("utf-8")
+    assert 'return "stop the API server first"' in real
+    _, output = audit.run()
+    said = "PASS SA-05 delete refuses the model the server was started with"
+    assert any(line.startswith(said) for line in results(output, "SA-05"))
+
+
+def test_sa05_warns_when_the_delete_guard_is_gone(audit):
+    app = audit.root / "app.py"
+    audit.write("app.py", app.read_text("utf-8").replace("stop the API server first", "gone"))
+    _, output = audit.run()
+    assert "WARN SA-05 loaded-model delete guard not found" in results(output, "SA-05")
 
 
 def test_sa07_passes_a_clean_tree(audit):
@@ -484,7 +501,7 @@ def test_sa15_compares_every_shipped_file(audit):
 
 @pytest.mark.parametrize("fault", ["stale", "missing"])
 @pytest.mark.parametrize(
-    "name", ["app.py", "mlx_guard.py", "ui/index.html", "ui/style.css", "ui/app.js"]
+    "name", ["app.py", "model_info.py", "ui/index.html", "ui/style.css", "ui/app.js"]
 )
 def test_sa15_fails_on_any_wrong_shipped_file(audit, name, fault):
     path = audit.bundle() / name
@@ -542,3 +559,12 @@ def test_sa16_fails_on_an_unsafe_installer(audit, edit, message):
     code, output = audit.run()
     assert code == 1
     assert any(message in line for line in failed(output, "SA-16")), output
+
+
+def test_sa17_states_the_removed_protections_and_needs_the_origin_list(audit):
+    _, output = audit.run()
+    assert len([r for r in results(output, "SA-17") if r.startswith("INFO SA-17 REMOVED")]) == 3
+    app = audit.root / "app.py"
+    audit.write("app.py", app.read_text("utf-8").replace("--allowed-origins", "gone"))
+    _, output = audit.run()
+    assert "--allowed-origins" in failed(output, "SA-17")[0]

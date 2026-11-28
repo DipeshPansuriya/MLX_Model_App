@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import threading
@@ -155,7 +154,7 @@ class TestNewChatDuringReply:
             " await gate; return i < frames.length"
             " ? { done: false, value: new TextEncoder().encode(frames[i++]) }"
             " : { done: true }; } }) } });"
-            " state.snapshot = snap({ loaded: { repo: 'org/custom' } });"
+            " state.chatStatus = 'ready';"
             " document.querySelector('#input').value = 'q'; wire();"
             " const sending = sendMessage();"
             " document.querySelector('#newChatBtn').listeners.click();"
@@ -172,85 +171,6 @@ class TestNewChatDuringReply:
             " return calls.map((c) => c.path);",
         )
         assert "/api/chat/stop" not in out
-
-
-# V8 ------------------------------------------------------------------------- #
-def load_guard():
-    spec = importlib.util.spec_from_file_location("mlx_guard_row553", ROOT / "mlx_guard.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-class TestServedModels:
-    def test_guard_records_each_cached_model_once(self, tmp_path):
-        record = load_guard().served_recorder(str(tmp_path / "served"))
-        for name in ("org/b", "org/b", "default_model", "org/c"):
-            record(name)
-        assert (tmp_path / "served").read_text("utf-8").split() == [
-            "org/b",
-            "default_model",
-            "org/c",
-        ]
-        assert (tmp_path / "served").stat().st_mode & 0o777 == 0o600
-
-    def test_an_unwritable_record_does_not_break_requests(self, tmp_path):
-        load_guard().served_recorder(str(tmp_path / "no" / "dir"))("org/b")
-        load_guard().served_recorder(None)("org/b")
-
-    @pytest.mark.parametrize(("model", "recorded"), [("org/b", ["org/b"]), ("org/x", [])])
-    def test_installed_guard_records_only_accepted_models(self, monkeypatch, model, recorded):
-        guard = load_guard()
-        monkeypatch.setattr(guard, "hook_problem", lambda server: None)
-
-        class APIHandler:
-            def parse_request(self):
-                return True
-
-            def validate_model_parameters(self):
-                pass
-
-        server = type("Server", (), {"APIHandler": APIHandler})
-        server.ToolCallFormatter = type("ToolCallFormatter", (), {"_format": None})
-        server._image_parts = server._image_url = staticmethod(lambda value: [])
-        seen = []
-        assert guard.install(server, lambda repo: repo == "org/b", seen.append) is None
-        handler = APIHandler()
-        handler.requested_model, handler.requested_draft_model = model, "default_model"
-        handler.adapter, handler.body = None, {}
-        handler.response_generator = type("G", (), {})()
-        handler.response_generator.cli_args = type("A", (), {"model": "org/start"})()
-        if recorded:
-            handler.validate_model_parameters()
-        else:
-            with pytest.raises(ValueError, match="not available"):
-                handler.validate_model_parameters()
-        assert seen == recorded
-
-    def test_a_switched_to_model_is_not_deleted(self, server, app_module):
-        s = app_module.STATE
-        s.server_repo, s.server_pid = "org/start", __import__("os").getpid()
-        app_module.APP_DIR.mkdir(parents=True, exist_ok=True)
-        app_module._served_file().write_text(f"{REPO}\n", encoding="utf-8")
-        with s.lock:
-            assert s.in_use_locked(REPO) == "stop the API server first"
-            assert s.in_use_locked("org/unused") is None
-            s.server_pid = None
-            assert s.in_use_locked(REPO) is None
-
-    def test_each_start_forgets_the_previous_list(self, app_module, monkeypatch):
-        seen = {}
-
-        def popen(cmd, **kwargs):
-            seen.update(kwargs["env"])
-            raise OSError("not started in tests")
-
-        app_module.APP_DIR.mkdir(parents=True, exist_ok=True)
-        app_module._served_file().write_text(f"{REPO}\n", encoding="utf-8")
-        monkeypatch.setattr(app_module.subprocess, "Popen", popen)
-        app_module.worker_server_start("org/start")
-        assert not app_module._served_file().exists()
-        assert seen["MLX_STUDIO_SERVED_FILE"] == str(app_module._served_file())
 
 
 # V9 ------------------------------------------------------------------------- #
@@ -334,23 +254,6 @@ class TestAccessibility:
         ):
             assert part in bar
 
-    def test_focus_follows_load_when_it_becomes_unload(self, tmp_path):
-        out = run(
-            tmp_path,
-            "render(snap()); const wrap = document.querySelector('#modelCards');"
-            ' const tag = (h) => h.match(/<button[^>]*data-act="(un)?load"[^>]*>/)[0];'
-            " const attrs = (t) => Object.fromEntries("
-            '[...t.matchAll(/data-([a-z-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));'
-            " document.activeElement = { dataset: attrs(tag(wrap.innerHTML)) };"
-            " wrap.contains = () => true; let selector = '';"
-            " wrap.querySelector = (s) => { selector = s; return { focus() {} }; };"
-            " render(snap({ loaded: { repo: 'org/custom' } }));"
-            " return { selector, after: attrs(tag(wrap.innerHTML)) };",
-        )
-        wanted = dict(re.findall(r'\[data-([a-z-]+)="([^"]*)"\]', out["selector"]))
-        assert wanted and wanted.items() <= out["after"].items()
-        assert out["after"]["act"] == "unload" and wanted["repo"] == "org/custom"
-
 
 # V13 ------------------------------------------------------------------------ #
 class TestHubPin:
@@ -378,12 +281,3 @@ class TestHubPin:
         )
         assert "2.4.0" in out[0]
         assert "up to date" not in out[1]
-
-
-# Notice text ---------------------------------------------------------------- #
-def test_unguarded_notice_is_true_for_any_older_server():
-    html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
-    notice = re.search(r'id="serverUnguarded".*?class="notice-text">([^<]*)<', html, re.DOTALL)
-    # Released builds differ from their tags, so no version number is claimed.
-    assert not re.search(r"\d+\.\d+\.\d+", notice.group(1))
-    assert "an older version of MLX Studio" in notice.group(1)

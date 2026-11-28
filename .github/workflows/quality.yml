@@ -51,7 +51,7 @@ jobs:
 
       - name: Python compiles
         run: |
-          python3 -m py_compile app.py mlx_guard.py
+          python3 -m py_compile app.py model_info.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py
           python3 -m py_compile scripts/check_secrets.py
           python3 -m py_compile packaging/release_manifest.py
 
@@ -129,15 +129,14 @@ jobs:
       - name: Run the suite on macOS
         run: python3 -m pytest -q -rs --junitxml="$RUNNER_TEMP/macos-tests.xml"
 
-      # Only this job checks mlx_guard.py against the real mlx_lm and runs the
-      # build and installer for real, so a skipped or deselected test in these
-      # files fails the build.
-      - name: Guard and packaging tests ran, none skipped
+      # Only this job runs the build and installer for real, so a skipped or
+      # deselected test in these files fails the build.
+      - name: Packaging tests ran, none skipped
         run: >-
           python3 .github/scripts/require_no_skips.py "$RUNNER_TEMP/macos-tests.xml"
-          tests/test_guard.py
-          tests/test_guard_null_args.py
+          tests/test_prerelease_2013.py
           tests/test_app_robustness.py
+          tests/test_row_perfmode.py
           tests/test_packaging.py
 
   release:

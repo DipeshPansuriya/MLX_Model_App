@@ -86,9 +86,11 @@ class TestPolicy:
         assert policy(headers) == EXPECTED
 
     def test_the_chat_stream_carries_it(self, server, app_module, monkeypatch):
-        monkeypatch.setattr(app_module.STATE, "model", object())
-        monkeypatch.setattr(app_module, "stream_chat", lambda *_: iter([("error", "stop")]))
-        body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+        monkeypatch.setattr(app_module, "_chat_problem", lambda repo: None)
+        monkeypatch.setattr(app_module, "stream_chat", lambda *_: (e for e in [("error", "stop")]))
+        body = json.dumps(
+            {"repo": "org/m", "messages": [{"role": "user", "content": "hi"}]}
+        ).encode()
         status, headers, _ = request(server, "POST", "/api/chat", body, good_headers(app_module))
         assert status == 200
         assert headers["Content-Type"] == "text/event-stream"

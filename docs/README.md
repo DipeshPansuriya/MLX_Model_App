@@ -20,6 +20,12 @@ related:
 
 # MLX Studio — documentation index
 
+> **2.0.13 (unreleased) supersedes parts of this file.** `mlx_guard.py` and the 80%
+> memory rule are removed: MLX is `mlx_lm`'s own server with one model, no memory or
+> prompt limit and no request checks beyond `--allowed-origins`. Text, figures and
+> diagrams about the guard, memory limits or two models apply to 2.0.12 and earlier.
+> [What is no longer protected](../README.md#protections-removed-in-2013).
+
 MLX Studio is a native macOS application for running local AI models on Apple
 Silicon through Apple's MLX runtime. It provides a chat surface with streaming
 inference, a model manager backed by the Hugging Face cache, an
@@ -48,7 +54,7 @@ code, it says so.
 | 5d | [REPO-HARDENING-CHECKLIST.md](REPO-HARDENING-CHECKLIST.md) | Reusable 79-item checklist: 11 areas, verify commands, cost, scorecard |
 | 6 | [TESTING.md](TESTING.md) | What was verified, how, and what remains unverified |
 | 7 | [RUNBOOK.md](RUNBOOK.md) | Operator procedures: start, stop, recover, rotate a release |
-| 8 | [adr/README.md](adr/README.md) | The decisions behind the design (up to [ADR-010](adr/ADR-010-two-models-one-process.md)), with alternatives rejected |
+| 8 | [adr/README.md](adr/README.md) | The decisions behind the design (up to [ADR-012](adr/ADR-012-load-test.md)), with alternatives rejected |
 | 9 | [diagrams/README.md](diagrams/README.md) | Rendered views of the runtime, request paths and release flow |
 | 10 | [API.md](API.md) | Endpoints, request rules, chat stream |
 | 11 | [DATABASE.md](DATABASE.md) | Stored files (there is no database) |
@@ -72,7 +78,7 @@ code, it says so.
 | Area | State | Evidence |
 |---|---|---|
 | Chat with streaming inference | Built | [TESTING.md](TESTING.md) §7 |
-| Model load / unload with cache release | Built | [TESTING.md](TESTING.md) §7 |
+| Model load / unload with cache release (released builds; replaced in 2.0.13, ADR-011) | Built | [TESTING.md](TESTING.md) §7 |
 | Model download and delete | Built | [TESTING.md](TESTING.md) §7 |
 | OpenAI-compatible server | Built | [TESTING.md](TESTING.md) §7 |
 | Activity log | Built | [TESTING.md](TESTING.md) §7 |

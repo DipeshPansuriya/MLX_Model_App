@@ -1,5 +1,11 @@
 # MLX Studio - API
 
+> **2.0.13 (unreleased):** MLX is `mlx_lm`'s own server on port 8080. The request guard,
+> the 80% memory rule, two models, memory estimates and the settings
+> `mlx_cache_limit_mb`, `two_model_context_tokens` and `memory_limit_percent` are
+> removed. Where a section below still describes them, it applies to 2.0.12 and
+> earlier. [What is no longer protected](../README.md#protections-removed-in-2013).
+
 **Date:** 2026-11-25 | **Applies to:** 2.0.9 (released 2026-11-26); parts marked unreleased describe the working source | **Security:** [SECURITY.md](SECURITY.md)
 
 ## 1. Overview
@@ -73,9 +79,7 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | Path | Body | Errors |
 |---|---|---|
 | `/api/focus` | - | no token needed. Unreleased: in browser mode it opens a new tab, at most once every 3 seconds |
-| `/api/load` | `repo` (required) | 409 busy or being deleted; unreleased: 400, 409 (section 5) |
-| `/api/unload` | - | 409 while generating |
-| `/api/chat` | `messages`: non-empty list of `{role, content}` strings | 400, 409 |
+| `/api/chat` | `repo` (a served model), `messages`: non-empty list of `{role, content}` strings | 400, 409 (section 6) |
 | `/api/chat/stop` | - | - |
 | `/api/download` | `repo` (required) | 409 already downloading |
 | `/api/download/cancel` | `repo` (required) | 404 not downloading |
@@ -85,161 +89,175 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/server/estimate` | unreleased: `repo` (required), `also` | 400 |
 | `/api/server/stop` | - (also cancels a start that has not launched yet) | - |
 | `/api/server/notice/clear` | - (unreleased: clears `down_notice` and `apply_notice`) | - |
+| `/api/server/settings` | unreleased: `values` or `reset`; optional `repo` ([6b](#6b-user-settings)) | 400, 500 |
 | `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running |
 | `/api/logs/clear` | - | 500 |
 | other paths | - | 404 |
 
-## 5. Two models (unreleased, 2.0.10 source)
+## 5. One model (2.0.13, unreleased)
 
-### Request fields
-
-`also` is optional: a list with at most one model id.
-
-| Answer | When |
-|---|---|
-| 400 | `also` is not a list of strings, holds more than one name, repeats `repo`, or, with a second name, either model is not installed completely |
-| 400 | `/api/server/estimate` with `also` empty: `repo` is not installed completely |
-| 409 | `/api/server/start` with a pair: it does not fit at 8,192 tokens each. `error` is the refusal text and `estimate` is the estimate reply below |
-| 409 | `/api/server/start`: a model is being deleted |
-| 400 | 2.0.12 source: `/api/server/start` with one model: it is not installed completely. Nothing is launched, and a running server is left alone |
-
-A start with one model is never refused for memory. The app stops the running
-server before the new one starts and then checks memory again. If the pair is
-refused at that point, the call has already answered 200 and `/api/state` tells
-the outcome.
-
-### Replacing a running server (unreleased, 2.0.12 source)
-
-A start that replaces a server remembers a fallback: the models and mode of the
-last server that was ready, else of the running one. A further start before the new
-server is ready keeps that fallback. It is started again, once, when the new server:
-
-| Case | Detected |
-|---|---|
-| Is refused for memory after the stop, cannot be spawned, or the start raises an unexpected error (a process already spawned is stopped) | At once |
-| Exits before it is ready | By the watcher, every 2 s |
-| Cannot load its first model (still running) | `load-failed` or `preload_done` with nothing resident; the process is stopped |
-
-Ready means a model is resident and, for two, `preload_done` is `true` (not needed
-with `multi_off`). A server still running 10 minutes after its start counts as
-ready. `/api/server/stop` forgets the fallback. Nothing is started again after it,
-while a newer start waits, or when there is no fallback and no server was running.
-
-| Outcome | Field |
-|---|---|
-| Previous server started again | `apply_notice`: **The new server did not start: … was started again.** |
-| That failed too | `down_notice`: both reasons, ending **The API server is stopped.** |
-| The restored server stops later | `down_notice`: the `apply_notice` text followed by **API server for … stopped unexpectedly**; `apply_notice` is `null`. Nothing more is started |
-| No earlier server, and the new one cannot be started | `down_notice`: **The API server did not start: …** (a memory refusal keeps its own text) |
-
-Three further fields under `server`: `apply_notice` (text or `null`), `starting`
-(`true` while a requested start has not launched yet) and `last_models` (up to two
-ids of the last server that reported ready, else `[]`). `apply_notice` is cleared
-by the next start, by stop and by `/api/server/notice/clear`.
-
-`last_models` is read from `~/.mlx_studio/server.last.json`, written when the
-watcher sees the ready report within 10 minutes of the start (not by the 10 minute
-rule above, and not after a failed load). It may name a model that has since been
-removed; the page leaves those out of the card and of **Restart**, and
-`/api/server/start` refuses them. Reading it starts nothing. Anything but a regular
-file of at most 4 KB holding printable ids of at most 200 characters reads as `[]`.
-
-### `/api/load`
-
-| Answer | When |
-|---|---|
-| 400 | `repo` is not installed completely: for example an unknown name, a folder path or a partial download. This is checked before the busy checks |
-| 409 | A two-model server is running and either check below fails. The message gives the figures. The loaded Chat model stays; there is no override |
-| 200 `already` | `repo` is the Chat model already loaded; neither check above applies |
-
-The memory 409 does not apply when the server is stopped, serves one model, or
-reports `multi_off`. The two checks, in order:
-
-| Check | Refused when | Message starts |
-|---|---|---|
-| Fixed share | server memory + Chat weights > 0.52 × RAM. Server memory is the larger of the pair's calculated need and the measured use plus reply room and margin | `not enough memory: the API server keeps two models` |
-| Live free memory | Chat weights + max(0, need − server `active_bytes`) > free − 2 GB. Free memory is read afresh; without a measurement, `active_bytes` counts as 0. Skipped if free memory cannot be read | `not enough free memory:` |
-
-The old Chat model's memory is not counted as free, so replacing one Chat model
-with another may be refused until `/api/unload`.
-
-### Estimate reply
-
-All values are calculated, not measured.
-
-| Field | Meaning |
-|---|---|
-| `models[]` | `repo`, `weights_bytes`, `safe_context` (tokens, `null` if unknown), `context_limit`. For a pair, `safe_context` is the smaller of `context_tokens` and the model's limit |
-| `weights_bytes`, `reply_bytes`, `cache_bytes`, `margin_bytes`, `total_bytes` | the memory sum; `total_bytes` is the need. Reply room is 3.1 × cache bytes per token × context, largest model only; margin is 1.4 GB; `cache_bytes` is 0 for one model. A pair below 8,192 is summed at 8,192 |
-| `budget_bytes` | static = 0.52 × RAM, less the Chat model's weights if one is loaded or loading. For a pair with readable free memory: max(0, min(static, `held_bytes` + `free_bytes` − 2 GB)). Otherwise static |
-| `free_bytes` | free memory in bytes (cached up to 10 s for this route, read afresh for a start). `null` if `vm_stat` cannot be read, and always for one model, where it is not read |
-| `held_bytes` | measured `active_bytes` of the running server, which a restart gives back; 0 if there is none, for one model, or without `free_bytes` |
-| `context_tokens` | pair: context per model T, a multiple of 1,024, at most 32,768; below 8,192 (down to 0) means refused. One model: 32,768 |
-| `cache_cap_bytes` | pair: 2 × cache bytes per token × T (at least 8,192), using the larger of the two models' bytes per token (131,072 if a config cannot be read). 0 for one model |
-| `fits` | pair: T is at least 8,192 and the guard's admission rule accepts both. A start refuses a pair when this is `false`. One model: `false` if the guard's rule would count it as not fitting; it is still started |
-| `refused` | pair that does not fit: the refusal text. Otherwise `null` |
-| `free_is_limit` | `true` when `held_bytes` + `free_bytes` − 2 GB is below the static budget; `false` for one model or unreadable free memory |
-
-Refusal text, with free memory readable and the static budget large enough:
-`Not enough free memory for two models: X GB free, Y GB needed for 8K each. ...`.
-Y is the need at 8,192 plus the 2 GB reserve, less `held_bytes`; X is rounded down
-and Y up, to 0.1 GB. Otherwise:
-`Not enough memory for two models: X GB allowed for the API server, Y GB needed for 8K each. ...`.
-
-### New fields in `/api/state` under `server`
-
-| Field | Meaning |
-|---|---|
-| `repos` | models the server was started with; the first equals `repo` |
-| `resident` | models in memory now, the current one first |
-| `memory` | `budget_bytes`, `active_bytes`, `peak_bytes`, `measured`, or `null`. Updated at a model load or switch; with two models also at evictions, trims and about every 10 s from `mlx_lm`'s request loop |
-| `events` | the last 5 events, by name: `hit`, `load`, `evict`, `trim`, `alone`, `load-failed`, `preload-skipped`. The periodic refresh adds none |
-| `oversize` | models loaded alone although they do not fit the budget; empty list if none |
-| `multi_off` | why only one model is kept, when the installed `mlx_lm` no longer matches; else `null` |
-| `context_tokens` | context per model of a running two-model server: the guard's figure, or the one the app started it with. `null` for one model or with `multi_off`. It does not depend on `events` |
-| `preload_done` | `true` once the guard has finished preloading, however that ended (both loaded, second skipped, or a load failed); else `false` |
-| `memory_low` | `null` or `{free_bytes, short_by_bytes}`. Stays `null` until `preload_done` is `true`, without a measurement, if free memory cannot be read, for one model and with `multi_off` |
-
-`short_by_bytes` is (need − 0.4 GB − `active_bytes`) − (`free_bytes` − 2 GB), and
-`memory_low` is set when that is above 0. Need is the larger of the pair asked for
-and the pair loaded now, at the running context. The 0.4 GB process overhead is
-taken off because the running process already uses it. Nothing is unloaded
-because of this field.
-
-### Guard flags on port 8080
-
-The app adds these to the server command only when a second model is chosen. The
-guard reads them and does not pass them to `mlx_lm`; a bad or repeated flag stops
-the start.
-
-| Flag | Value |
-|---|---|
-| `--studio-also-model` | second model id |
-| `--studio-max-models` | `1` or `2` (the app sends `2`) |
-| `--studio-budget-bytes` | the estimate's `budget_bytes` at start, at least 1 |
-| `--studio-kv-tokens` | context per model T, in tokens |
-
-The app also passes `--prompt-cache-bytes` (`cache_cap_bytes`) then. `mlx_lm`
-trims to it only on its batch path, so in two-model mode the guard also sets the
-cache's own byte limit, which covers requests run one at a time (for example with
-`seed`). A one-model start passes none of these flags, so it has no byte cap from
-the app. If the guard falls back to one model (`multi_off`), the flags were still
-passed, so `mlx_lm` receives the cache cap but the guard sets no byte limit.
-
-At each load of a model that is not in memory, at the preload of the second model
-and at each periodic refresh, the guard works out its budget as the smallest of:
-the start budget, the number in the `MLX_STUDIO_BUDGET_FILE` file
-([DATABASE.md](DATABASE.md)), and its own active memory plus free memory minus
-2 GB (skipped, with one line on stderr, if `vm_stat` cannot be read). It never
-goes above the start budget. A switch between loaded models loads nothing and is
-not checked. Clients keep using one base URL and choose by the `model` field.
-Models take turns.
+`POST /api/server/start` takes `{repo, background, engine, anthropic}`. A non-empty
+`also` gets `400` ("the server serves one model"). `/api/server/estimate` and
+`/api/loadtest/apply` are removed, as are the memory, resident-model and prompt-limit
+fields of `/api/state`.
 
 ## 6. Chat stream
 
-`/api/chat` answers with server-sent events named `token`, `done` and `error`, each with JSON
-data. See [ADR-004](adr/ADR-004-sse-streaming.md).
+2.0.13 source (unreleased). `/api/chat` asks the running API server
+(`POST /v1/chat/completions` on 8080, no `Origin`, no token) with `stream`,
+`max_tokens` 2048, `temperature` 0.7 and `top_p` 0.95. The app loads no model.
+
+409 before the stream: the server is stopped, starting or restarting, could not
+load its model, does not serve `repo`, or a reply is already running.
+
+| Event | Data |
+|---|---|
+| `status` | `{"state": "waiting"}` about once a second while nothing arrives; `{"state": "prompt", "done", "total"}` from the server's keepalive |
+| `reasoning` | text from the server's `delta.reasoning` |
+| `token` | text from `delta.content` |
+| `done` | `tokens`, `tps`, `elapsed`, `stopped`, `truncated` (length limit), `repo`, `stats` |
+| `error` | the reason, including the server's own refusal text |
+
+`stats` holds `first_s` (request sent to the first reply or thinking text, this
+app's clock), `reply_tokens` and `prompt_tokens` (the server's `usage`), `tps`
+(`reply_tokens` over the seconds from the first text to the end) and `mode` (what
+the server reports for the model). Each is `null` when unknown, for example after
+**Stop**, when the server sends no counts. The browser sends only `role` and
+`content` back as history.
+
+Stop, or a browser that goes away, shuts the connection to the server.
+See [ADR-011](adr/ADR-011-chat-through-the-api-server.md) and
+[ADR-004](adr/ADR-004-sse-streaming.md).
+
+## 6a. API server prompt limit
+
+Removed in 2.0.13. The MLX server has no prompt limit; OptiQ drops older text beyond
+the max context.
+
+## 6b. User settings
+
+2.0.13 source (unreleased). Optional limits in `~/.mlx_studio/settings.json`, a
+JSON object, also edited on the **Configuration** page. An absent, `null`
+or empty key is automatic: the behaviour without the file. All values are whole
+numbers except `chat_temperature` and `chat_top_p`, which also take decimals.
+
+| Key | Default when absent | Range | Effect when set |
+|---|---|---|---|
+| `max_context_tokens` | Calculated from memory ([6a](#6a-api-server-prompt-limit)) | 4096 to 100000000 | One model: the refusal limit, never above the model's own. It may be above the automatic figure, but never above what fits in the memory ceiling (80% of RAM, or the memory percent) by the same formula: a larger value is lowered to that figure, and the card says which figure applies. It does not count other apps' memory, so it does not by itself keep use under 80% |
+| `two_model_context_tokens` | Calculated, at most 32768 | 8192 to 32768 | Two models: a cap on the context for each, rounded down to a step of 1024. It only lowers it |
+| `memory_limit_percent` | 52% share for models, 80% ceiling | 30 to 80 | Share becomes the lower of 52 and this; ceiling becomes this. It only lowers them. A low figure can leave no room, and then every prompt is refused, also with `max_context_tokens` set |
+| `server_max_reply_tokens` | 8192 | 64 to 131072 | `--max-tokens`: the reply cap for a request that sends none |
+| `server_reasoning` | the model's own | `"on"` or `"off"` | `--chat-template-args` with `enable_thinking`; both engines. A model without a thinking switch ignores it |
+| `chat_max_reply_tokens` | 2048 | 64 to 131072 | `max_tokens` of a Chat request. Applies to the next message. A request value, so it can be above the server's default |
+| `chat_temperature` | 0.7 | 0 to 2 | `temperature` of a Chat request. Applies to the next message |
+| `chat_top_p` | 0.95 | 0.05 to 1 | `top_p` of a Chat request. Applies to the next message |
+| `prompt_cache_size` | 2 | 1 to 100 | `--prompt-cache-size` |
+| `prompt_cache_bytes` | Calculated: 2 × cache bytes per token × the context limit | 100000000 to 100000000000 | `--prompt-cache-bytes`. Only lowers the calculated cap. With one model the guard sets the cache's own byte limit |
+| `mlx_cache_limit_mb` | MLX default (nothing is set) | 0 to 1000000 | `--studio-cache-limit-mb`: `mx.set_cache_limit`, the free buffer memory MLX keeps for reuse, in decimal MB (10^6 bytes). 0 keeps none. It is not a limit on the model or its cache. One model: a model's own figure applies each time that model is loaded, else the global one, else MLX's default comes back. Two models: one process-wide figure, the lower of the pair's, set at start. An unusable flag value is ignored; if MLX has no such call, the server log says so and the server starts. Also used by the load test's server. Effect on speed and memory is UNVERIFIED |
+| `performance_mode` | Standard: no flag | `standard`, `save_memory`, `advanced` | `save_memory` passes `--kv-bits 8 --prefill-step-size 256`; `advanced` passes whichever of the next three are set; `standard` passes none and ignores them |
+| `kv_bits` | off | 4 or 8 | `--kv-bits`, Advanced only. 4 gave broken replies in testing. MLX also knows 1, 2, 3, 5, 6: in mlx_lm 0.32.2 a 5 or 6 bit cache fails, and 1 to 3 are coarser than 4, so none is offered. Compression starts at 5,000 tokens; requests are not batched |
+| `kv_group_size` | 64 | 32, 64, 128 | `--kv-group-size`, Advanced only. The model's head size must divide by it |
+| `prefill_step_size` | 2048 | 64 to 2048 | `--prefill-step-size`, Advanced only. Not above the default: the automatic prompt limit was measured there |
+
+### Performance flags
+
+The global flags are on the server's command line; a model that differs is sent in
+`MLX_STUDIO_MODEL_PERFORMANCE` and applied when it is loaded, in one or two model
+mode. A model with a sliding-window cache, or whose head size does not divide by
+the group size, gets none: the app checks `config.json` and uses Standard. `GET /api/config` returns
+`performance` (`mode`, `reason`, `blocked`); saving a blocked choice for a model
+is refused. `/api/state` has `server.performance`: `saved`, and per served model
+`saved`, `in_force` (the mode the ready server was started with, else `null`)
+and `note`.
+
+### Per model
+
+`models` holds overrides for one model id. For each key the value that applies is
+the model's own, else the global one, else automatic.
+
+```json
+{"chat_max_reply_tokens": 1024,
+ "models": {"org/name": {"max_context_tokens": 8192}}}
+```
+
+A model's values apply to a server started with that model; the Chat cap follows
+the model asked. `max_context_tokens` is passed to OptiQ only.
+
+Except the Chat values, a change applies at the next server start or **Apply changes**.
+
+The file is read only if it is a regular file of at most 65536 bytes (a link is not
+followed). A bad value falls back to its default, and a bad file to all defaults,
+with one `warning` line in `app.log`. Unknown keys are ignored. Saving writes the
+valid keys with mode `0600`, so unusable and unknown entries are dropped.
+
+Not configurable, on purpose: ports, hosts, the token, the Origin, Host,
+Content-Type and CSP checks, file paths and every other security check.
+
+`POST /api/server/settings` takes `{"values": {key: number or null}}` (merged into
+the global values), or `{"reset": true}` (drops the global values and keeps
+`models`). With `"repo": "org/name"` both act on that model's overrides. 400 names the key and its range, 500
+means the file could not be written. `/api/state` adds under `server`: `settings`
+(`value`, `min`, `max`, `effective` for each key) and `settings_pending` (the
+running server was started with other values) and `model_settings` (the
+overrides by model id).
+
+The same route takes `{"load_test": {key: value or null}}` (merged; `null` for the
+whole block removes it). Saving and resetting other settings keep the block.
+
+| `load_test` key | Default | Range |
+|---|---|---|
+| `sizes` (offered) | 4096, doubled up to 1048576 | 1 to 12 different sizes from 4096; a saved list stays as saved |
+| `last_sizes` | empty | as `sizes`, may be empty |
+| `reply_tokens` | 256 | 32 to 1024 |
+| `rounds` | 2 | 1 to 3 |
+| `timeout_seconds` (per size) | 900 | 60 to 3600; a size above 32768 always gets 3600 |
+
+## 6c. Configuration and Load Test
+
+2.0.13 source (unreleased); used by the Configuration and Load Test pages. Same token, Host,
+Origin and Content-Type rules as every other route.
+
+| Route | Body, reply |
+|---|---|
+| `GET /api/config?repo=` | `settings` (for each key `value`, `own`, `inherited`, `effective`, `min`, `max`, `decimal`, `global_only`, now always false), `performance`, `load_test`. Without `repo`: the global values |
+| `GET /api/loadtest?repo=` | `status`, `rows`, `results` (stored runs, each with `stale`), `sizes` the model allows, `load_test`, `blocked` |
+| `POST /api/loadtest/start` | `{"repo", "sizes"}` and optional `"thinking"` (true or false; default on where `GET /api/loadtest` says `thinking.supported`, sent as `chat_template_kwargs.enable_thinking`; `true` is a 400 where it is not): 1 to 12 different sizes from 4096 to the model's limit. 400 bad input or model not installed completely; 409 while the API server is running, starting or adopted, a test runs, an install runs, or the model is downloading or being deleted |
+| `POST /api/loadtest/cancel` | `{}`; 404 when no test runs |
+
+While a test runs, server start, install, and download or delete of that model
+answer 409. `/api/state` adds `loadtest` (`active`, `repo`, `run_id`, `status`,
+`reason`, `size`, `index`, `of`, `step`, `done`, `total`, `memory_percent`).
+
+`mlx_loadtest.py` starts the engine's own server for each size on a free port (never
+8765 or 8080), sends generated filler prompts (cold and follow-up, twice by
+default) and reports figures. At the model's own limit the prompts stop
+`reply_tokens` short of it. A run is `done`, `cancelled`, `memory`, `failed` or
+`interrupted`; a row is `passed`, `skipped`, `stopped`, `failed`, `cancelled` or
+`interrupted`. A size that does not pass ends the run. Results are in
+`~/.mlx_studio/loadtest.json` (mode `0600`, the last 5 runs for each model, no
+prompt or reply text).
+
+**Stops of a test.** There is no memory limit and no estimate: every size is tried.
+The test server is killed on critical memory pressure, on swap growth over 0.5 GB,
+when memory cannot be read, when samples (every 0.1 s) are more than 1 s apart, on
+the size's time limit, or after 120 s without a byte of a reply. A passed size is
+evidence for the Mac as it was during the test, not a promise.
 
 ## 7. Not applicable
 
 Webhooks, SDKs and published API versions: the app has none.
+
+## Engine routes
+
+Same session token, Host and Origin checks as the other routes.
+
+| Route | Body or query | Reply |
+|---|---|---|
+| `GET /api/engines` | `?repo=` | each engine with `eligible` and `reason` |
+| `POST /api/engines/install`, `/api/engines/remove` | `{"engine": "optiq"}` | `{"ok": true}`; 400 other engines, 409 while in use |
+| `POST /api/server/key` | `{}` | `{"key": ...}` only while our keyed server alone holds the port; else 409 |
+| `POST /api/server/start` | also `"engine"` (absent: `mlx`) and `"anthropic"` (OptiQ, default on) | 400 unknown engine, 409 refused with the reason |
+| `POST /api/loadtest/start` | also `"engine"` | as above |
+
+`GET /api/state` adds `server.engine`, `server.anthropic`, `server.engines`,
+`server.last_engine`. The server key is never in it. See [ENGINES.md](ENGINES.md).

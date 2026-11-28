@@ -14,6 +14,12 @@ related:
 
 # Design — MLX Studio interface
 
+> **2.0.13 (unreleased) supersedes parts of this file.** `mlx_guard.py` and the 80%
+> memory rule are removed: MLX is `mlx_lm`'s own server with one model, no memory or
+> prompt limit and no request checks beyond `--allowed-origins`. Text, figures and
+> diagrams about the guard, memory limits or two models apply to 2.0.12 and earlier.
+> [What is no longer protected](../README.md#protections-removed-in-2013).
+
 ## 1. What this document is for
 
 It records the interface as shipped: the layout model, the design tokens, the
@@ -139,12 +145,21 @@ This is the contract between backend and interface. Every surface derives from
 
 ### 6.1 Model
 
-| Backend | Sidebar pill | Chat header | Models card | Load button |
+2.0.13 source (unreleased). Menu order: **API Server**, **Chat**, Models,
+Download, Configuration, Load Test, Activity, Setup; the app opens on
+**API Server**.
+
+Chat and the sidebar follow the API server.
+
+| Server | Sidebar pill | Chat status | Chat notice | Input |
 |---|---|---|---|---|
-| `loaded.repo = null` | `● No model loaded`, grey | `● Not loaded`, amber | no tag | **Load** |
-| `loaded.loading = repo` | `● Loading <name>…`, blue, pulsing | `● Loading <name>…` | — | disabled `Load` |
-| `loaded.repo = repo` | `● <name>`, green | `● Loaded — <name>`, green | `loaded` tag, green | **Unload** |
-| `loaded.error` set | `● No model loaded`, grey | `● Load failed`, red | — | **Load** |
+| stopped | `No model served`, amber | `Server stopped` | **Start the API server first.** + **Go to API Server** | off |
+| starting | `Starting…`, blue | `Starting…` | wait text | off |
+| restarting | `Restarting…`, blue | `Restarting…` | wait text | off |
+| load failed | `Model not loaded`, red | `Model not loaded` | + **Go to API Server** | off |
+| ready | served names, green | `Ready` | none | on |
+
+A served model's card carries a green `served` tag.
 
 ### 6.2 Server
 
@@ -166,12 +181,13 @@ This is the contract between backend and interface. Every surface derives from
 
 ### 7.1 Chat
 
-- Topbar: `Model` label, model select (max 380 px), **Load**/**Unload**, state text,
-  **＋ New chat** on the right.
+- Topbar: `Model` label, native select of the served models (max 380 px), status,
+  **＋ New chat** on the right. Reasoning shows in a collapsed **Thinking** block.
+  A reply with no answer after its thinking shows that text as the reply.
 - Transcript: max 860 px centred column; user messages use `--panel-2` and an
   accent role label; assistant messages use `--panel`.
 - Streaming: the live message body carries `.cursor`, a blinking block.
-- Metrics: a `.msg-meta` line per completed turn — `N tokens · X tok/s · Y GB peak`.
+- Metrics: a `.msg-meta` line per completed turn — `N tokens · X tok/s`, plus `stopped` or `length limit reached`.
 - Composer: auto-growing textarea, **Send** accent, **Stop** appears only while
   generating and Send hides.
 - Empty state: mark tile, "Start a conversation", one sentence of instruction.
@@ -179,8 +195,8 @@ This is the contract between backend and interface. Every surface derives from
 ### 7.2 Models
 
 - Header: title plus `N model(s)` summary on the right.
-- Card: short name, full repo id, size, then **Load/Unload**, **Reveal**, **Delete**.
-- Loaded card carries a green `loaded` tag.
+- Card: short name, full repo id, size, then **Reveal**, **Delete**.
+- A served card carries a green `served` tag.
 - Empty state points at Download.
 
 ### 7.3 Download
@@ -258,7 +274,7 @@ This is the contract between backend and interface. Every surface derives from
     always in the page speaks it, only when it changes, and describes the main
     button.
   - A measured memory line: active, peak and budget with two models; active and
-    peak only with one, noting that the Chat tab model is not included. The
+    peak only with one. The
     two-model line says **Measured by the API server, refreshed about every 10 s.**
   - One notice, inside an always-present status region. The first that applies, in
     this order: **One model at a time**; **Loaded without enough memory**; **Free
@@ -273,8 +289,10 @@ This is the contract between backend and interface. Every surface derives from
 
   - The **server unprotected**, **API server stopped** and **Changes not applied**
     alerts sit above the card.
-  - The Chat tab says that a Chat model loads only if it fits beside the two
-    models. A refused Load request shows in the load-failure panel (section 5).
+  - A **Prompt limit** line names the longest prompt per served model.
+  - A link, **Context, reply limits and memory: open Configuration**, stands
+    where the Settings disclosure was (7.7). A max context above the memory
+    ceiling shows a memory warning on the card.
   - Without a session token the app shows one toast, "This page has no session.
     Open MLX Studio from its app icon."
 
@@ -294,6 +312,55 @@ This is the contract between backend and interface. Every surface derives from
   versions are kept), streaming output into a console; the hub row has an update pill.
 - Hint line states the conclusion in words: "Everything is installed and up to
   date." / "A newer MLX release is available on PyPI."
+
+### 7.7 Configuration (2.0.13, unreleased)
+
+- One panel: **Settings for** (the searchable model list: All models, then
+  installed models), notes, a field
+  grid (one column when narrow), **Save**, **Reset this entry**.
+- Each field: label, number input, **Effective: …** line saying where the value
+  comes from. Placeholder: `automatic` or `inherited: N`.
+- Memory limit is read only under a model.
+- **MLX buffer cache limit (MB)** is empty for MLX's default; 0 is a real value.
+- **Performance mode** comes first: one list with one plain sentence. The three raw
+  fields show only under Advanced; 4-bit shows a warning. Under a model, choices it
+  cannot use are disabled and the reason is written beside them.
+- Chat: the mode in force and a link to Configuration under the top bar (not a live
+  region); a small stats line added under a reply only once it has ended.
+- API Server card: when the one-model automatic context is below 4096, an amber
+  line says every prompt would be refused and what to do.
+- Amber lines: the lowered-context message, and a context above the largest size
+  that passed a load test.
+- **Apply changes** notice while the running server is behind the saved values.
+- Invalid fields get a red border and their own message; one summary is announced
+  and the first invalid field takes focus. Nothing is sent.
+- Unsaved edits survive polling and page switches. Changing the model, or applying
+  a load test size to that model, asks before dropping them.
+
+### 7.8 Load Test (2.0.13, unreleased)
+
+| State | Shown | Controls |
+|---|---|---|
+| No model | Link to Download | All off |
+| API server running | The reason | **Stop API server**; Start off |
+| Idle | Last result, earlier runs folded, **stale** tag | Start; Apply on passed rows of current runs |
+| Running | Searchable model list (off), size i of n, step, read bar, memory now and limit | **Cancel test** only |
+| Cancelling | **Stopping the test…** | Cancel marked unavailable, keeps focus |
+| Memory stop or skip | **Stopped for memory safety** with the measured or projected figure and the limit | Start; Apply on earlier passed rows |
+| Failed, cancelled, interrupted | Title and one reason | Start |
+
+- Sizes are check boxes from the settings, the last used and typed ones; none is
+  ticked on opening. A size over the model's limit is off and says why.
+- Offered sizes double from 4096 to 1,048,576. A line under them says large sizes
+  take long and get 3600 seconds above 32768.
+- **Thinking** check box: on by default; off and disabled, with the reason, where the
+  chat template has no `enable_thinking`. Its note says it uses the reply tokens. The
+  run title says "thinking on" or "off"; memory figures of the other choice are not
+  reused.
+- Run values sit in a closed disclosure and are saved when a test starts.
+- Only a new step or the end is announced. Counts and memory change silently.
+- Table columns: Size, Status, Read tok/s, First token, Write tok/s, Peak memory,
+  Settings used, and the Apply button. It scrolls sideways when narrow.
 
 ## 8. Interaction rules
 

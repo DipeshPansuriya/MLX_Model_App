@@ -65,7 +65,7 @@ PY
 }
 
 # Python files that ship inside the app; every source check covers all of them.
-SOURCES=(app.py mlx_guard.py)
+SOURCES=(app.py model_info.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py)
 
 # ── SA-01 static patterns ────────────────────────────────────────────────────
 section "SA-01  Dangerous code patterns"
@@ -118,11 +118,33 @@ if grep -q '"/api/quit"' app.py; then
 else
     ok SA-05 "no unauthenticated quit endpoint"
 fi
-if grep -q 'unload the model first' app.py; then
-    ok SA-05 "delete refuses a loaded model"
+if grep -q 'stop the API server first' app.py; then
+    ok SA-05 "delete refuses the model the server was started with (not others it loads on request)"
 else
     warn SA-05 "loaded-model delete guard not found"
 fi
+
+# ── SA-17 direct MLX server ─────────────────────────────────────────────────
+section "SA-17  Direct MLX server (no request guard, no memory limit)"
+if grep -q '"--allowed-origins"' app.py; then
+    ok SA-17 "mlx_lm server is given --allowed-origins"
+else
+    bad SA-17 "mlx_lm server has no --allowed-origins (its default lets any web page read replies)"
+fi
+if grep -q -- '--trust-remote-code' "${SOURCES[@]}"; then
+    bad SA-17 "--trust-remote-code appears in source"
+else
+    ok SA-17 "no --trust-remote-code"
+fi
+if grep -q '"HF_HUB_OFFLINE": "1"' app.py; then
+    ok SA-17 "server environment is offline: a request cannot download a model"
+else
+    bad SA-17 "HF_HUB_OFFLINE is not set for the server"
+fi
+# Stated, not checked: these are gone in 2.0.13 and no PASS above covers them.
+info SA-17 "REMOVED: 80% memory rule and prompt limit; a large load can freeze the Mac"
+info SA-17 "REMOVED: Host, JSON-only, Origin and size checks on port 8080"
+info SA-17 "REMOVED: refusal of other models, folders, adapters and draft models"
 
 # ── SA-06 TLS verification ──────────────────────────────────────────────────
 section "SA-06  TLS"

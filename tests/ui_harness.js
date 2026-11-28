@@ -95,7 +95,7 @@ const history = {
   },
 };
 const intervals = [];
-for (const s of ["#chatModelSelectList", "#serverModelSelectList"]) get(s).hidden = true;
+for (const s of ["chat", "server", "config", "lt"]) get(`#${s}ModelSelectList`).hidden = true;
 
 const calls = [];
 const opened = [];

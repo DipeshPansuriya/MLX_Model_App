@@ -22,7 +22,7 @@ python3 scripts/check_docs.py
 - [ ] `ruff format --check .` passes
 - [ ] `python3 scripts/check_secrets.py` finds nothing
 - [ ] `python3 scripts/check_docs.py` resolves every link
-- [ ] `python3 -m py_compile app.py mlx_guard.py` and `node --check ui/app.js` pass
+- [ ] `python3 -m py_compile app.py model_info.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py` and `node --check ui/app.js` pass
 - [ ] Documentation updated for any behaviour change
 - [ ] No credential, token or key in the diff
 - [ ] Third-party actions pinned to a commit SHA, if any were added

@@ -19,7 +19,7 @@ ruff check .                    # lint
 ruff format --check .           # formatting
 python3 scripts/check_secrets.py
 python3 scripts/check_docs.py
-python3 -m py_compile app.py mlx_guard.py
+python3 -m py_compile app.py model_info.py mlx_loadtest.py engines.py engine_runtime.py optiq_engine.py
 node --check ui/app.js
 ./scripts/security_audit.sh --quick
 ```

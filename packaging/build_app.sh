@@ -48,7 +48,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 
 # ── resources: app sources + UI ──────────────────────────────────────────────
 cp "$ROOT/app.py" "$APP/Contents/Resources/app.py"
-cp "$ROOT/mlx_guard.py" "$APP/Contents/Resources/mlx_guard.py"
+cp "$ROOT/model_info.py" "$APP/Contents/Resources/model_info.py"
+cp "$ROOT/mlx_loadtest.py" "$APP/Contents/Resources/mlx_loadtest.py"
+cp "$ROOT/optiq_engine.py" "$APP/Contents/Resources/optiq_engine.py"
+cp "$ROOT/engine_runtime.py" "$APP/Contents/Resources/engine_runtime.py"
+cp "$ROOT/engines.py" "$APP/Contents/Resources/engines.py"
+# The only packages Setup may install for OptiQ, by hash.
+mkdir -p "$APP/Contents/Resources/packaging"
+cp "$ROOT/packaging/optiq-lock.txt" "$APP/Contents/Resources/packaging/optiq-lock.txt"
 mkdir -p "$APP/Contents/Resources/ui"
 cp "$ROOT/ui/index.html" "$ROOT/ui/style.css" "$ROOT/ui/app.js" "$APP/Contents/Resources/ui/"
 cp "$HERE/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"

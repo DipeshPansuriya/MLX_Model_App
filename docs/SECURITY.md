@@ -24,7 +24,7 @@ Nothing listens on the network, but loopback is still reachable by:
 
 | Attacker | Example | Position |
 |---|---|---|
-| A web page in your browser | Cross-site POST, DNS rebinding | Refused on both ports (§4.1, §4.2) |
+| A web page in your browser | Cross-site POST, DNS rebinding | Refused on 8765 (§4.1). **Not refused by the MLX server on 8080** (§4.2) |
 | Another process or user on this Mac | `curl` against either port | **Not blocked.** Accepted risk (§5) |
 | A model repository | Custom code shipped with weights | Custom code stays disabled (§4.4) |
 | A tampered download | Replaced installer or update file | Checksums only; no publisher signature (§5) |
@@ -36,7 +36,7 @@ There is no account system and no telemetry in the app.
 | Boundary | Control |
 |---|---|
 | Browser to app, port 8765 | Host and Origin checks; session token on `/api/*` (not `/api/ping`, `/api/focus`); POST also needs JSON |
-| Client to API server, port 8080 | Request guard `mlx_guard.py` |
+| Client to API server, port 8080 | MLX: `--allowed-origins` only (§4.2). OptiQ: API key |
 | App to API server process | Separate process, argument list (no shell), pidfile identity check |
 | App to internet | Hugging Face (search, download), PyPI (version check, `pip install`), update manifest URL if set |
 | App to disk | Static files from a startup allowlist; `~/.mlx_studio` owner-only |
@@ -46,7 +46,7 @@ There is no account system and no telemetry in the app.
 | Surface | Bind | Authentication |
 |---|---|---|
 | UI and API | `127.0.0.1:8765` | No user authentication. Session token on `/api/*` GET and POST (not `GET /api/ping` or `POST /api/focus`) |
-| OpenAI-compatible API server | `127.0.0.1:8080` | None |
+| OpenAI-compatible API server | `127.0.0.1:8080` | MLX: none. OptiQ: key |
 
 ## 4. Controls in place
 
@@ -77,7 +77,8 @@ returns only `ok` and the version.
 | Origin | Every `Origin` header must be one of the two app origins, not only the first |
 | Content type | A POST needs exactly one `Content-Type` header, and it must be `application/json` |
 | Window library logging | `PYWEBVIEW_LOG` is removed from the environment before `pywebview` is loaded |
-| Model load | `/api/load` accepts a completely installed model, or the one already loaded; any other name gets 400 |
+| Chat (2.0.13) | `/api/chat` keeps the token and Origin checks and only names a model the running server serves; the browser never calls 8080. Only role and content are sent on |
+| Prompt length (2.0.13) | The guard refuses a prompt over the server's limit before generation (`400 context_length_exceeded`). The one-model automatic limit is calculated to keep the whole Mac within 80% of RAM, from the memory other apps held when the server started; no guarantee. A set max context follows the same rule. A reply is capped to the limit; the prompt cache has a byte cap; the load test sends requests only to a port its own server holds |
 | Content-Security-Policy | Sent from `end_headers` on every reply: `default-src 'self'; script-src 'self'; style-src 'self'` plus one hash for the style `pywebview` 6.2.1 adds; `style-src-attr 'unsafe-inline'` (progress bar); `img-src 'self' data:`; `object-src`, `base-uri`, `form-action` and `frame-ancestors` set to `'none'` |
 | UI rule | No inline script, event handler or `eval`. A `pywebview` upgrade needs the style hash and the window rechecked; `tests/test_row603_csp.py` fails on purpose |
 
@@ -88,50 +89,36 @@ Static files come from a list built at startup from `ui/` (html, css, js, svg,
 png, ico). The request path is only a lookup key, so it never builds a
 filesystem path.
 
-### 4.2 API server guard, port 8080
+### 4.2 MLX API server, port 8080
 
-MLX Studio starts `mlx_lm server` through `mlx_guard.py`.
+2.0.13 source (unreleased): the app starts `mlx_lm server` itself. The request guard
+of 2.0.10 to 2.0.12 (`mlx_guard.py`, [ADR-009](adr/ADR-009-api-server-guard.md))
+and the 80% memory rule are **removed, with no replacement**.
 
-| Request | Answer |
+| Still in place | Detail |
 |---|---|
-| `Host` missing, repeated, or not `127.0.0.1`, `localhost` or `[::1]` (any port) | 403 |
-| `Origin` sent and not an app origin, including `null`; `*` is ignored | 403 |
-| POST that is not `application/json` | 415 |
-| `model` other than `default_model`, the loaded model, or a complete downloaded repo; any local path | 400 |
-| `draft_model` other than empty or `default_model` | 400 |
-| Any `adapters` value | 400 |
-| An image URL in `messages` that is not a `data:` URL, or messages whose images cannot be read | 400 |
+| Bind | `127.0.0.1` only |
+| CORS | `--allowed-origins` is the app's two origins (the default of `mlx_lm` is `*`). It limits which pages can read replies; it does not block requests from being sent, and it does not stop DNS rebinding, through which a website may read replies and the list of downloaded models |
+| Offline | `HF_HUB_OFFLINE=1` and a minimal environment: no keys or tokens of the app are passed on |
+| Remote code | No `--trust-remote-code` |
+| Processes | Port ownership is checked before the first request; leftover servers are matched by command line, port and start time |
 
-| Also | Detail |
+| Not protected any more | Effect |
 |---|---|
-| Offline | `HF_HUB_OFFLINE=1` in the server process; `MLXLM_USE_MODELSCOPE` removed |
-| Fail closed | If the installed `mlx_lm` lacks the patched hook points or image helpers, or cannot be imported, the server does not start (`mlx_guard: refusing to start ...`) |
-| CORS | The app passes only its own two origins to `--allowed-origins` |
-| Replies | One change: an optional tool call argument that is `null`, and that the request's schema does not allow to be `null`, is removed. It only removes, never adds or changes a value ([API.md](API.md) section 1) |
+| `Host`, `Origin` and JSON-only checks | A web page (including through DNS rebinding) or any local program can send requests |
+| Model, draft model and adapter rules | A request can load another cached model, a local folder, an adapter or a draft model |
+| Request size limits | None from the app |
+| Memory limit, prompt limit, reply cap | A large model, prompt or reply can freeze or crash the Mac |
+| Null tool argument fix | Replies are passed through |
 
-Clients must use a loopback host name, send `Content-Type: application/json` on
-POST, and name a model that is already downloaded. See
-[ADR-009](adr/ADR-009-api-server-guard.md).
-
-**Two models (unreleased 2.0.10 source)**
-
-| Control | Detail |
-|---|---|
-| New route | `POST /api/server/estimate` is read-only and has the same token, Host, Origin and JSON checks as the other POST routes |
-| Second model | The `also` field accepts one other model that is installed completely; anything else gets 400. A one-model estimate also needs an installed model. The guard checks the preload name by the same rules as a request's model name |
-| Chat model | A Chat load that does not fit beside the two-model server, by the 52% rule or by live free memory, is refused (409). A model that does not fit the budget is loaded alone and the view warns |
-| Memory limits | Context per model is at most 32,768 tokens and follows the smaller of 0.52 × RAM and live free memory; below 8,192 a pair is refused. The prompt cache is capped at 2 × cache bytes per token × context. This limits availability risk; it is not an access control. One-model servers have no such check |
-| Free memory read | `/usr/bin/vm_stat`, called by absolute path with no arguments and no shell, 2 s timeout; only its text is parsed. On any failure the fixed 52% rule is used. The check then refuses nothing for that reason alone |
-| Budget file | `server.budget` is written with mode `0600` to a new file, never through a link. The guard reads only a plain file with a number above 0, and the file can only lower the budget, never raise it above the start figure |
-| Served-names file | The guard does not open it through a link |
-| Request checks | The model, draft, adapter and image rules above are unchanged. The server stays offline and downloads nothing |
-| Status file | `server.resident.json` is written with mode `0600`; the app uses it only when its process id is the running server's |
+Full list: [README](../README.md#protections-removed-in-2013). Stop the server when
+you do not use it.
 
 ### 4.3 Destructive actions
 
 | Action | Guard |
 |---|---|
-| Delete a model | 409 while the model is in use; confirmation dialog in the UI. The guard records the name of each accepted model so the app does not delete it while served |
+| Delete a model | 409 while the model is served by name, starting or downloading; confirmation dialog in the UI. A model a request made the MLX server load is **not** known to the app and is not protected |
 | Clear the activity log | Confirmation dialog in the UI; removes `activity.log*` only |
 | Install or reinstall MLX packages | Explicit action; fixed package list from `app.py` |
 
@@ -175,18 +162,14 @@ diagnostic bundle before sharing: it includes the logs, local paths, model names
 | Unreleased source: programs running as the same user are still not shut out of the app | Accepted | Same advice |
 | Unreleased, browser mode (L1): the token could reach the `/usr/bin/open` command line if `osascript` failed | Fixed in the unreleased source (section 4.1); checked with stubs, not live | Not in any released build |
 | Unreleased, browser mode (L2): the browser may keep `/#t=<token>` in history, stored before the page removes it from the address bar | Known limit, documented; the security re-check rated it acceptable for a 2.0.10 pre-release. Not checked in a live browser | The token is new per launch and stops working when the app quits. The native window is the default |
-| Unreleased, two models (L3): a model that does not fit the budget is still loaded on its own, and any local program using 8080 can switch among downloaded models. The Chat check counts weights only | Warning and Chat-load refusal added; the rest is a limit by design (availability, local). Real memory effect not measured | Stop the server when not in use |
-| Unreleased, two models: the memory limits (2 GB reserve, 3.1 reply factor from one data point, 0.4 GB process overhead, whether `vm_stat` free memory is available without swapping) rest on calculation. An earlier real run, before these limits, had system swap rise from 0 to 4.60 GB | Open: the real two-model re-test has not run | Watch memory pressure; start one model if it rises |
-| Unreleased, two models: after a killed server, free memory may be read before macOS returns it; a model with a context limit below 8,192 can make the "needed" figure too small; the status figures can be about 10 s old, or older during a reply served one at a time | Known limits (availability) | Start again after a moment; stop the server if memory pressure rises |
-| Unreleased, two models: a switch between loaded models does no memory check. The prompt cache byte limit now covers requests run one at a time | Open limit; real growth not measured | Stop the server if memory pressure rises |
-| Unreleased source: the app process does not set `HF_HUB_OFFLINE` (only the API server does), so loading an installed model on the Chat tab may contact the Hub, and `mlx_lm.load` may prefer a local folder with the same relative name in the app's working folder | UNVERIFIED: neither was tested | None yet |
-| No authentication on 8080; local processes can generate and switch between downloaded models | Accepted | Stop the server when not in use |
+| Unreleased 2.0.13: no memory limit, prompt limit or request guard on the MLX server (§4.2) | Removed by the owner's decision; open | Stop the server when not in use; keep prompts and models small for this Mac |
+| No authentication on the MLX server on 8080; local processes can generate and load other models, folders and adapters | Open | Stop the server when not in use |
 | App bundle is ad-hoc signed, the `.pkg` is unsigned, nothing is notarised | Accepted | No Apple Developer account, [ADR-007](adr/ADR-007-adhoc-signing.md) |
 | One-line installer runs a script from `main` and takes checksums from the same repository | Accepted | Proves the download is intact, not who published it. Read the script first |
 | The update manifest URL is not forced to HTTPS. A download link is shown only if it is HTTPS; its checksum is displayed, not enforced | Accepted | Set an HTTPS URL; compare the checksum yourself |
 | Package versions are pinned; `pip` is not run with hash checking | Accepted | — |
 | No extra integrity check on model weights beyond `huggingface_hub` | Accepted | — |
-| A background server started by an older build is adopted and stays unguarded until restarted; the app flags it | Release step | If the app shows **server unprotected**, open API Server and press **Restart now** |
+| A background server started by an older build is adopted and keeps that build's behaviour until restarted | Release step | Press Stop, then Start Server |
 | The page's Content-Security-Policy only sets `frame-ancestors 'none'`; no `default-src` or `script-src`, so an unescaped value would be able to run inline script. No such place was found in the new cards, search fields or download cards | Known issue in 2.0.9; fixed in the unreleased source (section 4.1) | Not in any released build |
 | Unreleased source (I6): the policy keeps `style-src-attr 'unsafe-inline'` for inline styles (progress bar width and fixed `style` attributes) | Known limit, documented (Info); scripts are not affected | None needed |
 
@@ -198,6 +181,7 @@ diagnostic bundle before sharing: it includes the logs, local paths, model names
 | Need the API from another machine | Use an SSH tunnel, `ssh -L 8080:127.0.0.1:8080 you@mac`, and call it as `127.0.0.1` |
 | Need the server on the LAN | Not supported; the bind is fixed |
 | Want to check a download | Compare `shasum -a 256 <file>` with the checksum published for that release |
+| Change a limit (2.0.13, unreleased) | `~/.mlx_studio/settings.json` holds whole-number limits only, read as a regular file without following a link. Ports, hosts, the token, Origin/CSP and other checks cannot be set there. A max context is lowered to the memory ceiling by a formula that can be too low, so memory can still pass the limit ([keys](API.md#6b-user-settings)). The Load Test samples memory and cannot guarantee 80% ([limits](API.md#6c-configuration-and-load-test)) |
 | Share diagnostics | Open the zip and remove anything private |
 
 ## 7. What would change the model
@@ -235,3 +219,12 @@ report a vulnerability, use [the security policy](../SECURITY.md).
 
 `app.py`, `mlx_guard.py`, `scripts/install.sh`, `packaging/build_app.sh`,
 `scripts/security_audit.sh`, installed `mlx_lm` (`server.py`, `utils.py`).
+
+## Engines other than MLX
+
+OptiQ runs as its publisher's own server: the per-launch key is its only request gate.
+The child environment is built from nothing (no cloud or user keys, offline, private
+home). Port 8080 is used only after every listener, at any address, is seen to be our
+child. `lsof` lists only this user's sockets, so before a start the app also connects to
+`127.0.0.1` and `::1`. A listener of another user on another address stays unseen.
+Missing protections: [ENGINES.md](ENGINES.md).

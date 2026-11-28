@@ -9,7 +9,9 @@ const state = {
   messages: [],
   streaming: false,
   pollTimer: null,
-  lastLoaded: null,
+  // The model the user chats with, and whether the server can be asked.
+  chatModel: "",
+  chatStatus: "",
   catalog: null,
   search: null,
   searchSeq: 0,
@@ -17,7 +19,6 @@ const state = {
   lastServerRunning: false,
   refreshing: null,
   refreshAgain: false,
-  lastServerUnguarded: false,
   serverMode: "",
   // The API Server card: the user's edits (null: follow the server), what ran last
   // (when just opened: the last set that started), and edits to keep over a start.
@@ -25,13 +26,20 @@ const state = {
   serverDraft: null,
   serverLast: [],
   serverLastBackground: null,
+  serverRan: null, // { engine, anthropic } of the server that ran last
   keptSet: false,
   keptBox: false,
+  boxEngine: null, // the engine the background box shows
+  boxPick: {}, // clicks on that box, by engine
   serverStartError: "",
   serverSending: false,
   lastApplyNotice: null,
-  estimate: null,
-  estimateError: "",
+  view: "",
+  // The Configuration page: whose values it shows, and each field as it was loaded.
+  config: { repo: "", view: null, loaded: {}, seq: 0 },
+  // The Load Test page: the model, its figures and what the user chose.
+  lt: { repo: "", view: null, seq: 0, picked: new Set(), extra: [], loaded: {},
+    signature: "", testing: false, sending: false },
 };
 
 /* ───────────── utilities ───────────── */
@@ -81,9 +89,9 @@ function setHTML(el, html) {
 function focusedSelector(el) {
   const now = document.activeElement;
   if (!now || !el.contains?.(now)) return "";
-  // A button with a slot keeps it when its action changes (Load becomes Unload).
+  // A button with a slot keeps it when its action changes (Download becomes Installed).
   return Object.entries(now.dataset || {})
-    .filter(([k]) => !(now.dataset.slot && ["act", "catDownload", "catLoad"].includes(k)))
+    .filter(([k]) => !(now.dataset.slot && ["act", "catDownload"].includes(k)))
     .map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(v)}"]`)
     .join("");
 }
@@ -107,27 +115,6 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
-}
-
-/* ───────────── loading a Chat model ───────────── */
-// A refused load stays on screen, and is announced, until the next try or Dismiss.
-// A toast was gone before a refusal with figures could be read.
-function showLoadProblem(text) {
-  setText($("#loadProblem"), text);
-  $("#loadProblemBox").classList.toggle("show", !!text);
-  $("#loadProblemDismiss").hidden = !text;
-}
-
-// True when the app accepted the load.
-async function loadModel(repo) {
-  showLoadProblem("");
-  try {
-    await api("/api/load", { method: "POST", body: JSON.stringify({ repo }) });
-    return true;
-  } catch (err) {
-    showLoadProblem(err.message);
-    return false;
-  }
 }
 
 /* ───────────── copy model name ───────────── */
@@ -181,10 +168,11 @@ function notify(title, body) {
 }
 
 /* ───────────── navigation ───────────── */
-const VIEWS = ["chat", "models", "download", "server", "logs", "settings"];
+const VIEWS = ["server", "chat", "models", "download", "config", "loadtest",
+  "logs", "settings"];
 
 function showView(name) {
-  if (!VIEWS.includes(name)) name = "chat";
+  if (!VIEWS.includes(name)) name = VIEWS[0];
   $$(".nav-item").forEach((b) => {
     const current = b.dataset.view === name;
     b.classList.toggle("active", current);
@@ -196,6 +184,9 @@ function showView(name) {
   if (name === "logs") loadLogs();
   if (name === "models") refreshModels();
   if (name === "download") loadCatalog();
+  state.view = name;
+  if (name === "config") loadConfig();
+  if (name === "loadtest") loadLoadTest();
 }
 $$(".nav-item").forEach((btn) => btn.addEventListener("click", () => showView(btn.dataset.view)));
 window.addEventListener("hashchange", () => showView(location.hash.slice(1)));
@@ -224,71 +215,42 @@ function refreshState() {
 }
 
 function render(snap) {
-  const { app, hardware, python, versions, models, loaded, server, downloads, install } = snap;
+  state.snapshot = snap; // what the Start areas read about installs
+  const { app, hardware, python, versions, models, server, downloads, install } = snap;
 
   // sidebar
   setText($("#appVersion"), `v${app.version}`);
   setText($("#hwInfo"), `${hardware.chip}\n${hardware.ram} unified`);
-
-  const loadedName = loaded.repo ? loaded.repo.split("/").pop() : null;
-  const globalDot = $("#globalDot");
-  const globalStatus = $("#globalStatus");
-  if (loaded.loading) {
-    globalDot.className = "dot dot-live";
-    setText(globalStatus, `Loading ${loaded.loading.split("/").pop()}…`);
-  } else if (loaded.repo) {
-    globalDot.className = "dot dot-ok";
-    setText(globalStatus, loadedName);
-  } else {
-    globalDot.className = "dot dot-warn";
-    setText(globalStatus, "No model loaded");
-  }
 
   const updateAvailable =
     versions.mlx_update || versions.mlx_lm_update || versions.huggingface_hub_update ||
     versions.mlx_missing || app.update;
   $("#navUpdateDot").classList.toggle("hidden", !updateAvailable);
 
-  // chat header
-  const loadState = $("#loadState");
-  if (loaded.loading) {
-    setHTML(loadState, `<span class="dot dot-live"></span>Loading ${esc(loaded.loading.split("/").pop())}…`);
-  } else if (loaded.repo) {
-    setHTML(loadState, `<span class="dot dot-ok"></span>Loaded — ${esc(loadedName)}`);
-  } else if (loaded.error) {
-    setHTML(loadState, `<span class="dot dot-bad"></span>Load failed`);
-  } else {
-    setHTML(loadState, `<span class="dot dot-warn"></span>Not loaded`);
-  }
-  $("#loadBtn").hidden = !!loaded.repo || !!loaded.loading;
-  $("#unloadBtn").hidden = !loaded.repo;
-  $("#loadBtn").disabled = !!loaded.loading;
+  renderChat(server);
 
   // server
   const held = document.activeElement;
-  const unguarded = !!(server.running && server.unguarded);
-  const runningDot = unguarded ? "dot-warn" : "dot-ok";
-  $("#serverUnguarded").hidden = !unguarded;
-  if (unguarded && !state.lastServerUnguarded) {
-    toast("Restart the API server to apply the 2.0.10 protection (API Server page)", true);
-  }
-  state.lastServerUnguarded = unguarded;
+  const unloaded = !!(server.running && server.load_failed);
+  const runningDot = unloaded ? "dot-bad" : "dot-ok";
   setHTML($("#serverState"), server.running
-    ? `<span class="dot ${runningDot}"></span>${esc(runningNames(server))}`
+    ? `<span class="dot ${runningDot}"></span>${esc(unloaded
+      ? "Model not loaded: press Stop, then Start Server" : runningNames(server))}`
     : `<span class="dot dot-warn"></span>Stopped`);
   $("#navServerDot").className = "dot " + (server.running ? runningDot : "");
   setText($("#navServerText"),
-    unguarded ? "server unprotected" : server.running ? "server running" : "server stopped");
+    unloaded ? "model not loaded" : server.running ? "server running" : "server stopped");
   setText($("#endpointText"), server.endpoint);
-  setText($("#serverModePill"), unguarded ? "unprotected" : server.running
+  setText($("#serverModePill"), server.running
     ? (server.background ? "background" : "foreground")
     : "stopped");
   $("#serverModePill").className = "pill " +
-    (server.running && !unguarded ? (server.background ? "ok" : "") : "warn");
+    (server.running ? (server.background ? "ok" : "") : "warn");
   const notice = $("#serverNotice");
   if (server.down_notice) {
     notice.hidden = false;
-    setText($("#serverNoticeText"), server.down_notice);
+    setText($("#serverNoticeText"), `${server.down_notice} Next: read Server output below, ` +
+      "then press Restart, or choose the other engine or a smaller model.");
   } else {
     notice.hidden = true;
   }
@@ -304,7 +266,11 @@ function render(snap) {
   const mode = server.running ? `${server.pid}:${!!server.background}` : "";
   if (mode && mode !== state.serverMode) {
     // Edits made after that server's start was sent are the newer wish: they stay.
-    if (!state.keptBox) $("#serverBackground").checked = !!server.background;
+    if (!state.keptBox) {
+      $("#serverBackground").checked = !!server.background;
+      state.boxEngine = server.engine || "mlx";
+      state.boxPick = {};
+    }
     if (!state.keptSet) state.serverDraft = null;
     state.keptSet = state.keptBox = false;
     state.serverMode = mode;
@@ -314,6 +280,10 @@ function render(snap) {
   if (server.running) {
     state.serverLast = runningSet(server);
     state.serverLastBackground = !!server.background;
+    const engine = server.engine || "mlx";
+    // MLX has no Anthropic switch, so it says nothing about it.
+    const anthropic = engineInfo(engine)?.direct ? !!server.anthropic : undefined;
+    state.serverRan = { engine, anthropic };
   } else if (!state.serverLast.length) {
     // Just opened: the card starts with the last set that came up.
     state.serverLast = server.last_models || [];
@@ -328,9 +298,7 @@ function render(snap) {
   const sLog = $("#serverLog");
   if (sLog) {
     const atBottom = sLog.scrollTop + sLog.clientHeight >= sLog.scrollHeight - 40;
-    const lines = (server.lines || []).concat((server.events || [])
-      .filter((e) => LOGGED_EVENTS.includes(e.event))
-      .map((e) => `[memory] ${e.event}${e.model ? ` ${e.model}` : ""}`));
+    const lines = server.lines || [];
     if (setText(sLog, lines.join("\n")) && atBottom) sLog.scrollTop = sLog.scrollHeight;
   }
 
@@ -395,20 +363,18 @@ function render(snap) {
 
   // model dropdowns
   const ready = models.filter((m) => m.complete !== false).map((m) => m.repo);
-  fillSelect("#chatModelSelect", ready, loaded.repo);
   state.readyModels = ready;
-  renderServerMemory(server);
-  refreshEstimate(snap);
   paintServerCard();
   // A Restart button goes away with its notice: leave the focus on something that stays.
-  const gone = [["#serverRestartBtn", "#serverNotice"],
-    ["#serverUnguardedRestart", "#serverUnguarded"]];
-  if (gone.some(([button, box]) => held === $(button) && $(box).hidden)) spareControl().focus();
+  if (held === $("#serverRestartBtn") && $("#serverNotice").hidden) spareControl().focus();
   renderToolsWarning(server);
-  renderModelCards(models, loaded, downloads);
+  renderModelCards(models, server, downloads);
   renderDownloads(downloads);
   renderCatalog();
   renderSearch();
+  renderConfigPage(server);
+  renderLoadTest(snap);
+  paintEngineCards(install);
 }
 
 // target is the version the Install button would apply, if newer than current.
@@ -428,11 +394,9 @@ function setPkg(valId, pillId, current, target, missing) {
   }
 }
 
-/* ───────────── two models on the API server ───────────── */
-const MAX_SERVER_MODELS = 2;
-const LOGGED_EVENTS = ["evict", "trim", "alone", "preload-skipped", "load-failed"];
+/* ───────────── the API Server card ───────────── */
+const MAX_SERVER_MODELS = 1;
 const shortName = (repo) => String(repo || "").split("/").pop();
-const gb = (bytes) => (bytes / 1e9).toFixed(1);
 const runningSet = (server) =>
   server?.repos?.length ? server.repos : server?.repo ? [server.repo] : [];
 // Order does not make a different choice.
@@ -442,240 +406,900 @@ const sameSet = (a, b) => a.length === b.length && a.every((repo) => b.includes(
 const usable = (set) =>
   set.filter((repo) => !state.readyModels || state.readyModels.includes(repo));
 
-// The models on the card: the user's edits, else what runs, else what ran last.
+// The model on the card: the user's edit, else what runs, else what ran last.
 function serverSet() {
   const server = state.server;
   if (server?.running) return state.serverDraft || runningSet(server);
-  return usable(state.serverDraft || state.serverLast);
+  // An older version may have remembered two models.
+  return usable(state.serverDraft || state.serverLast).slice(0, MAX_SERVER_MODELS);
 }
 
 // The card differs from the running server, so Apply has something to do.
 function serverPending() {
   const server = state.server;
   return !!server?.running && (!sameSet(serverSet(), runningSet(server)) ||
-    $("#serverBackground").checked !== !!server.background);
+    engineChanged() || $("#serverBackground").checked !== !!server.background || !!server.settings_pending);
 }
 
 // The model fields of a start request.
-function serverChoice(set = serverSet()) {
-  const [repo = "", second] = set;
-  return second ? { repo, also: [second] } : { repo };
+function serverChoice(set = serverSet(), engine = engineId(), anthropic = anthropicWanted()) {
+  const [repo = ""] = set;
+  // No engine named means MLX.
+  return engine === "mlx" ? { repo } : { repo, engine, anthropic };
+}
+
+/* ───────────── engines ───────────── */
+const engineList = () => state.server?.engines || [];
+const runningEngine = () => state.server?.engine || "mlx";
+const engineId = () => state.engine || (state.server?.running ? runningEngine()
+  : state.serverRan?.engine || state.server?.last_engine) || "mlx";
+const engineInfo = (id = engineId()) => engineList().find((engine) => engine.id === id);
+// The switch as the user left it; else as the server runs, or ran; else on.
+const anthropicWanted = () => state.anthropic ?? (state.server?.running
+  ? (engineInfo(runningEngine())?.direct ? !!state.server.anthropic : true)
+  : state.serverRan?.anthropic ?? state.server?.last_anthropic ?? true);
+
+// "Run in background": what was clicked here, else the running server's mode, else
+// the saved choice. With none, on for OptiQ and off for MLX (it has no password).
+function backgroundFor(engine) {
+  const server = state.server;
+  return state.boxPick[engine] ??
+    (server.running && engine === runningEngine() ? !!server.background
+      : server.last_background?.[engine] ?? engine !== "mlx");
+}
+
+// The box follows the engine selection.
+function paintBackground() {
+  const engine = engineId();
+  if (engine === state.boxEngine) return;
+  state.boxEngine = engine;
+  $("#serverBackground").checked = backgroundFor(engine);
+}
+
+function engineChanged() {
+  const server = state.server;
+  if (!server?.running) return false;
+  if (engineId() !== runningEngine()) return true;
+  return !!engineInfo()?.anthropic && anthropicWanted() !== !!server.anthropic;
+}
+
+// Whether the chosen engine can serve the model, as the app says.
+async function loadEligibility(engine, repo) {
+  const install = engineInfo(engine)?.state;
+  const key = `${engine} ${repo} ${install}`;
+  if (state.eligibilityKey === key) return;
+  state.eligibilityKey = key;
+  state.eligibility = null;
+  try {
+    const { engines } = await api(`/api/engines${repoQuery(repo)}`);
+    if (state.eligibilityKey !== key) return;
+    state.eligibility = engines.find((entry) => entry.id === engine) || null;
+    paintServerCard();
+  } catch (_) {
+    state.eligibilityKey = "";
+  }
+}
+
+function engineReason(set) {
+  const engine = engineInfo();
+  if (!engine?.direct) return "";
+  if (!set.length) return "";
+  loadEligibility(engine.id, set[0]);
+  const found = state.eligibility;
+  return found && found.id === engine.id && !found.eligible ? found.reason : "";
+}
+
+function paintEngine(set) {
+  const select = $("#engineSelect");
+  setHTML(select, engineList().map((engine) =>
+    `<option value="${esc(engine.id)}"${engine.selectable ? "" : " disabled"}>` +
+    `${esc(engine.name)}${engine.selectable ? "" : ` (${esc(engine.reason)})`}</option>`).join(""));
+  const engine = engineInfo();
+  select.value = engineId();
+  $("#anthropicBox").hidden = !engine?.anthropic;
+  $("#engineAnthropic").checked = anthropicWanted();
+  showLine("#engineWhy", engineNeed(engineId()) ? "" : engineReason(set));
+  paintInstall("server", engineId());
+  const missing = engine?.missing || [];
+  const box = $("#engineMissing");
+  if (box.hidden && missing.length) box.open = true;
+  box.hidden = !missing.length;
+  setText($("#engineMissingTitle"), `Not available with this engine (${missing.length})`);
+  setHTML($("#engineMissingList"), missing.map(([what, why]) =>
+    `<li>${esc(what)}: ${esc(why)}</li>`).join(""));
+  paintClientSettings(engine);
+}
+
+/* ───────────── install from the Start area ───────────── */
+const PACKAGE_KINDS = ["install", "update", "reinstall"];
+
+// What the engine still needs before it can start, or null.
+function engineNeed(id) {
+  const versions = state.snapshot?.versions || {};
+  if (id !== "mlx") {
+    const found = engineInfo(id)?.state;
+    return ["not_installed", "unsupported", "broken", "update"].includes(found) ? found : null;
+  }
+  return versions.mlx_missing || versions.mlx_lm_missing ? "not_installed" : null;
+}
+
+// The box under a Start button: ``prefix`` is "server" or "lt".
+function paintInstall(prefix, id) {
+  const need = engineNeed(id);
+  $(`#${prefix}Install`).hidden = !need;
+  if (!need) return;
+  const install = state.snapshot?.install || {};
+  const kind = String(install.kind || "");
+  const mine = id === "mlx" ? PACKAGE_KINDS.includes(kind) : kind.startsWith(`${id} `);
+  const lines = install.lines || [];
+  const name = id === "mlx" ? "MLX" : engineInfo(id)?.name || id;
+  const never = need === "unsupported";
+  const busy = !!install.running;
+  const failed = mine && !busy && lines.length > 0;
+  let words;
+  if (never) {
+    words = `${engineInfo(id)?.unsupported || ""} ${name} cannot be installed on this Mac. ` +
+      "Press Use MLX instead.";
+  } else if (busy) {
+    words = mine ? `Installing ${name}… This can take several minutes. Start when it is done.`
+      : `${name} is not installed. Another install is running: wait for it to finish.`;
+  } else if (failed) {
+    const reason = [...lines].reverse().find((line) => /^error/i.test(line)) || lines.at(-1);
+    words = `The install did not finish: ${reason.replace(/^error:\s*/i, "")}. Check the ` +
+      "internet connection and free disk space, then press Install again" +
+      (id === "mlx" ? "." : ", or use MLX instead.");
+  } else {
+    const what = { broken: "has a broken install", update: "needs an update" }[need] ||
+      "is not installed";
+    words = `${name} ${what}. Press Install, wait for it to finish, then start.`;
+  }
+  setText($(`#${prefix}InstallText`), words.trim());
+  const log = $(`#${prefix}InstallLog`);
+  log.hidden = !(mine && lines.length);
+  setText(log, mine ? lines.slice(-8).join("\n") : "");
+  const button = $(`#${prefix}InstallBtn`);
+  button.hidden = never;
+  button.disabled = busy;
+  $(`#${prefix}UseMlx`).hidden = id === "mlx";
+}
+
+// The same two actions as the Setup page.
+async function installEngine(id) {
+  if (id !== "mlx") return changeEngine(id, "install");
+  const kind = state.snapshot?.versions?.mlx_missing ? "install" : "update";
+  try {
+    await api("/api/install", { method: "POST", body: JSON.stringify({ kind }) });
+    toast("Install started");
+    refreshState();
+  } catch (err) { toast(err.message, true); }
+}
+
+function paintClientSettings(picked) {
+  const server = state.server;
+  // A running server's own settings, not those of a choice that waits for Apply.
+  const running = !!server.running;
+  const engine = running ? engineInfo(runningEngine()) : picked;
+  const direct = !!engine?.direct;
+  const base = `http://127.0.0.1:${(direct ? engine.port : 8080) || 8080}`;
+  // Both engines call the model they were started with default_model.
+  const model = "default_model";
+  const keyed = direct && running && server.ready;
+  $("#copyKey").hidden = !keyed;
+  $("#curlExample").hidden = direct;
+  setText($("#curlExample"), `curl ${base}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"${model}","messages":[{"role":"user","content":"Hello!"}]}'`);
+  $("#mlxModelHint").hidden = direct;
+  $("#mlxOpenWarn").hidden = direct;
+  setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
+    (direct ? "press Copy key (new at every start)" : "not needed"));
+  $("#connectPanel").hidden = !running;
+  setText($("#connectState"), running && !server.ready
+    ? "The server is still starting. Use these settings once it is ready." : "");
+  const typed = Number($("#dshContext").value);
+  const context = Number.isInteger(typed) && typed > 0 ? typed : null;
+  setText($("#dshSettings"), `Type: OpenAI compatible\nBase URL: ${base}/v1\nModel: ${model}\n` +
+    `Context window: ${context ?? "(type a number above)"}\nAPI key: ` +
+    (direct ? "press Copy key (new at every start)" : "not needed"));
+  $("#copyDsh").disabled = !context;
+  const claude = direct && (running ? !!server.anthropic : anthropicWanted());
+  setText($("#claudeSettings"), claude
+    ? [`export ANTHROPIC_BASE_URL=${base}`,
+      "export ANTHROPIC_AUTH_TOKEN=<paste the copied key>",
+      `export ANTHROPIC_MODEL=${model}`,
+      `export ANTHROPIC_DEFAULT_HAIKU_MODEL=${model}`,
+      "claude"].join("\n")
+    : direct ? "Switch on the Anthropic route, then apply, to use Claude Code."
+      : "Not available: the MLX engine has no Anthropic route. Choose OptiQ.");
+  $("#copyClaude").hidden = !claude;
+}
+
+const ENGINE_STATES = { installed: "installed", not_installed: "not installed",
+  update: "update ready", broken: "broken: remove, or install again",
+  unsupported: "not supported on this Mac", unavailable: "not available yet" };
+
+function paintEngineCards(install) {
+  setHTML($("#engineCards"), engineList().filter((engine) => engine.id !== "mlx").map((engine) => {
+    const busy = !!install?.running && String(install.kind).startsWith(engine.id);
+    const off = install?.running ? " disabled" : "";
+    const button = (action, words, disabled = "") =>
+      `<button type="button" class="btn btn-mini" data-engine="${esc(engine.id)}" ` +
+      `data-action="${action}" aria-label="${words} ${esc(engine.name)}"${off || disabled}>` +
+      `${words}</button>`;
+    const unsupported = engine.state === "unsupported";
+    const serving = !!state.server?.running && runningEngine() === engine.id;
+    const note = !engine.installable ? engine.reason : unsupported ? engine.unsupported
+      : serving ? "Stop the API server to remove this engine." : "";
+    const buttons = !engine.installable ? "" :
+      button("install", "Install / Update",
+        unsupported || engine.state === "installed" ? " disabled" : "") +
+      (["installed", "update", "broken"].includes(engine.state)
+        ? button("remove", "Remove", serving ? " disabled" : "") : "");
+    return `<div class="kv-row"><span>${esc(engine.name)}</span>` +
+      `<span class="mono">${esc(engine.version || "—")}</span>` +
+      `<span class="pill">${busy ? "working…" : ENGINE_STATES[engine.state] || ""}</span>` +
+      `<span>${buttons}</span></div>` + (note ? `<p class="hint">${esc(note)}</p>` : "");
+  }).join(""));
+}
+
+async function changeEngine(engine, action) {
+  if (action === "remove" && !confirm("Remove this engine? Your models stay.")) return;
+  if (action === "install" && ["update", "broken"].includes(engineInfo(engine)?.state) &&
+    !confirm("The current engine folder is removed before the download. " +
+      "If the download fails, there is no engine until you install again. Continue?")) return;
+  try {
+    await api(`/api/engines/${action}`, { method: "POST", body: JSON.stringify({ engine }) });
+    toast(action === "remove" ? "Engine removed" : "Install started");
+  } catch (err) { toast(err.message, true); }
+  state.eligibilityKey = "";
+  refreshState();
+}
+
+async function copyServerKey() {
+  try {
+    const { key } = await api("/api/server/key", { method: "POST", body: "{}" });
+    await navigator.clipboard.writeText(key);
+    toast("Key copied. It changes at every start.");
+  } catch (err) {
+    toast(err.message || "The key was not copied. Press Copy key again.", true);
+  }
+}
+
+function wireEngines() {
+  $("#engineSelect").addEventListener("change", () => {
+    state.engine = $("#engineSelect").value;
+    state.serverStartError = "";
+    serverCardChanged();
+  });
+  $("#engineAnthropic").addEventListener("change", () => {
+    state.anthropic = $("#engineAnthropic").checked;
+    serverCardChanged();
+  });
+  $("#engineCards").addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-engine]");
+    if (button) changeEngine(button.dataset.engine, button.dataset.action);
+  });
+  $("#copyKey").addEventListener("click", copyServerKey);
+  $("#dshContext").addEventListener("input", () => paintClientSettings(engineInfo()));
+  $("#serverInstallBtn").addEventListener("click", () => installEngine(engineId()));
+  $("#serverUseMlx").addEventListener("click", () => {
+    state.engine = "mlx";
+    serverCardChanged();
+  });
+  $("#ltInstallBtn").addEventListener("click", () => installEngine($("#ltEngine").value));
+  $("#ltUseMlx").addEventListener("click", () => {
+    state.lt.engine = "mlx";
+    if (state.snapshot) renderLoadTest(state.snapshot);
+  });
+  $("#ltEngine").addEventListener("change", () => {
+    state.lt.engine = $("#ltEngine").value;
+    paintLoadTestControls();
+  });
+  for (const [button, box] of [["#copyOpenai", "#openaiSettings"],
+    ["#copyClaude", "#claudeSettings"], ["#copyDsh", "#dshSettings"]]) {
+    $(button).addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText($(box).textContent); toast("Settings copied"); }
+      catch (_) { toast("Copy failed. Select the text and press Command-C.", true); }
+    });
+  }
 }
 
 function runningNames(server) {
-  const resident = server.resident || [];
-  const repos = server.repos || [];
-  if (Math.max(resident.length, repos.length) < 2) return `Running — ${shortName(server.repo)}`;
-  if (!resident.length) return `Running — ${repos.map(shortName).join(" and ")}`;
-  const [now, ...rest] = resident.map(shortName);
-  return `Running: ${[`${now} (current)`, ...rest].join(", ")}`;
+  return `Running — ${runningSet(server).map(shortName).join(" and ")}`;
 }
 
-const holdsTwo = (server) =>
-  !!server.running && (server.repos || []).length > 1 && !server.multi_off;
+/* ───────────── configuration page ───────────── */
+const CONFIG_KEYS = ["max_context_tokens", "server_max_reply_tokens", "chat_max_reply_tokens",
+  "chat_temperature", "chat_top_p", "prompt_cache_size", "prompt_cache_bytes",
+  "performance_mode", "kv_bits", "kv_group_size", "prefill_step_size", "server_reasoning"];
+const PERF_NAMES = { standard: "Standard", save_memory: "Save memory", advanced: "Advanced" };
+const KV_GROUPS = [32, 64, 128];
+const ALL_MODELS = "All models (defaults)";
 
-// [title, text] of what differs from the pair that was asked for; empty if nothing.
-function multiNotice(server) {
-  const nothing = ["", ""];
-  if (!server.running) return nothing;
-  if (server.multi_off) {
-    return ["One model at a time",
-      `Only one model is kept loaded with this mlx-lm version (${server.multi_off}). ` +
-      "A request for the other model loads it from disk."];
-  }
-  const oversize = server.oversize || [];
-  if (oversize.length) {
-    const budget = server.memory?.budget_bytes;
-    const space = budget == null ? "the memory" : `the ${gb(budget)} GB`;
-    const tokens = server.context_tokens;
-    // Only an eviction shows that the other model was unloaded; a first load has none.
-    const events = server.events || [];
-    const evicted = new Set(
-      events.filter((e) => e.event === "evict").map((e) => e.model)
-    );
-    const otherModel = (server.repos || []).find((r) => !oversize.includes(r));
-    const wasEvicted = otherModel && evicted.has(otherModel);
-    const unloaded = wasEvicted ? "The other model was unloaded. " : "";
-    return ["Loaded without enough memory",
-      `${oversize.map(shortName).join(", ")} was loaded on its own: it does not fit in ` +
-      `${space} the API server may use now` +
-      (tokens ? `, with room for a ${tokens}-token reply` : "") +
-      `. ${unloaded}macOS may slow down or stop the API server. ` +
-      "Free some memory or choose a smaller model."];
-  }
-  if (server.memory_low) {
-    return ["Free memory is low",
-      "Other apps now use memory the API server was counting on " +
-      `(${gb(server.memory_low.short_by_bytes)} GB short). Replies may slow down. ` +
-      "Close apps, or restart the server for a smaller context."];
-  }
-  const asked = server.repos || [];
-  const resident = server.resident || [];
-  if (asked.length < 2 || !resident.length) return nothing;
-  const events = server.events || [];
-  const gone = asked.filter((repo) => !resident.includes(repo)).map(shortName);
-  const added = resident.filter((repo) => !asked.includes(repo)).map(shortName);
-  if (gone.length && added.length) {
-    return ["Loaded models changed",
-      `${gone.join(", ")} was replaced by ${added.join(", ")} on request.`];
-  }
-  const skipped = events.find(
-    (e) => e.event === "preload-skipped" && !resident.includes(e.model));
-  if (skipped) {
-    return ["Second model not preloaded",
-      `${shortName(skipped.model)} was not preloaded: it did not fit in memory or could not ` +
-      "be loaded. It loads when a client asks for it."];
-  }
-  // Without an evict event the second model may simply still be loading.
-  const evicted = asked.filter((repo) => !resident.includes(repo) &&
-    events.some((e) => e.event === "evict" && e.model === repo));
-  return evicted.length
-    ? ["Loaded models changed",
-      `${evicted.map(shortName).join(", ")} was unloaded to make room in memory. ` +
-      "It loads again when a client asks for it."]
-    : nothing;
+const configField = (key) => $(`#cfg-${key}`);
+const repoQuery = (repo) => (repo ? `?repo=${encodeURIComponent(repo)}` : "");
+
+// Whether a field holds something the user typed and has not saved.
+function configEdited(key) {
+  const input = configField(key);
+  const loaded = state.config.loaded[key];
+  return loaded !== undefined && !input.disabled &&
+    (input.value.trim() !== loaded || !!input.validity?.badInput);
+}
+const configDirty = () => CONFIG_KEYS.some(configEdited);
+
+function fieldError(key, message) {
+  const input = configField(key);
+  if (message) input.setAttribute("aria-invalid", "true");
+  else input.removeAttribute("aria-invalid");
+  setText($(`#cfg-${key}-error`), message);
 }
 
-function renderServerMemory(server) {
-  const memory = server.running ? server.memory : null;
-  $("#serverMemory").hidden = !memory;
-  if (memory) {
-    const used = `Using ${gb(memory.active_bytes)} GB (peak ${gb(memory.peak_bytes)} GB)`;
-    // Only a two-model server is held to a budget.
-    setText($("#serverMemory"), holdsTwo(server)
-      ? `${used} of a ${gb(memory.budget_bytes)} GB budget. ` +
-        "Measured by the API server, refreshed about every 10 s."
-      : `${used}. Measured at the last model load. A model on the Chat tab is not included.`);
+function clearConfig() {
+  state.config.view = null;
+  state.config.loaded = {};
+  for (const key of CONFIG_KEYS) {
+    configField(key).value = "";
+    fieldError(key, "");
+    setText($(`#cfg-${key}-now`), "");
   }
-  const tokens = holdsTwo(server) ? server.context_tokens : null;
-  $("#serverPromptHint").hidden = !tokens;
-  setText($("#serverPromptHint"), tokens
-    ? `Keep prompts to ${tokens} tokens or fewer. The prompt cache holds about ` +
-      `${2 * tokens} tokens in total; above that, older prompts are dropped and read again.`
-    : "");
-  const [title, notice] = multiNotice(server);
-  $("#serverMulti").hidden = !notice;
-  setText($("#serverMultiTitle"), title);
-  setText($("#serverMultiText"), notice);
-  $("#chatServerNote").hidden = !holdsTwo(server);
-  setText($("#chatServerNote"), holdsTwo(server)
-    ? "The API server keeps two models loaded. A Chat model loads only if it fits beside them."
-    : "");
+  for (const id of ["#configError", "#configTestWarn"]) setText($(id), "");
+  $("#configSaveBtn").disabled = $("#configResetBtn").disabled = true;
+  setText($("#cfg-performance_mode-blocked"), "");
+  paintPerformance();
 }
 
-const ESTIMATE_RETRY_MS = 10000;
+// The raw fields show only under Advanced; 4-bit is never chosen without a warning.
+function paintPerformance() {
+  const view = state.config.view;
+  const inherited = (key) => (view?.repo ? view.settings[key]?.inherited : null);
+  const mode = configField("performance_mode").value || inherited("performance_mode") || "standard";
+  $("#cfg-advanced").hidden = mode !== "advanced";
+  const bits = configField("kv_bits").value || String(inherited("kv_bits") ?? "");
+  $("#cfg-kv4-warn").hidden = !(mode === "advanced" && bits === "4");
+}
 
-// Asked again when the choice or the app's own chat model changes, and a while after
-// the last answer, as the free memory moves. An unchanged running server keeps its
-// answer; an edit waiting for Apply does not.
-async function refreshEstimate(snap) {
-  const choice = serverChoice();
-  const key = choice.repo
-    ? JSON.stringify([choice, snap?.loaded?.repo, snap?.loaded?.loading])
-    : "";
-  const same = key === (state.estimateKey || "");
-  const settled = !!snap?.server?.running && !serverPending();
-  if (same && (!(Date.now() >= state.estimateRetryAt) || (settled && state.estimated))) return;
-  state.estimateKey = key;
-  state.estimateRetryAt = Infinity;
-  if (!same) {
-    state.estimated = false;
-    showEstimate(null, "");
+// What the chosen model cannot do is switched off, with the reason.
+function paintBlocked(view) {
+  const blocked = view.performance?.blocked || {};
+  const groups = blocked.kv_group_size || {};
+  const shared = view.settings.performance_mode?.inherited;
+  setText($("#cfg-mode-default"), view.repo
+    ? `Same as All models (${PERF_NAMES[shared] || PERF_NAMES.standard})`
+    : "Standard (recommended)");
+  // Under All models the first entry already is Standard.
+  $("#cfg-mode-standard").hidden = !view.repo && view.settings.performance_mode?.value !== "standard";
+  $("#cfg-mode-save_memory").disabled = !!blocked.save_memory;
+  for (const g of KV_GROUPS) $(`#cfg-group-${g}`).disabled = !!groups[g];
+  const none = KV_GROUPS.every((g) => groups[g]);
+  if (none) configField("kv_bits").disabled = configField("kv_group_size").disabled = true;
+  const unfit = [...new Set(Object.values(groups))].join("; ");
+  setText($("#cfg-performance_mode-blocked"), blocked.save_memory
+    ? `Save memory is not available for this model, so it stays on Standard: ${blocked.save_memory}.`
+    : unfit ? `Some group sizes are not available for this model: ${unfit}.` : "");
+}
+
+function configHint(view, setting) {
+  const now = `Effective: ${setting.effective}`;
+  if (!view.repo) return now;
+  if (setting.global_only) return `${now}. Change it under ${ALL_MODELS}.`;
+  const shared = setting.inherited;
+  if (setting.own != null) {
+    return `${now} (set for this model${shared != null ? `; All models: ${shared}` : ""})`;
   }
-  if (!key) return;
+  return shared != null ? `${now} (from All models)` : now;
+}
+
+// Typed, unsaved text stays; every other field follows what is saved.
+function paintConfig(view) {
+  state.config.view = view;
+  for (const key of CONFIG_KEYS) {
+    const setting = view.settings[key];
+    const input = configField(key);
+    const locked = !!(view.repo && setting.global_only);
+    input.disabled = locked;
+    const edited = configEdited(key);
+    const saved = String((view.repo ? setting.own : setting.value) ?? "");
+    input.min = setting.min;
+    input.max = setting.max;
+    input.step = setting.decimal ? "any" : "1";
+    input.placeholder = view.repo && setting.inherited != null
+      ? `inherited: ${setting.inherited}` : "automatic";
+    if (!edited) input.value = locked ? String(setting.value ?? "") : saved;
+    state.config.loaded[key] = saved;
+    setText($(`#cfg-${key}-now`), configHint(view, setting));
+  }
+  paintBlocked(view);
+  paintPerformance();
+  $("#configSaveBtn").disabled = $("#configResetBtn").disabled = false;
+}
+
+// An OptiQ context above everything a load test has passed is only a hope: say so.
+function warnUntested(view, tests) {
+  const passed = (tests?.results || []).filter((run) => !run.stale)
+    .flatMap((run) => run.rows.filter((r) => r.status === "passed").map((r) => r.size));
+  const largest = Math.max(0, ...passed);
+  const context = view.settings.max_context_tokens.value;
+  setText($("#configTestWarn"), largest && context > largest
+    ? `The OptiQ max context here (${context} tokens) is above the largest size that passed a load ` +
+      `test (${largest} tokens).` : "");
+}
+
+async function loadConfig() {
+  if (!API_TOKEN) return;
+  const { repo } = state.config;
+  const seq = ++state.config.seq;
   try {
-    const estimate = await api("/api/server/estimate", {
-      method: "POST",
-      body: JSON.stringify(choice),
-    });
-    if (state.estimateKey !== key) return;
-    state.estimateRetryAt = Date.now() + ESTIMATE_RETRY_MS;
-    state.estimated = true;
-    showEstimate(estimate);
+    const view = await api(`/api/config${repoQuery(repo)}`);
+    if (seq !== state.config.seq) return;
+    if (state.config.failed) setText($("#configError"), "");
+    state.config.failed = false;
+    paintConfig(view);
+    if (!repo) return setText($("#configTestWarn"), "");
+    // The warning is extra: the page works when these figures cannot be read.
+    api(`/api/loadtest${repoQuery(repo)}`)
+      .then((tests) => { if (seq === state.config.seq) warnUntested(view, tests); })
+      .catch(() => {});
   } catch (err) {
-    if (state.estimateKey !== key) return;
-    state.estimated = false;
-    state.estimateRetryAt = Date.now() + ESTIMATE_RETRY_MS;
-    showEstimate(null, err.message);
+    if (seq !== state.config.seq) return;
+    state.config.failed = true;
+    setText($("#configError"), err.message);
   }
 }
 
-const FULL_CONTEXT = 32768;
+// Puts the app's choice in a page's searchable model list.
+function setModelPick(sel, values, value) {
+  fillSelect(sel, values, value);
+  $(sel).value = value;
+  pickers[sel]?.sync(values);
+}
+const paintConfigPick = () => setModelPick("#configModelSelect",
+  [ALL_MODELS, ...(state.readyModels || [])], state.config.repo || ALL_MODELS);
 
-// What the picked pair will get, or why it cannot be started.
-function estimateWords(estimate) {
-  const unread = estimate.free_bytes === null;
-  const fallback = unread ? " Free memory could not be read; using the fixed 52% rule." : "";
-  if (estimate.fits === false) return `${estimate.refused}${fallback}`;
+async function chooseConfigModel(value) {
+  const repo = value === ALL_MODELS ? "" : value;
+  if (repo === state.config.repo) return;
+  if (configDirty() && !confirm("Discard your unsaved changes?")) {
+    paintConfigPick();
+    await null; // the list says "Selected" when this first returns
+    setText($("#configModelSelectStatus"), `Kept ${state.config.repo || ALL_MODELS}.`);
+    return;
+  }
+  state.config.repo = repo;
+  paintConfigPick();
+  clearConfig();
+  await loadConfig();
+}
 
-  let uses;
-  if (!unread && estimate.held_bytes > 0) {
-    // A running server's memory is not in the free figure, and a new start frees it.
-    const available = estimate.free_bytes + estimate.held_bytes;
-    const need = estimate.total_bytes;
-    if (need > available) {
-      uses = `Needs about ${gb(need)} GB, ${gb(available)} GB would be available.`;
+function renderConfigPage(server) {
+  const { repo } = state.config;
+  const gone = !!repo && !(state.readyModels || []).includes(repo);
+  if (gone) {
+    state.config.repo = "";
+    clearConfig();
+  }
+  paintConfigPick();
+  if (gone && state.view === "config") loadConfig();
+  const behind = !!(server.running && server.settings_pending);
+  // The button goes away once applied: leave the focus on something that stays.
+  const held = document.activeElement === $("#configApplyBtn");
+  $("#configPending").hidden = !behind;
+  const optiq = engineId() === "optiq" || (!!server.running && runningEngine() === "optiq");
+  $("#configEngine").hidden = !optiq;
+  if (held && !behind) $("#configModelSelectSearch").focus();
+}
+
+async function postSettings(body) {
+  await api("/api/server/settings", { method: "POST", body: JSON.stringify(body) });
+}
+
+// Saves only the changed fields; an emptied one goes back to automatic or inherited.
+async function saveConfig() {
+  const { view, repo } = state.config;
+  if (!view) return;
+  const values = {};
+  const bad = [];
+  for (const key of CONFIG_KEYS) {
+    fieldError(key, "");
+    if (!configEdited(key)) continue;
+    const { min, max, decimal } = view.settings[key];
+    const input = configField(key);
+    const raw = input.value.trim();
+    // Every other setting is a number.
+    const word = key === "performance_mode" || key === "server_reasoning";
+    const value = raw === "" ? null : word ? raw : Number(raw);
+    const fits = value === null || word ||
+      (value >= min && value <= max && (decimal || Number.isInteger(value)));
+    if (input.validity?.badInput || !fits) {
+      const kind = decimal ? "number" : "whole number";
+      fieldError(key, `Use a ${kind} from ${min} to ${max}, or leave it empty.`);
+      bad.push(input);
     } else {
-      uses = `Uses about ${gb(need)} of ${gb(available)} GB available.`;
+      values[key] = value;
     }
-  } else {
-    uses = `Uses about ${gb(estimate.total_bytes)}` +
-      (unread ? " GB." : ` of ${gb(estimate.free_bytes)} GB free.`);
   }
-
-  if (estimate.context_tokens >= FULL_CONTEXT) {
-    return `Two models: 32K tokens each. ${uses}${fallback}`;
+  if (bad.length) {
+    setText($("#configError"), bad.length === 1 ? "Not saved: 1 field needs a change."
+      : `Not saved: ${bad.length} fields need a change.`);
+    bad[0].focus();
+    return;
   }
-  const shrinkNote = estimate.free_is_limit ? " Close other apps for more." : "";
-  return `Two models: about ${Math.floor(estimate.context_tokens / 1000)}K tokens each ` +
-    `(one model alone can use more). ${uses}` +
-    (unread ? fallback : shrinkNote);
+  setText($("#configError"), "");
+  if (!Object.keys(values).length) return toast("Nothing changed");
+  try {
+    await postSettings({ values, ...(repo ? { repo } : {}) });
+  } catch (err) {
+    setText($("#configError"), err.message);
+    return;
+  }
+  state.config.loaded = {};
+  toast("Saved. Server limits apply at the next start or Apply changes.");
+  refreshState();
+  await loadConfig();
 }
 
-function showEstimate(estimate, error = "") {
-  state.estimate = estimate;
-  state.estimateError = error;
-  paintServerCard();
-}
-
-const kilo = (tokens) => Math.floor(tokens / 1024);
-
-// What one row can promise about its context; empty when nothing is known.
-function contextWords(repo, view) {
-  const found = view.estimate?.models?.find((m) => m.repo === repo);
-  let tokens = view.estimate?.fits === false && view.two ? null : found?.safe_context;
-  if (view.live && view.two && holdsTwo(view.server) && view.server.context_tokens) {
-    tokens = Math.min(view.server.context_tokens, found?.context_limit || Infinity);
+async function resetConfig() {
+  const { view, repo } = state.config;
+  if (!view || !confirm(`Clear every value saved for ${repo || ALL_MODELS}?`)) return;
+  try {
+    await postSettings({ reset: true, ...(repo ? { repo } : {}) });
+  } catch (err) {
+    setText($("#configError"), err.message);
+    return;
   }
-  return tokens >= 1024 ? `about ${kilo(tokens)}K context` : "";
+  clearConfig();
+  toast(repo ? "This model uses the All models values again." : "Defaults reset to automatic.");
+  refreshState();
+  await loadConfig();
 }
 
-// The one thing to read without opening Details: why the button is off, or a warning.
-function serverReason(view) {
-  const { server, set, two, live, estimate, refused } = view;
+/* ───────────── load test page ───────────── */
+const LT_NUMBERS = ["reply_tokens", "rounds", "timeout_seconds"];
+const LT_MAX_SIZES = 12;
+const LT_ENDED = { done: "finished", memory: "stopped for memory safety",
+  cancelled: "cancelled", failed: "failed", interrupted: "interrupted" };
+const LT_PILL = { passed: "ok", skipped: "warn", cancelled: "warn", interrupted: "warn",
+  stopped: "bad", failed: "bad" };
+
+const ltError = (message) => setText($("#ltError"), message);
+const figure = (v) => (typeof v === "number" ? String(Math.round(v * 10) / 10) : "n/a");
+const seconds = (v) => (typeof v === "number" ? `${figure(v)} s` : "n/a");
+
+function setLoadTestModel(repo) {
+  Object.assign(state.lt, { repo, view: null, extra: [] });
+  state.lt.picked.clear();
+  ltError("");
+  setHTML($("#ltSizes"), "");
+  setHTML($("#ltResults"), "");
+  setText($("#ltRange"), "");
+  $("#ltOutcome").hidden = true;
+}
+
+async function loadLoadTest() {
+  const { repo } = state.lt;
+  if (!API_TOKEN || !repo) return;
+  const seq = ++state.lt.seq;
+  try {
+    const view = await api(`/api/loadtest${repoQuery(repo)}`);
+    if (seq !== state.lt.seq) return;
+    if (state.lt.failed) ltError("");
+    state.lt.failed = false;
+    state.lt.view = view;
+    paintLoadTest();
+  } catch (err) {
+    if (seq !== state.lt.seq) return;
+    state.lt.failed = true;
+    ltError(err.message);
+  }
+}
+
+function paintLoadTest() {
+  const { view, loaded } = state.lt;
+  for (const key of LT_NUMBERS) {
+    const { value, min, max } = view.load_test[key];
+    const input = $(`#lt-${key}`);
+    input.min = min;
+    input.max = max;
+    if (loaded[key] === undefined || input.value === loaded[key]) input.value = String(value);
+    loaded[key] = String(value);
+  }
+  const { min, max } = view.sizes;
+  $("#ltCustom").min = min;
+  $("#ltCustom").max = max;
+  setText($("#ltRange"),
+    `This model takes ${min} to ${max} tokens. Up to ${LT_MAX_SIZES} sizes in one test.`);
+  paintLoadTestControls();
+  paintResults();
+}
+
+// The settings' sizes, the ones used last and the ones typed now.
+function listedSizes() {
+  const { view, extra } = state.lt;
+  const all = [...view.sizes.offered.map((s) => s.size),
+    ...view.load_test.last_sizes.value, ...extra];
+  return [...new Set(all)].sort((a, b) => a - b);
+}
+
+function paintSizes(off) {
+  const { view, picked } = state.lt;
+  if (!view) return;
+  const { min, max } = view.sizes;
+  setHTML($("#ltSizes"), listedSizes().map((size) => {
+    const outside = size < min || size > max;
+    return `<label class="check"><input type="checkbox" value="${esc(size)}" ` +
+      `data-size="${esc(size)}"${picked.has(size) && !outside ? " checked" : ""}` +
+      `${outside || off ? " disabled" : ""} /><span>${esc(size)} tokens` +
+      `${outside ? ` (this model takes up to ${esc(max)})` : ""}</span></label>`;
+  }).join(""));
+}
+
+function paintLoadTestControls() {
+  const snap = state.snapshot;
+  if (!snap) return;
+  const { view } = state.lt;
+  const testing = !!snap.loadtest?.active;
+  const none = !(state.readyModels || []).length;
+  const serving = !!(snap.server?.running || snap.server?.starting);
+  let why = "";
+  if (!none && !testing) {
+    why = serving ? "The API server is running. A load test needs it stopped."
+      : view?.blocked ? `Cannot start now: ${view.blocked}.` : "";
+  }
+  const start = $("#ltStartBtn");
+  const cancel = $("#ltCancelBtn");
+  const held = document.activeElement;
+  $("#ltNoModel").hidden = !none;
+  setText($("#ltWhy"), why);
+  const engine = $("#ltEngine").value || "mlx";
+  paintInstall("lt", engine);
+  start.disabled = none || testing || !!why || !view || !!engineNeed(engine);
+  cancel.hidden = !testing;
+  // aria-disabled, not disabled: the button keeps the focus while the test stops.
+  if (snap.loadtest?.status === "cancelling") cancel.setAttribute("aria-disabled", "true");
+  else cancel.removeAttribute("aria-disabled");
+  const stopServing = $("#ltStopServerBtn");
+  stopServing.hidden = !(serving && !testing);
+  for (const id of ["#ltModelSelectSearch", "#ltCustom", "#ltAddBtn", "#ltEngine",
+    ...LT_NUMBERS.map((key) => `#lt-${key}`)]) {
+    $(id).disabled = none || testing;
+  }
+  paintSizes(testing);
+  paintThinking(none || testing);
+  // Focus follows Start to Cancel and back.
+  if (held === start && testing) cancel.focus();
+  const gone = (held === cancel && !testing) || (held === stopServing && stopServing.hidden);
+  if (gone) (start.disabled ? $("#ltModelSelectSearch") : start).focus();
+}
+
+// Offered only where the model's chat template has the switch.
+function paintThinking(off) {
+  const found = state.lt.view?.thinking;
+  const box = $("#ltThinking");
+  box.disabled = off || !found?.supported;
+  box.checked = !!found?.supported && state.lt.thinking !== false;
+  setText($("#ltThinkingNote"), found && !found.supported ? found.reason
+    : "Thinking uses the reply token budget (Reply tokens per request).");
+}
+
+// Only a new step is read out; the counts that move with every poll are not.
+function paintProgress(run) {
+  const testing = !!run?.active;
+  $("#ltRunning").hidden = !testing;
+  if (!testing) {
+    if (state.lt.testing && run) {
+      setText($("#ltAnnounce"), `Load test ${LT_ENDED[run.status] || run.status}.`);
+    }
+    state.lt.testing = false;
+    return;
+  }
+  state.lt.testing = true;
+  const cancelling = run.status === "cancelling";
+  const where = run.size ? `, size ${run.index} of ${run.of} (${run.size} tokens)` : "";
+  const phase = cancelling ? "Stopping the test…"
+    : `Testing ${run.repo}${where}: ${run.step || "starting"}.`;
+  setText($("#ltStep"), phase);
+  setText($("#ltAnnounce"), phase);
+  const reading = !cancelling && run.total > 0;
+  const bar = $("#ltProgress");
+  bar.hidden = !reading;
+  if (reading) {
+    bar.max = run.total;
+    bar.value = run.done;
+  }
+  setText($("#ltDetail"), [
+    reading ? `Reading the prompt: ${run.done} of ${run.total} tokens.` : "",
+    run.memory_percent == null ? ""
+      : `Memory now: ${run.memory_percent}% of RAM.`,
+  ].filter(Boolean).join(" "));
+}
+
+// Why the last test of this model did not finish, in one place.
+function paintOutcome(last) {
+  const told = !!last && !state.snapshot?.loadtest?.active &&
+    !["done", "running", "cancelling"].includes(last.status);
+  $("#ltOutcome").hidden = !told;
+  if (!told) return;
+  const memory = last.status === "memory";
+  setText($("#ltOutcomeTitle"), memory ? "Stopped for memory safety"
+    : `Test ${LT_ENDED[last.status] || last.status}`);
+  setText($("#ltOutcomeText"), memory
+    ? `${last.reason}. Larger sizes were not run.`
+    : last.reason);
+}
+
+function resultRow(run, row) {
+  const used = run.values || {};
+  const note = (text) => (text ? `<span class="lt-note">${esc(text)}</span>` : "");
+  return `<tr><th scope="row">${esc(row.size)}` +
+    note(row.prompt_tokens ? `${row.prompt_tokens} in prompt` : "") +
+    `</th><td><span class="pill ${LT_PILL[row.status] || ""}">${esc(row.status)}</span>` +
+    note(row.reason) +
+    `</td><td>${figure(row.read_tps)}</td><td>${seconds(row.first_token_s)}` +
+    note(row.follow_up_first_token_s == null ? ""
+      : `follow-up ${seconds(row.follow_up_first_token_s)}`) +
+    `</td><td>${figure(row.write_tps)}</td><td>` +
+    (row.peak_percent == null ? "n/a" : `${figure(row.peak_percent)}%`) +
+    note(row.server_peak_bytes
+      ? `server ${(row.server_peak_bytes / 1e9).toFixed(1)} GB` : "") +
+    `</td><td>${esc(`reply ${used.reply_tokens} tokens, ${used.rounds} rounds`)}` +
+    "</td></tr>";
+}
+
+function resultRun(run) {
+  const name = `Run of ${run.time}`;
+  const ended = LT_ENDED[run.status] || run.status;
+  const heads = ["Size", "Status", "Read tok/s", "First token", "Write tok/s",
+    "Peak memory", "Settings used"].map((h) => `<th scope="col">${h}</th>`).join("");
+  const thinking = typeof run.thinking === "boolean"
+    ? `, thinking ${run.thinking ? "on" : "off"}` : "";
+  const named = run.engine ? engineInfo(run.engine)?.name || run.engine : "MLX";
+  const engine = ` (${esc(named)})${thinking}`;
+  return `<section class="panel lt-run"><h2>${esc(name)}${engine}: ${esc(ended)}` +
+    `${run.stale ? ' <span class="pill warn">stale</span>' : ""}</h2>` +
+    (run.stale ? '<p class="hint">Settings, software or the model changed since this run. ' +
+      "Run it again.</p>" : "") +
+    `<div class="lt-table" role="region" tabindex="0" aria-label="${esc(name)}">` +
+    `<table class="table"><thead><tr>${heads}</tr></thead><tbody>` +
+    (run.rows.map((row) => resultRow(run, row)).join("") ||
+      '<tr><td colspan="7">No size has finished.</td></tr>') +
+    "</tbody></table></div>" +
+    `<p class="hint">Server flags: <span class="mono">${esc((run.flags || []).join(" "))}` +
+    "</span></p>" +
+    '<p class="hint">A pass is a measurement, not a guarantee.</p></section>';
+}
+
+function paintResults() {
+  const { view } = state.lt;
+  if (!view) return;
+  const [last, ...older] = [...view.results].reverse();
+  paintOutcome(last);
+  const box = $("#ltResults");
+  setHTML(box, !last ? '<p class="hint">No results for this model yet.</p>'
+    : resultRun(last) + (older.length
+      ? `<details class="lt-history"><summary>Earlier runs (${older.length})</summary>` +
+        `${older.map(resultRun).join("")}</details>` : ""));
+}
+
+function renderLoadTest(snap) {
+  const lt = state.lt;
+  const run = snap.loadtest;
+  const testing = !!run?.active;
+  const ready = state.readyModels || [];
+  // A running test is shown whatever was picked before.
+  const repo = testing ? run.repo : ready.includes(lt.repo) ? lt.repo
+    : ready.includes(run?.repo) ? run.repo : ready[0] || "";
+  const moved = repo !== lt.repo;
+  if (moved) setLoadTestModel(repo);
+  setModelPick("#ltModelSelect", ready, repo);
+  const signature = JSON.stringify([repo, snap.server?.running, snap.server?.starting,
+    snap.install?.running, (snap.downloads || []).find((d) => d.repo === repo)?.status,
+    run?.run_id, run?.status, run?.active, run?.size]);
+  const changed = signature !== lt.signature;
+  lt.signature = signature;
+  // What blocked a start may be over: it is asked for again below.
+  if (changed && lt.view) lt.view = { ...lt.view, blocked: null };
+  // The user's pick, else the saved engine of the API Server.
+  $("#ltEngine").value = testing ? run.engine || "mlx"
+    : lt.engine || snap.server?.last_engine || "mlx";
+  paintProgress(run);
+  paintLoadTestControls();
+  if (state.view === "loadtest" && (changed || (!testing && lt.view?.blocked))) loadLoadTest();
+}
+
+// The typed size: {size: null} when the field is empty.
+function typedSize() {
+  const input = $("#ltCustom");
+  const raw = input.value.trim();
+  if (raw === "" && !input.validity?.badInput) return { size: null };
+  const { min, max } = state.lt.view.sizes;
+  const size = Number(raw);
+  return Number.isInteger(size) && size >= min && size <= max && raw !== "" ? { size }
+    : { problem: `Custom size: use a whole number from ${min} to ${max}.` };
+}
+
+function keepSize(size) {
+  state.lt.extra.push(size);
+  state.lt.picked.add(size);
+  $("#ltCustom").value = "";
+  paintLoadTestControls();
+}
+
+function addCustomSize() {
+  if (!state.lt.view) return;
+  const { size, problem } = typedSize();
+  if (problem || size === null) {
+    const { min, max } = state.lt.view.sizes;
+    ltError(problem || `Custom size: use a whole number from ${min} to ${max}.`);
+    $("#ltCustom").focus();
+    return;
+  }
+  ltError("");
+  keepSize(size);
+}
+
+// No engine named means MLX.
+function ltRequest(repo, sizes) {
+  const engine = $("#ltEngine").value;
+  const request = engine && engine !== "mlx" ? { repo, sizes, engine } : { repo, sizes };
+  if (state.lt.view?.thinking?.supported) request.thinking = state.lt.thinking !== false;
+  return request;
+}
+
+async function startLoadTest() {
+  const lt = state.lt;
+  if (!lt.view || lt.sending || $("#ltStartBtn").disabled) return;
+  const typed = typedSize();
+  if (typed.problem) return ltError(typed.problem);
+  const { max } = lt.view.sizes;
+  const sizes = [...new Set([...lt.picked, ...(typed.size ? [typed.size] : [])])]
+    .filter((size) => size <= max).sort((a, b) => a - b);
+  if (!sizes.length) return ltError("Choose at least one context size.");
+  if (sizes.length > LT_MAX_SIZES) {
+    return ltError(`Choose at most ${LT_MAX_SIZES} sizes; ${sizes.length} are chosen.`);
+  }
+  const values = {};
+  for (const key of LT_NUMBERS) {
+    const { min, max: most } = lt.view.load_test[key];
+    const input = $(`#lt-${key}`);
+    const raw = input.value.trim();
+    const value = raw === "" ? null : Number(raw);
+    if (input.validity?.badInput || (value !== null &&
+      !(Number.isInteger(value) && value >= min && value <= most))) {
+      return ltError(`Run values, ${key.replace(/_/g, " ")}: use a whole number from ` +
+        `${min} to ${most}, or leave it empty.`);
+    }
+    values[key] = value;
+  }
+  if (typed.size) keepSize(typed.size);
+  ltError("");
+  lt.sending = true;
+  try {
+    await postSettings({ load_test: { ...values, last_sizes: sizes } });
+    await api("/api/loadtest/start",
+      { method: "POST", body: JSON.stringify(ltRequest(lt.repo, sizes)) });
+    lt.loaded = {};
+    toast("Load test started");
+  } catch (err) {
+    ltError(err.message);
+  }
+  lt.sending = false;
+  refreshState();
+  await loadLoadTest();
+}
+
+async function cancelLoadTest() {
+  if ($("#ltCancelBtn").getAttribute("aria-disabled") === "true") return;
+  try { await api("/api/loadtest/cancel", { method: "POST", body: "{}" }); }
+  catch (err) { toast(err.message, true); }
+  refreshState();
+}
+
+// Why the button is off, or what to do next.
+function serverReason(server, set) {
   if (server.starting) return "Starting the server…";
   if (state.serverStartError) return state.serverStartError;
-  if (!set.length) {
-    return server.running ? "Add a model, or press Stop." : "Add a model to start the server.";
-  }
-  if (state.estimateError) return `No memory estimate: ${state.estimateError}`;
-  if (refused) return estimateWords(estimate);
-  if (two) {
-    const running = live && holdsTwo(server);
-    const tokens = running ? server.context_tokens
-      : !live && estimate?.fits !== false ? estimate?.context_tokens : null;
-    if (!tokens || tokens >= FULL_CONTEXT) return "";
-    const more = !running && estimate.free_is_limit && estimate.free_bytes !== null;
-    return `Shorter context: about ${Math.floor(tokens / 1000)}K tokens per model.` +
-      (more ? " Close other apps for more." : "");
-  }
-  // One model is never refused: the server may still run it with less room.
-  if (live || estimate?.fits !== false) return "";
-  const safe = estimate.models?.[0]?.safe_context;
-  return safe >= 8192
-    ? `Shorter context: about ${kilo(safe)}K tokens.`
-    : `This model may not fit: it needs about ${gb(estimate.total_bytes)} GB and ` +
-      `the API server may use ${gb(estimate.budget_bytes)} GB.`;
+  if (set.length) return "";
+  return server.running ? "Add a model, or press Stop." : "Add a model to start the server.";
 }
 
 // A line inside the card, hidden while it has nothing to say.
@@ -688,23 +1312,14 @@ function paintServerCard() {
   const server = state.server;
   if (!server) return;
   const set = serverSet();
-  const two = set.length > 1;
+  paintBackground(); // before serverPending, which reads the box
   const pending = serverPending();
-  // The card lists exactly what the running server holds.
-  const live = !!server.running && sameSet(set, runningSet(server));
-  const estimate = state.estimate;
-  // A running pair is not called refused: its own memory is what is in use.
-  const refused = two && estimate?.fits === false && (!server.running || pending);
-  const view = { server, set, two, live, estimate, refused };
 
   const list = $("#serverModelList");
-  const drawn = setHTML(list, set.map((repo) => {
-    const context = contextWords(repo, view);
-    return `<li><span class="model-name" title="${esc(repo)}">${esc(shortName(repo))}</span>` +
-      (context ? `<span class="model-context">${context}</span>` : "") +
-      `<button class="btn btn-mini btn-ghost" type="button" data-remove="${esc(repo)}" ` +
-      `aria-label="Remove ${esc(repo)}">×</button></li>`;
-  }).join(""));
+  const drawn = setHTML(list, set.map((repo) =>
+    `<li><span class="model-name" title="${esc(repo)}">${esc(shortName(repo))}</span>` +
+    `<button class="btn btn-mini btn-ghost" type="button" data-remove="${esc(repo)}" ` +
+    `aria-label="Remove ${esc(repo)}">×</button></li>`).join(""));
   if (drawn) {
     list.querySelectorAll("[data-remove]").forEach((btn) => {
       btn.addEventListener("click", () => removeServerModel(btn.dataset.remove));
@@ -718,51 +1333,31 @@ function paintServerCard() {
   // Nothing is preselected: every pick in the list adds that model.
   $("#serverModelSelect").value = "";
   const noAdd = set.length >= MAX_SERVER_MODELS
-    ? "Two models is the maximum. Remove one to add another."
+    ? "The server serves one model. Remove it to choose another."
     : !ready.length ? "No models installed. Get one on the Download page."
       : !others.length ? "No other installed model to add." : "";
   $("#serverAddBtn").disabled = !!noAdd;
   setText($("#serverAddWhy"), noAdd);
   if (noAdd) showAddPicker(false);
 
-  const measured = live ? server.memory : null;
-  const used = measured ? measured.active_bytes : estimate?.total_bytes;
-  const allowed = measured ? measured.budget_bytes : estimate?.budget_bytes;
-  // A refusal gives its own figures; this line beside them reads as a contradiction.
-  const memory = !refused && set.length && used != null && allowed != null
-    ? `Memory: ${gb(used)} / ${gb(allowed)} GB` : "";
-  showLine("#serverMemoryLine", memory);
-  showLine("#serverMemoryHint", !memory ? "" : measured
-    ? "Memory: used now, of what the API server may use."
-    : "Memory: what this choice needs, of what the API server may use.");
-
-  const reason = serverReason(view);
+  // For another engine only a refused start is said here; engineWhy says the rest.
+  const direct = !!engineInfo()?.direct;
+  const reason = direct ? state.serverStartError : serverReason(server, set);
   showLine("#serverWhy", reason);
   // The status region is always in the page, so a screen reader hears its changes.
-  setText($("#serverStartWhy"), reason);
-
-  // A refusal is already on screen; a running server is not described as refused.
-  const details = !set.length || !estimate || (two && estimate.fits === false) ? ""
-    : two ? estimateWords(estimate)
-      : `Needs about ${gb(estimate.total_bytes)} GB with a ` +
-        `${Math.floor(estimate.context_tokens / 1000)}K-token reply; the API server may use ` +
-        `${gb(estimate.budget_bytes)} GB.`;
-  showLine("#serverEstimate", details);
-  showLine("#serverContextHint", !two || !estimate || estimate.fits === false ? "" :
-    "Safe context while both are loaded (estimate): " +
-    estimate.models.map((m) => {
-      if (m.safe_context == null) return `${shortName(m.repo)} unknown`;
-      const limit = m.safe_context === m.context_limit ? " (model limit)" : "";
-      return `${shortName(m.repo)} about ${kilo(m.safe_context)}K${limit}`;
-    }).join("; ") + ". Set your client's context window to this or lower.");
-  $("#serverPairHint").hidden = !two;
-  $("#serverDetails").hidden = !set.length && !server.running;
+  setText($("#serverStartWhy"), direct ? "" : reason);
+  paintEngine(set);
+  // The panel shows one choice: another choice needs a new look.
+  if (state.confirm && state.confirm.choice !== JSON.stringify(serverChoice(set))) {
+    closeStartConfirm();
+  }
 
   const start = $("#serverStartBtn");
   const stop = $("#serverStopBtn");
   const focused = document.activeElement;
   setText(start, server.starting ? "Starting…" : server.running ? "Apply changes" : "Start Server");
-  start.disabled = !!server.starting || !set.length || (server.running && !pending) || refused;
+  start.disabled = !!server.starting || !set.length || (server.running && !pending) ||
+    !!engineReason(set) || !!engineNeed(engineId());
   stop.hidden = !server.running && !server.starting;
   // Focus must not stay on a button that can no longer be used, nor move from Start
   // to Stop, where a second Enter would stop the server.
@@ -799,7 +1394,6 @@ function editServerSet(next) {
 
 function serverCardChanged() {
   state.serverStartError = "";
-  refreshEstimate(state.snapshot);
   paintServerCard();
   if (state.snapshot) renderToolsWarning(state.snapshot.server);
 }
@@ -830,7 +1424,7 @@ function renderToolsWarning(server) {
   const choice = serverChoice();
   const repos = server.running
     ? (server.repos?.length ? server.repos : [server.repo])
-    : [choice.repo, ...(choice.also || [])];
+    : [choice.repo];
   const without = repos.filter((repo) => support[repo] === false);
   const warn = without.length > 0;
   $("#serverToolsWarn").hidden = !warn;
@@ -1020,7 +1614,7 @@ function modelCard(repo, badge, body, actions) {
 }
 
 /* ───────────── models view ───────────── */
-function renderModelCards(models, loaded, downloads) {
+function renderModelCards(models, server, downloads) {
   const wrap = $("#modelCards");
   if (!wrap) return;
   const busy = new Set((downloads || []).filter((d) => d.status === "running").map((d) => d.repo));
@@ -1032,9 +1626,9 @@ function renderModelCards(models, loaded, downloads) {
 
   const changed = setHTML(wrap, shown.map((m) => {
     const info = catalog.get(m.repo) || {};
-    const isLoaded = loaded.repo === m.repo;
+    const served = !!server.running && (server.repos || []).includes(m.repo);
     const partial = m.complete === false;
-    const badge = isLoaded ? '<span class="card-tag ok">loaded</span>'
+    const badge = served ? '<span class="card-tag ok">served</span>'
       : partial ? '<span class="card-tag bad">incomplete</span>' : fitBadge(info.fit);
     const button = (act, label, extra = "", slot = "") =>
       `<button class="btn btn-mini ${extra}" data-act="${act}" data-repo="${esc(m.repo)}"${slot}>${label}</button>`;
@@ -1045,9 +1639,7 @@ function renderModelCards(models, loaded, downloads) {
       `${metaLine(m.size_h, info.params, info.category)}
        ${metaLine(info.use)}
        <div class="card-path" title="${esc(m.path)}">📁 ${esc(m.path)}</div>`,
-      (partial
-        ? button("download", "Resume download", "", MAIN)
-        : button(isLoaded ? "unload" : "load", isLoaded ? "Unload" : "Load", "", MAIN)) +
+      (partial ? button("download", "Resume download", "", MAIN) : "") +
         button("reveal", "Reveal") +
         copyButton(m.repo) +
         button("delete", "Delete", "btn-danger"),
@@ -1062,10 +1654,6 @@ function renderModelCards(models, loaded, downloads) {
 }
 
 async function modelAction(act, repo) {
-  if (act === "load") {
-    if (await loadModel(repo)) refreshState();
-    return;
-  }
   if (act === "delete" && !confirm(`Delete ${repo} from disk?`)) return;
   try {
     await api(`/api/${act}`, { method: "POST", body: JSON.stringify({ repo }) });
@@ -1118,8 +1706,8 @@ function offerCard(m, busy, ready) {
     `${metaLine(m.params || "params unknown", size, m.category || "category unknown")}
        ${metaLine(m.use || "use unknown")}`,
     (!running && installed
-      ? `<button class="btn btn-mini" disabled>Installed</button>
-           <button class="btn btn-mini" ${slot} data-cat-load="${esc(m.repo)}">Load</button>`
+      // aria-disabled keeps the focus the Download button had.
+      ? `<button class="btn btn-mini" ${slot} aria-disabled="true">Installed</button>`
       // aria-disabled, not disabled: a busy button must keep keyboard focus.
       : `<button class="btn btn-mini btn-primary" ${slot} data-cat-download="${esc(m.repo)}" ${disabled ? "disabled" : running ? 'aria-disabled="true"' : ""}>${label}</button>`) +
       copyButton(m.repo),
@@ -1152,13 +1740,6 @@ function renderOfferCards(wrap, rows) {
         btn.removeAttribute("aria-disabled");
         btn.textContent = "Download";
       }
-    });
-  });
-  wrap.querySelectorAll("[data-cat-load]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (!(await loadModel(btn.dataset.catLoad))) return;
-      toast("Loading model…");
-      refreshState();
     });
   });
 }
@@ -1276,16 +1857,107 @@ async function doSearch(q) {
   }
 }
 
+/* ───────────── chat model ───────────── */
+// Chat asks the running API server, so only the models it serves can be chosen.
+const CHAT_PLACEHOLDER = "Send a message…  (Enter to send, Shift+Enter for newline)";
+// status: [dot, short text, longer text, placeholder, offer the API Server page]
+const CHAT_STATUS = {
+  ready: ["dot-ok", "Ready", "", CHAT_PLACEHOLDER, false],
+  starting: ["dot-live", "Starting…",
+    "The API server is starting. You can type when it is ready.",
+    "Waiting for the API server…", false],
+  restarting: ["dot-live", "Restarting…",
+    "The API server is restarting. You can type when it is ready.",
+    "Waiting for the API server…", false],
+  stopped: ["dot-warn", "Server stopped",
+    "Start the API server first. Chat uses the models it serves.",
+    "Start the API server first…", true],
+  failed: ["dot-bad", "Model not loaded",
+    "The API server could not load its model. On the API Server page, press Stop, then Start Server.",
+    "Model not loaded: press Stop, then Start Server", true],
+};
+
+function chatStatus(server) {
+  if (server.starting) return server.running ? "restarting" : "starting";
+  if (!server.running) return "stopped";
+  if (server.load_failed) return "failed";
+  return server.ready ? "ready" : "starting";
+}
+
+function renderChat(server) {
+  const status = chatStatus(server);
+  const served = server.running ? server.repos || [] : [];
+  // The choice stays while it is still served; a server on its way does not change it.
+  const chosen = served.includes(state.chatModel) ? state.chatModel : served[0] || "";
+  if (status === "ready") state.chatModel = chosen;
+  const select = $("#chatModelSelect");
+  setHTML(select, served.length
+    ? served.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("")
+    : '<option value="">No model served</option>');
+  select.value = chosen;
+  const ready = status === "ready";
+  select.disabled = !ready;
+
+  const [dot, short, long, placeholder, offer] = CHAT_STATUS[status];
+  setHTML($("#chatState"), `<span class="dot ${dot}"></span>${short}`);
+  $("#chatGate").hidden = ready;
+  setText($("#chatGateText"), long);
+  $("#chatGoServer").hidden = !offer;
+  // Disabling keeps the typed text; the conversation is not touched.
+  const input = $("#input");
+  input.disabled = !ready;
+  input.placeholder = placeholder;
+  $("#sendBtn").disabled = !ready;
+  renderChatMode(server);
+  const became = ready && state.chatStatus !== "ready";
+  state.chatStatus = status;
+  const idle = !document.activeElement || document.activeElement === document.body;
+  if (became && idle && $("#view-chat").classList.contains("active")) input.focus();
+
+  $("#globalDot").className = `dot ${dot}`;
+  setText($("#globalStatus"), ready ? served.map(shortName).join(", ")
+    : server.running || server.starting ? short : "No model served");
+}
+
+// The mode the server reports for the chosen model; never guessed from what is saved.
+function renderChatMode(server) {
+  const perf = server?.performance;
+  $("#chatMode").hidden = !perf;
+  if (!perf) return;
+  const model = server.running ? perf.models[$("#chatModelSelect").value] : null;
+  const direct = !!server.engines?.find((e) => e.id === server.engine)?.direct;
+  // OptiQ reports no mode back: only what is saved can be said.
+  const unreported = !direct ? "not reported yet"
+    : model ? `${model.saved} (saved; not reported by OptiQ)` : "not reported by OptiQ";
+  setText($("#chatModeName"), server.running
+    ? model?.in_force || unreported : `${perf.saved} (used at the next Start)`);
+  const behind = server.settings_pending && model?.in_force && model.saved !== model.in_force;
+  setText($("#chatModeNote"), [
+    behind ? `${model.saved} is saved but not applied yet.` : "",
+    model?.note || "",
+    server.running && direct ? "In a long chat OptiQ drops older text." : "",
+  ].filter(Boolean).join(" "));
+}
+
 /* ───────────── chat ───────────── */
-function addMessage(role, text, meta) {
+function addMessage(role, text) {
   const wrap = $("#messages");
   const el = document.createElement("div");
   el.className = `msg msg-${role}`;
+  const reply = role === "assistant";
   el.innerHTML = `
-    <div class="msg-role">${role === "user" ? "You" : "Assistant"}</div>
+    <div class="msg-role">${reply ? "Assistant" : "You"}</div>
+    ${reply ? `<details class="msg-think" hidden><summary>Thinking</summary>
+      <div class="msg-think-text"></div></details>
+    <div class="msg-wait" hidden></div>` : ""}
     <div class="msg-body"></div>
-    ${meta ? `<div class="msg-meta">${esc(meta)}</div>` : ""}`;
+    ${reply ? '<div class="msg-note" hidden></div>' : ""}`;
   el.querySelector(".msg-body").textContent = text;
+  if (reply) {
+    for (const part of [".msg-think", ".msg-wait", ".msg-note"]) {
+      el.querySelector(part).hidden = true;
+    }
+  }
   wrap.appendChild(el);
   scrollChat();
   return el;
@@ -1296,11 +1968,74 @@ function scrollChat() {
   s.scrollTop = s.scrollHeight;
 }
 
+// A reply's thinking and answer. The server sends thinking apart (mlx_lm calls it
+// "reasoning"); some chat templates leave it in the text between <think> tags.
+function splitReply(reasoning, content) {
+  const text = content.trimStart();
+  if (text.startsWith("<think>")) {
+    const end = text.indexOf("</think>");
+    return {
+      thinking: reasoning + text.slice(7, end === -1 ? undefined : end),
+      answer: end === -1 ? "" : text.slice(end + 8).trimStart(),
+    };
+  }
+  // The first tokens may be the start of the tag.
+  if ("<think>".startsWith(text)) return { thinking: reasoning, answer: "" };
+  return { thinking: reasoning, answer: reasoning ? text : content };
+}
+
+function paintReply(el, { thinking, answer }) {
+  el.querySelector(".msg-think").hidden = !thinking.trim();
+  setText(el.querySelector(".msg-think-text"), thinking.trim());
+  setText(el.querySelector(".msg-body"), answer);
+}
+
+function replyNote(el, text) {
+  const note = el.querySelector(".msg-note");
+  note.hidden = !text;
+  setText(note, text);
+}
+
+// Calls onEvent(name, data) for every event of the app's reply stream.
+async function readEvents(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() || "";
+    for (const frame of frames) {
+      const evLine = frame.split("\n").find((l) => l.startsWith("event: "));
+      const dataLine = frame.split("\n").find((l) => l.startsWith("data: "));
+      if (!evLine || !dataLine) continue;
+      onEvent(evLine.slice(7).trim(), JSON.parse(dataLine.slice(6)));
+    }
+  }
+}
+
+// The small line under a reply. A figure that is not known is left out.
+function statsLine(data) {
+  const s = data.stats || {};
+  const known = (value, words) => (value === null || value === undefined ? "" : words);
+  return [
+    known(s.reply_tokens, `${s.reply_tokens} tokens`),
+    known(s.first_s, `First answer after ${s.first_s} s`),
+    known(s.tps, `Writing ${s.tps} tokens/s`),
+    known(s.prompt_tokens, `Prompt ${s.prompt_tokens} tokens`),
+    known(s.mode, `${s.mode} mode`),
+    data.stopped ? "stopped" : "",
+    data.truncated ? "length limit reached" : "",
+  ].filter(Boolean).join(" · ");
+}
+
 async function sendMessage() {
   const input = $("#input");
   const text = input.value.trim();
-  if (!text || state.streaming) return;
-  if (!state.snapshot?.loaded?.repo) { toast("Load a model first", true); return; }
+  if (!text || state.streaming || state.chatStatus !== "ready") return;
+  const repo = $("#chatModelSelect").value;
 
   input.value = "";
   input.style.height = "auto";
@@ -1315,75 +2050,112 @@ async function sendMessage() {
 
   const assistantEl = addMessage("assistant", "");
   const body = assistantEl.querySelector(".msg-body");
+  const wait = assistantEl.querySelector(".msg-wait");
   body.classList.add("cursor");
 
   state.streaming = true;
   $("#sendBtn").hidden = true;
   $("#stopBtn").hidden = false;
 
+  let reasoning = "";
+  let content = "";
+  let ended = false;
+  let stopped = false;
+  let unanswered = false;
+  // Shows what arrived. Once the reply is over nothing may stay folded away
+  // without an answer under it: then the thinking is the reply.
+  const settle = () => {
+    const parts = splitReply(reasoning, content);
+    let alone = "";
+    if (!parts.answer) {
+      alone = parts.thinking.trim();
+      parts.answer = alone || content;
+      parts.thinking = "";
+    }
+    paintReply(assistantEl, parts);
+    return { answer: parts.answer, alone: !!alone };
+  };
+  const fail = (message) => {
+    ended = true;
+    assistantEl.classList.add("msg-error");
+    if (reasoning || content) {
+      settle();
+      replyNote(assistantEl, message);
+    } else {
+      body.textContent = message;
+    }
+    toast(message, true);
+  };
+
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: apiHeaders(),
-      body: JSON.stringify({ messages: state.messages }),
+      body: JSON.stringify({ repo, messages: state.messages }),
     });
     if (!res.ok) {
+      // Refused before anything was asked: give the typed text back.
+      if (!input.value) input.value = text;
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || "chat failed");
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let full = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() || "";
-      for (const frame of frames) {
-        const evLine = frame.split("\n").find((l) => l.startsWith("event: "));
-        const dataLine = frame.split("\n").find((l) => l.startsWith("data: "));
-        if (!evLine || !dataLine) continue;
-        const ev = evLine.slice(7).trim();
-        const data = JSON.parse(dataLine.slice(6));
-        if (ev === "token") {
-          full += data;
-          body.textContent = full;
-          scrollChat();
-        } else if (ev === "done") {
-          body.classList.remove("cursor");
-          const meta = `${data.tokens} tokens · ${data.tps} tok/s · ${data.peak_gb} GB peak`;
-          const metaEl = document.createElement("div");
-          metaEl.className = "msg-meta";
-          metaEl.textContent = meta;
-          assistantEl.appendChild(metaEl);
-          if (state.messages === history) history.push({ role: "assistant", content: full });
-          replied = true;
-        } else if (ev === "error") {
-          body.classList.remove("cursor");
-          assistantEl.classList.add("msg-error");
-          body.textContent = full || data;
-          toast(data, true);
-        }
+    await readEvents(res, (ev, data) => {
+      if (ev === "status") {
+        // Once the reply has begun, a pause needs no words.
+        if (reasoning || content) return;
+        wait.hidden = false;
+        setText(wait, data.state === "prompt"
+          ? `Reading the prompt… ${data.done} of ${data.total} tokens`
+          : "Waiting for the API server… It may be answering another client or loading the model.");
+        return;
       }
-    }
+      wait.hidden = true;
+      if (ev === "token" || ev === "reasoning") {
+        if (ev === "token") content += data;
+        else reasoning += data;
+        paintReply(assistantEl, splitReply(reasoning, content));
+        scrollChat();
+      } else if (ev === "done") {
+        ended = true;
+        stopped = !!data.stopped;
+        const { answer, alone } = settle();
+        const notes = [];
+        if (alone) notes.push("No answer came after the thinking, so it is shown here.");
+        if (!answer) notes.push(stopped ? "Stopped before any reply." : "The reply was empty.");
+        replyNote(assistantEl, notes.join(" "));
+        const metaEl = document.createElement("div");
+        metaEl.className = "msg-meta";
+        metaEl.textContent = statsLine(data);
+        if (metaEl.textContent) assistantEl.appendChild(metaEl);
+        // A turn with no answer is dropped below, like a failed one: an empty reply,
+        // or thinking alone, which the model must not take for what it answered.
+        unanswered = alone;
+        if (answer && !alone) {
+          if (state.messages === history) history.push({ role: "assistant", content: answer });
+          replied = true;
+        }
+      } else if (ev === "error") {
+        fail(data);
+      }
+    });
+    if (!ended) fail("The reply was cut off.");
   } catch (err) {
-    body.classList.remove("cursor");
-    assistantEl.classList.add("msg-error");
-    body.textContent = err.message;
-    toast(err.message, true);
+    fail(err.message);
   } finally {
     // A turn without a reply would break role alternation on every later send.
     const at = state.messages.indexOf(turn);
     if (!replied && at !== -1) state.messages.splice(at, 1);
+    wait.hidden = true;
     body.classList.remove("cursor");
-    setText($("#chatAnnounce"), replied ? "Reply complete" : "Reply failed");
+    setText($("#chatAnnounce"),
+      stopped ? "Reply stopped" : replied ? "Reply complete"
+        : unanswered ? "Reply ended without an answer" : "Reply failed");
     state.streaming = false;
+    const held = document.activeElement === $("#stopBtn");
     $("#sendBtn").hidden = false;
     $("#stopBtn").hidden = true;
+    if (held) $("#input").focus();
     refreshState();
   }
 }
@@ -1484,16 +2256,149 @@ async function sendStart(body, message, keep = {}) {
   }
   // From stopped, this is now the set that Restart would try again.
   if (stopped) {
-    state.serverLast = [body.repo, ...(body.also || [])];
+    state.serverLast = [body.repo];
     state.serverLastBackground = body.background;
+    state.serverRan = { engine: body.engine || "mlx", anthropic: body.anthropic };
   }
   toast(message);
   refreshState().finally(() => { state.serverSending = false; });
 }
 
+// Start, or Apply changes, with what the API Server card shows.
+async function startFromCard() {
+  if (state.serverSending) return;
+  const set = serverSet();
+  if (!set.length) { toast("No model chosen. Press + Add model, then Start.", true); return; }
+  const background = $("#serverBackground").checked;
+  const applying = !!state.server?.running;
+  state.serverStartError = "";
+  try {
+    await sendStart({ ...serverChoice(set), background },
+      applying ? "Restarting server…"
+        : background ? "Starting in background…" : "Starting server…");
+  } catch (err) {
+    // The reason stays on the card.
+    state.serverStartError = err.message;
+    paintServerCard();
+    toast(err.message, true);
+  }
+}
+
+/* ───────────── confirm before a start ───────────── */
+const CONFIRM_KEYS = ["max_context_tokens", "server_reasoning", "prompt_cache_size",
+  "prompt_cache_bytes", "kv_bits", "server_max_reply_tokens"];
+
+function closeStartConfirm() {
+  state.confirm = null;
+  $("#startConfirm").hidden = true;
+  $("#confirmError").textContent = "";
+}
+
+// Shows what the start would use. Nothing is saved or started here.
+async function openStartConfirm() {
+  if (state.serverSending) return;
+  const set = serverSet();
+  if (!set.length) { toast("No model chosen. Press + Add model, then Start.", true); return; }
+  const choice = JSON.stringify(serverChoice(set));
+  const engine = engineId();
+  let view;
+  try {
+    view = await api(`/api/config${repoQuery(set[0])}`);
+  } catch (err) {
+    toast(`Could not read the settings: ${err.message}. Press Start again.`, true);
+    return;
+  }
+  if (choice !== JSON.stringify(serverChoice())) return;
+  const { settings = {}, performance } = view;
+  const mode = settings.performance_mode?.value;
+  const loaded = {};
+  setText($("#confirmEngine"), engineInfo(engine)?.name || (engine === "mlx" ? "MLX" : engine));
+  setText($("#confirmModel"), set[0]);
+  for (const key of CONFIRM_KEYS) {
+    const input = $(`#confirm-${key}`);
+    const entry = settings[key] || {};
+    let value = entry.value ?? "";
+    let note = entry.inherited != null ? `Empty: the All models value (${entry.inherited}).`
+      : "Empty: automatic.";
+    let off = "";
+    if (key === "kv_bits") {
+      value = mode === "save_memory" ? 8 : mode === "advanced" ? value : "";
+      note = "A change sets this model's performance mode to Advanced, or Standard when off.";
+      const why = performance?.blocked?.save_memory;
+      off = why ? `Not available for this model: ${why}.` : "";
+    } else if (key === "server_reasoning") {
+      note = "A model without a thinking switch ignores it.";
+    } else if (key === "max_context_tokens") {
+      if (engine === "mlx") off = "MLX has no context limit.";
+      else note += " Older text is dropped beyond the limit.";
+    }
+    // MLX takes no limit: a value saved for OptiQ is not shown as one.
+    loaded[key] = off && key === "max_context_tokens" ? "" : String(value);
+    input.value = loaded[key];
+    input.disabled = !!off;
+    setText($(`#confirm-${key}-note`), off || note);
+  }
+  $("#confirmBackground").checked = $("#serverBackground").checked;
+  $("#confirmError").textContent = "";
+  state.confirm = { choice, repo: set[0], loaded, settings };
+  $("#startConfirm").hidden = false;
+  $("#confirmCancelBtn").focus();
+}
+
+// Saves what was changed, then starts. A refused value starts nothing.
+async function confirmStart() {
+  const open = state.confirm;
+  if (!open || open.sending || state.serverSending) return;
+  const values = {};
+  for (const key of CONFIRM_KEYS) {
+    const input = $(`#confirm-${key}`);
+    const raw = String(input.value).trim();
+    if (input.disabled || (raw === open.loaded[key] && !input.validity?.badInput)) continue;
+    const label = $(`label[for="confirm-${key}"]`)?.textContent || key.replace(/_/g, " ");
+    const { min, max } = open.settings[key] || {};
+    const number = Number(raw);
+    if (input.validity?.badInput || (key !== "server_reasoning" && key !== "kv_bits" && raw &&
+      !(Number.isInteger(number) && number >= min && number <= max))) {
+      $("#confirmError").textContent =
+        `${label}: use a whole number from ${min} to ${max}, or leave it empty.`;
+      return;
+    }
+    if (key === "kv_bits") {
+      values.performance_mode = raw ? "advanced" : "standard";
+      if (raw) values.kv_bits = number;
+    } else {
+      values[key] = raw === "" ? null : key === "server_reasoning" ? raw : number;
+    }
+  }
+  open.sending = true;
+  try {
+    if (Object.keys(values).length) {
+      await api("/api/server/settings",
+        { method: "POST", body: JSON.stringify({ repo: open.repo, values }) });
+    }
+  } catch (err) {
+    open.sending = false;
+    $("#confirmError").textContent = `Nothing was started. ${err.message} Change it and try again.`;
+    return;
+  }
+  // Cancel or a changed card while saving: no start.
+  if (state.confirm !== open) return;
+  $("#serverBackground").checked = $("#confirmBackground").checked;
+  state.boxPick[engineId()] = $("#confirmBackground").checked;
+  closeStartConfirm();
+  // The button just pressed is gone: the focus goes back to Start, which moves it on.
+  $("#serverStartBtn").focus();
+  await startFromCard();
+}
+
+async function stopServer() {
+  try { await api("/api/server/stop", { method: "POST", body: "{}" }); refreshState(); }
+  catch (err) { toast(err.message, true); }
+}
+
 /* ───────────── wiring ───────────── */
 function wire() {
-  createPicker("#chatModelSelect");
+  wireEngines();
   createPicker("#serverModelSelect", {
     onLeave(escaped) {
       showAddPicker(false);
@@ -1501,20 +2406,17 @@ function wire() {
     },
   });
 
-  $("#loadBtn").addEventListener("click", async () => {
-    const repo = $("#chatModelSelect").value;
-    if (!repo) { toast("No model selected", true); return; }
-    if (await loadModel(repo)) refreshState();
+  $("#chatModelSelect").addEventListener("change", () => {
+    state.chatModel = $("#chatModelSelect").value;
+    renderChatMode(state.server);
   });
-  $("#loadProblemDismiss").addEventListener("click", () => {
-    showLoadProblem("");
-    // The button is gone: leave the focus on something that stays.
+  for (const key of ["performance_mode", "kv_bits"]) {
+    configField(key).addEventListener("change", paintPerformance);
+  }
+  $("#chatGoServer").addEventListener("click", () => {
+    showView("server");
+    // The button leaves the screen: keep the focus on something that stays.
     $(".nav-item.active").focus();
-  });
-
-  $("#unloadBtn").addEventListener("click", async () => {
-    try { await api("/api/unload", { method: "POST", body: "{}" }); refreshState(); }
-    catch (err) { toast(err.message, true); }
   });
 
   $("#newChatBtn").addEventListener("click", () => {
@@ -1526,7 +2428,9 @@ function wire() {
   });
 
   $("#sendBtn").addEventListener("click", sendMessage);
-  $("#stopBtn").addEventListener("click", async () => {
+  $("#stopBtn").addEventListener("click", async (e) => {
+    // Stop takes Send's place: the second click of a double click is not a Stop.
+    if (e.detail > 1) return;
     try { await api("/api/chat/stop", { method: "POST", body: "{}" }); } catch (_) {}
   });
 
@@ -1554,8 +2458,43 @@ function wire() {
     $("#serverModelSelectSearch").focus();
     pickers["#serverModelSelect"].open();
   });
+  createPicker("#configModelSelect");
+  createPicker("#ltModelSelect");
+  $("#configModelSelect").addEventListener("change",
+    (e) => chooseConfigModel(e.target.value));
+  $("#configFields").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing) return;
+    e.preventDefault();
+    return saveConfig();
+  });
+  $("#configSaveBtn").addEventListener("click", saveConfig);
+  $("#configResetBtn").addEventListener("click", resetConfig);
+  $("#configApplyBtn").addEventListener("click", startFromCard);
+  $("#ltModelSelect").addEventListener("change", (e) => {
+    setLoadTestModel(e.target.value);
+    paintLoadTestControls();
+    return loadLoadTest();
+  });
+  $("#ltSizes").addEventListener("change", (e) => {
+    const size = Number(e.target.value);
+    if (e.target.checked) state.lt.picked.add(size);
+    else state.lt.picked.delete(size);
+    ltError("");
+    paintLoadTestControls();
+  });
+  $("#ltAddBtn").addEventListener("click", addCustomSize);
+  $("#ltCustom").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    addCustomSize();
+  });
+  $("#ltStartBtn").addEventListener("click", startLoadTest);
+  $("#ltThinking").addEventListener("change", (e) => { state.lt.thinking = e.target.checked; });
+  $("#ltCancelBtn").addEventListener("click", cancelLoadTest);
+  $("#ltStopServerBtn").addEventListener("click", stopServer);
   $("#serverBackground").addEventListener("change", () => {
     if (startOnItsWay()) state.keptBox = true;
+    state.boxPick[engineId()] = $("#serverBackground").checked;
     serverCardChanged();
   });
   // The first click of a double click moves things: the second would press whatever
@@ -1569,29 +2508,13 @@ function wire() {
   $("#view-server").addEventListener("click", secondClick, true);
   $("#view-server").addEventListener("mousedown", secondClick, true);
 
-  $("#serverStartBtn").addEventListener("click", async () => {
-    if (state.serverSending) return;
-    const set = serverSet();
-    if (!set.length) { toast("No model selected", true); return; }
-    const background = $("#serverBackground").checked;
-    const applying = !!state.server?.running;
-    state.serverStartError = "";
-    try {
-      await sendStart({ ...serverChoice(set), background },
-        applying ? "Restarting server…"
-          : background ? "Starting in background…" : "Starting server…");
-    } catch (err) {
-      // The reason stays on the card; the next poll asks for the figures again.
-      state.estimateRetryAt = 0;
-      state.serverStartError = err.message;
-      paintServerCard();
-      toast(err.message, true);
-    }
+  $("#serverStartBtn").addEventListener("click", openStartConfirm);
+  $("#confirmStartBtn").addEventListener("click", confirmStart);
+  $("#confirmCancelBtn").addEventListener("click", () => {
+    closeStartConfirm();
+    $("#serverStartBtn").focus();
   });
-  $("#serverStopBtn").addEventListener("click", async () => {
-    try { await api("/api/server/stop", { method: "POST", body: "{}" }); refreshState(); }
-    catch (err) { toast(err.message, true); }
-  });
+  $("#serverStopBtn").addEventListener("click", stopServer);
   const dismissNotice = async () => {
     try { await api("/api/server/notice/clear", { method: "POST", body: "{}" }); refreshState(); }
     catch (err) { toast(err.message, true); }
@@ -1602,26 +2525,21 @@ function wire() {
     spareControl().focus();
     return dismissNotice();
   });
-  $("#serverUnguardedRestart").addEventListener("click", async () => {
-    // The model and mode that are running now, whatever the card shows.
-    const { repo, repos, background } = state.snapshot?.server || {};
-    if (!repo) return;
-    try {
-      await sendStart({
-        repo, ...(repos?.[1] ? { also: [repos[1]] } : {}), background: !!background,
-      }, "Restarting server…");
-    } catch (err) { toast(err.message, true); }
-  });
   $("#serverRestartBtn").addEventListener("click", async () => {
     // What ran last, not an unapplied choice; the card only when nothing is known.
     let set = usable(state.serverLast);
     if (!set.length) set = serverSet();
     if (!set.length) set = usable([state.snapshot?.server?.repo].filter(Boolean));
-    if (!set.length) { toast("Pick a model first", true); return; }
+    if (!set.length) { toast("No model chosen. Press + Add model, then Start.", true); return; }
     const box = $("#serverBackground").checked;
-    const background = state.serverLastBackground ?? box;
+    const ran = state.serverRan ||
+      { engine: state.server?.last_engine || "mlx", anthropic: state.server?.last_anthropic };
+    // The box may show another engine's choice: that one is not for this start.
+    const background = state.serverLastBackground ??
+      (ran.engine === engineId() ? box : backgroundFor(ran.engine));
+    const choice = serverChoice(set, ran.engine, ran.anthropic ?? true);
     try {
-      await sendStart({ ...serverChoice(set), background }, "Restarting server…",
+      await sendStart({ ...choice, background }, "Restarting server…",
         { set: !!state.serverDraft, box: box !== background });
     } catch (err) { toast(err.message, true); }
   });
@@ -1653,11 +2571,7 @@ function wire() {
     catch (err) { toast(err.message, true); }
   });
 
-  $("#installBtn").addEventListener("click", async () => {
-    const kind = state.snapshot?.versions?.mlx_missing ? "install" : "update";
-    try { await api("/api/install", { method: "POST", body: JSON.stringify({ kind }) }); toast("Install started"); refreshState(); }
-    catch (err) { toast(err.message, true); }
-  });
+  $("#installBtn").addEventListener("click", () => installEngine("mlx"));
 
   // Toggle Active Downloads section
   $("#toggleDownloads").addEventListener("click", () => setDownloadsOpen(!state.downloadsOpen));
@@ -1666,11 +2580,7 @@ function wire() {
 /* ───────────── boot ───────────── */
 (async function boot() {
   wire();
-  $("#curlExample").textContent =
-`curl http://127.0.0.1:8080/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"<model>","messages":[{"role":"user","content":"Hello!"}]}'`;
-  showView(location.hash.slice(1) || "chat");
+  showView(location.hash.slice(1) || VIEWS[0]);
   // Without a token every request is refused: say so once and ask for nothing.
   if (!API_TOKEN) return toast("This page has no session. Open MLX Studio from its app icon.", true);
   await refreshState();

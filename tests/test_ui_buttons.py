@@ -36,7 +36,7 @@ def go(tmp_path, scenario):
 
 
 MODELS = (
-    "const draw = (loaded = {}, complete = true) => render(snap({ loaded,"
+    "const draw = (complete = true) => render(snap({"
     " models: [{ repo: 'org/a&b', path: '/a', size_h: '1 KB', complete }] }));"
     " const act = (name) => find('#modelCards', '[data-act]', 'act', name);"
 )
@@ -44,18 +44,10 @@ MODELS = (
 
 @needs_node
 class TestModelCardButtons:
-    @pytest.mark.parametrize("act", ["load", "reveal", "delete"])
+    @pytest.mark.parametrize("act", ["reveal", "delete"])
     def test_button_posts_its_action_for_that_model(self, tmp_path, act):
         out = go(tmp_path, MODELS + f" draw(); await press(act('{act}')); return posts();")
         assert out == [[f"/api/{act}", {"repo": "org/a&b"}]]
-
-    def test_unload_appears_and_works_after_the_card_is_redrawn(self, tmp_path):
-        out = go(
-            tmp_path,
-            MODELS + " draw(); draw({ repo: 'org/a&b' }); await press(act('unload'));"
-            " return [!!act('load'), posts()];",
-        )
-        assert out == [False, [["/api/unload", {"repo": "org/a&b"}]]]
 
     def test_refusing_the_confirmation_deletes_nothing(self, tmp_path):
         out = go(
@@ -72,8 +64,7 @@ class TestModelCardButtons:
     def test_resume_downloads_and_opens_the_download_view(self, tmp_path):
         out = go(
             tmp_path,
-            MODELS + " draw({}, false); await press(act('download'));"
-            " return [posts(), location.hash];",
+            MODELS + " draw(false); await press(act('download')); return [posts(), location.hash];",
         )
         assert out == [[["/api/download", {"repo": "org/a&b"}]], "download"]
 
@@ -134,15 +125,6 @@ class TestOfferCardButtons:
         )
         assert out is True
 
-    def test_installed_model_loads(self, tmp_path, where):
-        out = self.offers(
-            tmp_path,
-            where,
-            " draw([{ repo: 'org/n', fit: 'good', installed: true }]); await press(ld());"
-            " return [posts(), !!dl()];",
-        )
-        assert out == [[["/api/load", {"repo": "org/n"}]], False]
-
 
 CARD = "const card = () => el('#downloadCards').children[0];"
 
@@ -192,7 +174,6 @@ class TestToolbarButtons:
     @pytest.mark.parametrize(
         ("button", "path"),
         [
-            ("#unloadBtn", "/api/unload"),
             ("#stopBtn", "/api/chat/stop"),
             ("#serverStopBtn", "/api/server/stop"),
             ("#serverNoticeDismiss", "/api/server/notice/clear"),
@@ -203,9 +184,7 @@ class TestToolbarButtons:
         out = go(tmp_path, f"await click('{button}'); return posts();")
         assert out == [[path, {}]]
 
-    @pytest.mark.parametrize(
-        "button", ["#unloadBtn", "#serverStopBtn", "#serverNoticeDismiss", "#clearLogsBtn"]
-    )
+    @pytest.mark.parametrize("button", ["#serverStopBtn", "#serverNoticeDismiss", "#clearLogsBtn"])
     def test_a_refusal_is_reported(self, tmp_path, button):
         out = go(tmp_path, f"fail = 'not now'; await click('{button}'); return toasted();")
         assert out == ["not now", "show bad"]
@@ -217,19 +196,11 @@ class TestToolbarButtons:
         )
         assert out == []
 
-    def test_load_sends_the_chosen_model(self, tmp_path):
-        out = go(
-            tmp_path,
-            "el('#chatModelSelect').value = 'org/x'; await click('#loadBtn'); return posts();",
-        )
-        assert out == [["/api/load", {"repo": "org/x"}]]
-
     @pytest.mark.parametrize(
         ("button", "message"),
         [
-            ("#loadBtn", "No model selected"),
-            ("#serverStartBtn", "No model selected"),
-            ("#serverRestartBtn", "Pick a model first"),
+            ("#serverStartBtn", "No model chosen. Press + Add model, then Start."),
+            ("#serverRestartBtn", "No model chosen. Press + Add model, then Start."),
         ],
     )
     def test_no_model_chosen(self, tmp_path, button, message):
@@ -240,10 +211,12 @@ class TestToolbarButtons:
     @pytest.mark.parametrize("background", [True, False])
     def test_server_start_sends_model_and_mode(self, tmp_path, button, background):
         flag = "true" if background else "false"
+        # Start shows the check panel first; Restart does not.
+        confirm = " await click('#confirmStartBtn');" if button == "#serverStartBtn" else ""
         out = go(
             tmp_path,
             f"state.serverDraft = ['org/x']; el('#serverBackground').checked = {flag};"
-            f" await click('{button}'); return posts();",
+            f" await click('{button}');{confirm} return posts();",
         )
         assert out == [["/api/server/start", {"repo": "org/x", "background": background}]]
 
@@ -319,7 +292,7 @@ class TestToolbarButtons:
     def test_enter_sends_and_shift_enter_does_not(self, tmp_path, shift, sent):
         out = go(
             tmp_path,
-            "state.snapshot = snap({ loaded: { repo: 'org/x' } }); el('#input').value = 'hi';"
+            "state.chatStatus = 'ready'; el('#input').value = 'hi';"
             f" el('#input').listeners.keydown({{ key: 'Enter', shiftKey: {shift},"
             " preventDefault() {} }); await tick();"
             " return paths().filter((p) => p === '/api/chat');",
@@ -332,10 +305,10 @@ class TestEveryRequestCarriesTheToken:
     def test_actions_chat_and_export(self, tmp_path):
         out = go(
             tmp_path,
-            "state.snapshot = snap({ loaded: { repo: 'org/x' } });"
-            " await click('#unloadBtn'); el('#input').value = 'hi'; await click('#sendBtn');"
+            "state.chatStatus = 'ready';"
+            " await click('#serverStopBtn'); el('#input').value = 'hi'; await click('#sendBtn');"
             " await click('#exportLogsBtn');"
             " return calls.map((c) => [c.path, c.opts.headers['X-MLX-Token']]);",
         )
-        assert {"/api/unload", "/api/chat", "/api/logs/export"} <= {path for path, _ in out}
+        assert {"/api/server/stop", "/api/chat", "/api/logs/export"} <= {path for path, _ in out}
         assert {token for _, token in out} == {"test-token"}

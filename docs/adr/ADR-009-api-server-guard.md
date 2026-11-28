@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "ADR-009 — Request guard on the API server"
-status: "Accepted"
+status: "Superseded (2.0.13, unreleased)"
 date: 2026-11-25
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -13,6 +13,9 @@ related:
 ---
 
 # ADR-009 — Request guard on the API server
+
+> **Superseded on 2026-11-28 (row 887, the owner's decision):** the request guard is removed in
+> 2.0.13, with no replacement. [What is no longer protected](../../README.md#protections-removed-in-2013).
 
 ## 1. Decision
 

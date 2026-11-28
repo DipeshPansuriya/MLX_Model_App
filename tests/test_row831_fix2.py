@@ -29,11 +29,11 @@ screen, needs_node = screen_tests.screen, screen_tests.needs_node
 HOLD = screen_tests.HOLD
 rig, ram = apply_tests.rig, apply_tests.ram
 cache_model, models = apply_tests.cache_model, apply_tests.models
-resident, run_watch, replaced = apply_tests.resident, apply_tests.run_watch, apply_tests.replaced
+ready, run_watch, replaced = apply_tests.ready, apply_tests.run_watch, apply_tests.replaced
 A, B, C = apply_tests.A, apply_tests.B, apply_tests.C
 
-ONE = "loaded({ repos: ['org/a'], resident: ['org/a'] })"
-NEW_B = "loaded({ pid: 8, repo: 'org/b', repos: ['org/b'], resident: ['org/b'] })"
+ONE = "loaded()"
+NEW_B = "loaded({ pid: 8, repo: 'org/b', repos: ['org/b'] })"
 APPLY_B = f"await show({ONE}); await drop('org/a'); await add('org/b');"
 
 
@@ -59,17 +59,11 @@ def test_the_second_click_of_a_double_click_does_nothing(tmp_path, event):
 
 # a double press on Restart ------------------------------------------------------ #
 @needs_node
-@pytest.mark.parametrize(
-    ("button", "shown"),
-    [
-        ("#serverRestartBtn", f"await show({ONE}); await show(view({{ down_notice: 'gone' }}));"),
-        ("#serverUnguardedRestart", "await show(running({ unguarded: true }));"),
-    ],
-)
-def test_a_second_press_on_restart_starts_once(tmp_path, button, shown):
+def test_a_second_press_on_restart_starts_once(tmp_path):
     out = screen(
         tmp_path,
-        HOLD + shown + f" const press2 = () => {{ $('{button}').listeners.click(); }};"
+        HOLD + f"await show({ONE}); await show(view({{ down_notice: 'gone' }}));"
+        " const press2 = () => { $('#serverRestartBtn').listeners.click(); };"
         " hold('/api/server/start'); press2(); await tick(); press2(); await tick();"
         " const during = starts(); await release(); press2(); await tick();"
         " return [during, starts()];",
@@ -79,34 +73,34 @@ def test_a_second_press_on_restart_starts_once(tmp_path, button, shown):
 
 # D3: edits made while a start is on its way ------------------------------------- #
 @needs_node
-def test_a_model_added_while_starting_stays_as_a_pending_change(tmp_path):
+def test_a_model_chosen_while_starting_stays_as_a_pending_change(tmp_path):
     out = screen(
         tmp_path,
         APPLY_B + " await press('#serverStartBtn'); await show(view({ starting: true }));"
-        f" await add('org/c'); await show({NEW_B}); await show({NEW_B});"
+        f" await drop('org/b'); await add('org/c'); await show({NEW_B}); await show({NEW_B});"
         " return [listed(), main()];",
     )
-    assert out == [["org/b", "org/c"], ["Apply changes", False]]
+    assert out == [["org/c"], ["Apply changes", False]]
 
 
 @needs_node
-def test_a_model_added_before_the_start_shows_on_screen_is_kept(tmp_path):
+def test_a_model_chosen_before_the_start_shows_on_screen_is_kept(tmp_path):
     # The click is out, but the old server is still the one drawn.
     out = screen(
         tmp_path,
         HOLD + APPLY_B + " hold('/api/server/start'); click(); await tick();"
-        f" await add('org/c'); await release(); await show({NEW_B});"
+        f" await drop('org/b'); await add('org/c'); await release(); await show({NEW_B});"
         " return [listed(), main()];",
     )
-    assert out == [["org/b", "org/c"], ["Apply changes", False]]
+    assert out == [["org/c"], ["Apply changes", False]]
 
 
 @needs_node
-def test_going_back_to_the_old_set_while_starting_is_kept(tmp_path):
+def test_going_back_to_the_old_model_while_starting_is_kept(tmp_path):
     out = screen(
         tmp_path,
         APPLY_B + " await press('#serverStartBtn');"
-        " await show(running({ repos: ['org/a'], resident: ['org/a'], starting: true }));"
+        " await show(running({ starting: true }));"
         " await drop('org/b'); await add('org/a');"
         f" await show({NEW_B}); return [listed(), main()];",
     )
@@ -118,10 +112,10 @@ def test_an_edit_that_ends_at_what_started_follows_the_server_again(tmp_path):
     out = screen(
         tmp_path,
         APPLY_B + " await press('#serverStartBtn'); await show(view({ starting: true }));"
-        f" await add('org/c'); await drop('org/c'); await show({NEW_B});"
-        " await show(loaded({ pid: 9 })); return listed();",
+        f" await drop('org/b'); await add('org/c'); await drop('org/c'); await add('org/b');"
+        f" await show({NEW_B}); await show(loaded({{ pid: 9 }})); return listed();",
     )
-    assert out == ["org/a", "org/b"]
+    assert out == ["org/a"]
 
 
 @needs_node
@@ -142,58 +136,33 @@ def test_the_next_start_replaces_the_kept_edits_again(tmp_path):
     out = screen(
         tmp_path,
         APPLY_B + " await press('#serverStartBtn'); await show(view({ starting: true }));"
-        f" await add('org/c'); await show({NEW_B}); await press('#serverStartBtn');"
-        " await show(loaded({ pid: 9, repos: ['org/a'], resident: ['org/a'] }));"
-        " return listed();",
+        f" await drop('org/b'); await add('org/c'); await show({NEW_B});"
+        " await press('#serverStartBtn'); await show(loaded({ pid: 9 })); return listed();",
     )
     assert out == ["org/a"]
 
 
-# D6: focus after Stop and Restart ------------------------------------------------ #
+# D6: focus after Restart ---------------------------------------------------------- #
 @needs_node
-def test_focus_after_stop_when_nothing_else_can_be_used(tmp_path):
-    # Two models that do not fit: Start and Add are both off.
+def test_focus_leaves_a_restart_button_that_goes_away(tmp_path):
     out = screen(
         tmp_path,
-        'estimate = { ...both, fits: false, refused: "No room." };'
-        f" await show({ONE}); await add('org/b'); $('#serverStopBtn').focus();"
-        " await show(view()); return [$('#serverStartBtn').disabled,"
-        " $('#serverAddBtn').disabled, focused()];",
-    )
-    assert out == [True, True, "#serverBackground"]
-
-
-@needs_node
-@pytest.mark.parametrize(
-    ("button", "before", "after"),
-    [
-        (
-            "#serverRestartBtn",
-            f"await show({ONE}); await show(view({{ down_notice: 'gone' }}));",
-            "view({ starting: true })",
-        ),
-        (
-            "#serverUnguardedRestart",
-            "await show(running({ repos: ['org/a'], unguarded: true }));",
-            "loaded({ pid: 9, repos: ['org/a'], resident: ['org/a'] })",
-        ),
-    ],
-)
-def test_focus_leaves_a_restart_button_that_goes_away(tmp_path, button, before, after):
-    out = screen(
-        tmp_path,
-        before + f" $('{button}').focus(); await show(current); const kept = focused();"
-        f" await show({after}); const moved = focused();"
+        f"await show({ONE}); await show(view({{ down_notice: 'gone' }}));"
+        " $('#serverRestartBtn').focus(); await show(current); const kept = focused();"
+        " await show(view({ starting: true })); const moved = focused();"
         " await document.activeElement.listeners.click?.(); await tick();"
         " return [kept, moved, sent('/api/server/stop').length];",
     )
     # While the notice is there the focus stays; then never on Start or Stop.
-    assert out == [button, "#serverAddBtn", 0]
+    kept, moved, stops = out
+    assert kept == "#serverRestartBtn" and stops == 0
+    assert moved not in ("#serverRestartBtn", "#serverStartBtn", "#serverStopBtn")
 
 
 # D7: Restart brings back what ran ------------------------------------------------ #
 CRASH = (
-    f"await show({ONE}); await add('org/b'); $('#serverBackground').checked = true;"
+    f"await show({ONE}); await drop('org/a'); await add('org/b');"
+    " $('#serverBackground').checked = true;"
     " $('#serverBackground').listeners.change();"
     " await show(view({ down_notice: 'gone' })); await press('#serverRestartBtn');"
 )
@@ -210,10 +179,10 @@ def test_the_unapplied_choice_is_still_pending_after_restart(tmp_path):
     out = screen(
         tmp_path,
         CRASH + " await show(view({ starting: true }));"
-        " await show(loaded({ pid: 9, repos: ['org/a'], resident: ['org/a'] }));"
+        " await show(loaded({ pid: 9 }));"
         " return [listed(), $('#serverBackground').checked, main()];",
     )
-    assert out == [["org/a", "org/b"], True, ["Apply changes", False]]
+    assert out == [["org/b"], True, ["Apply changes", False]]
 
 
 @needs_node
@@ -245,8 +214,9 @@ def idle(app_module, monkeypatch, ram):
     made, watched, broken = [], [], set()
 
     def popen(cmd, **kwargs):
-        if cmd[3] in broken:
-            raise OSError(f"cannot start {cmd[3]}")
+        repo = cmd[cmd.index("--model") + 1]
+        if repo in broken:
+            raise OSError(f"cannot start {repo}")
         made.append(apply_tests.Proc(6000 + len(made), cmd))
         return made[-1]
 
@@ -255,12 +225,19 @@ def idle(app_module, monkeypatch, ram):
     real_watch = app._watch_server
     monkeypatch.setattr(app, "_watch_server", lambda *args: watched.append(args))
     monkeypatch.setattr(app, "_pump_output", lambda proc: None)
+    health = {}
+    probe = app.engine_runtime
+    monkeypatch.setattr(probe, "listeners", lambda port, **k: {app.STATE.server_pid})
+    monkeypatch.setattr(probe, "listener_is", lambda port, pid, **k: True)
+    monkeypatch.setattr(probe, "health", lambda port: health.get(app.STATE.server_pid))
+    monkeypatch.setattr(probe, "warm_up", lambda *args: True)
 
     class Idle:
         pass
 
     r = Idle()
     r.app, r.made, r.watched, r.broken, r.watch = app, made, watched, broken, real_watch
+    r.health = health
     return r
 
 
@@ -281,11 +258,11 @@ class TestFirstStartFails:
 
     def test_an_unexpected_error(self, idle, monkeypatch):
         def broken(*args, **kwargs):
-            raise RuntimeError("no estimate.")
+            raise RuntimeError("no settings.")
 
-        monkeypatch.setattr(idle.app, "server_memory_estimate", broken)
-        idle.app.worker_server_start(A, False, None, [B])
-        self.check(idle.app, "no estimate")
+        monkeypatch.setattr(idle.app, "_server_command", broken)
+        idle.app.worker_server_start(A, False)
+        self.check(idle.app, "no settings")
 
     def test_stop_pressed_meanwhile_says_nothing(self, idle, monkeypatch):
         def popen(cmd, **kwargs):
@@ -296,10 +273,11 @@ class TestFirstStartFails:
         idle.app.worker_server_start(A, False)
         assert server(idle.app)["down_notice"] is None
 
-    def test_a_refusal_keeps_its_own_words(self, idle, free_memory):
-        free_memory.bytes = 0
-        idle.app.worker_server_start(A, False, None, [B])
-        assert server(idle.app)["down_notice"].startswith("Not enough")
+    def test_a_refusal_keeps_its_own_words(self, idle):
+        idle.app.worker_server_start(A, False, None, "splash")
+        words = server(idle.app)["down_notice"]
+        assert words.startswith("The API server did not start: ")
+        assert "security review pending" in words and idle.made == []
 
 
 # the last set that started -------------------------------------------------------- #
@@ -331,7 +309,7 @@ class TestRemembered:
             monkeypatch,
             [
                 look,
-                lambda: resident(idle, proc, resident=[A]),
+                lambda: idle.health.update({proc.pid: 200}),
                 look,
                 exits(proc),
             ],
@@ -339,41 +317,11 @@ class TestRemembered:
         assert seen == [[], [A]]
         assert remembered(idle.app) == [A], "a crash does not forget it"
 
-    def test_a_pair_only_after_both_were_tried(self, idle, monkeypatch):
-        idle.app.worker_server_start(A, True, None, [B])
-        proc, seen = idle.made[-1], []
-        look = lambda: seen.append(remembered(idle.app))  # noqa: E731
-        watch(
-            idle,
-            monkeypatch,
-            [
-                lambda: resident(idle, proc, resident=[A]),
-                look,
-                lambda: resident(idle, proc, resident=[A, B], preload_done=True),
-                look,
-                exits(proc),
-            ],
-        )
-        assert seen == [[], [A, B]]
-
-    def test_a_failed_load_is_not_remembered_even_if_it_loads_something_later(
-        self, idle, monkeypatch
-    ):
+    def test_a_failed_load_is_stopped_and_not_remembered(self, idle, monkeypatch):
         idle.app.worker_server_start(A, True)
         proc = idle.made[-1]
-        failed = [{"event": "load-failed", "model": A}]
-        watch(
-            idle,
-            monkeypatch,
-            [
-                lambda: resident(idle, proc, resident=[], events=failed),
-                lambda: None,
-                lambda: resident(idle, proc, resident=[B]),
-                lambda: None,
-                exits(proc),
-            ],
-        )
-        assert remembered(idle.app) == []
+        watch(idle, monkeypatch, [lambda: idle.health.update({proc.pid: 503})])
+        assert proc.returncode is not None and remembered(idle.app) == []
 
     def test_a_start_that_fails_is_not_remembered(self, idle):
         idle.broken.add(A)
@@ -385,23 +333,19 @@ class TestRemembered:
             proc, args = replaced(rig, repo)
             run_watch(rig, monkeypatch, args, [lambda: report(proc), exits(proc)])
 
-        apply(B, lambda proc: resident(rig, proc, resident=[B]))
+        apply(B, lambda proc: rig.health.update({proc.pid: 200}))
         assert remembered(rig.app) == [B]
         rig.app.worker_server_start(A, True)
         rig.watched.clear()
-        apply(C, lambda proc: resident(rig, proc, resident=[], preload_done=True))
+        apply(C, lambda proc: None)  # it exits before it answers
         assert models(rig.made[-1]) == [A], "the old set came back"
         assert remembered(rig.app) == [B], "neither C nor the unready restore"
 
     def test_it_survives_an_app_restart_and_starts_nothing(self, idle, monkeypatch):
         app = idle.app
-        app.worker_server_start(A, False, None, [B])
+        app.worker_server_start(A, False)
         proc = idle.made[-1]
-        watch(
-            idle,
-            monkeypatch,
-            [lambda: resident(idle, proc, resident=[A, B], preload_done=True), exits(proc)],
-        )
+        watch(idle, monkeypatch, [lambda: idle.health.update({proc.pid: 200}), exits(proc)])
         app.stop_server()
         spec = importlib.util.spec_from_file_location("mlxapp_again", ROOT / "app.py")
         again = importlib.util.module_from_spec(spec)
@@ -409,7 +353,7 @@ class TestRemembered:
         count = len(idle.made)
         again.restore_server_state()
         assert again.APP_DIR == app.APP_DIR
-        assert remembered(again) == [A, B]
+        assert remembered(again) == [A]
         assert server(again)["running"] is False and server(again)["starting"] is False
         assert len(idle.made) == count
         kept = list(app.APP_DIR.glob("server.last*"))
@@ -423,34 +367,34 @@ class TestRemembered:
         (idle.app.APP_DIR / "server.last.json").write_text(text, "utf-8")
         assert remembered(idle.app) == []
 
-    def test_never_more_than_two(self, idle):
+    def test_never_more_than_one(self, idle):
         (idle.app.APP_DIR / "server.last.json").write_text(
             json.dumps({"repos": [A, B, C]}), "utf-8"
         )
-        assert remembered(idle.app) == [A, B]
+        assert remembered(idle.app) == [A]
 
 
 # the card after the app opens ------------------------------------------------------ #
 @needs_node
-def test_the_last_set_is_already_chosen_and_one_click_starts_it(tmp_path):
+def test_the_last_model_is_already_chosen_and_one_click_starts_it(tmp_path):
     out = screen(
         tmp_path,
-        "await show(view({ last_models: ['org/a', 'org/b'] }));"
+        "await show(view({ last_models: ['org/b'] }));"
         " const seen = [listed(), main(), sent('/api/server/start').length];"
         " await press('#serverStartBtn'); return [...seen, sent('/api/server/start')];",
     )
     assert out == [
-        ["org/a", "org/b"],
+        ["org/b"],
         ["Start Server", False],
         0,
-        [{"repo": "org/a", "also": ["org/b"], "background": False}],
+        [{"repo": "org/b", "background": False}],
     ]
 
 
 @needs_node
 @pytest.mark.parametrize(
     ("last", "listed"),
-    [("['org/c', 'org/a']", ["org/a"]), ("['org/gone']", []), ("[]", [])],
+    [("['org/c', 'org/a']", ["org/a"]), ("['org/c']", []), ("['org/gone']", []), ("[]", [])],
 )
 def test_a_remembered_model_that_cannot_be_used_is_skipped(tmp_path, last, listed):
     out = screen(
@@ -468,7 +412,7 @@ def test_a_running_server_shows_what_really_runs(tmp_path):
         tmp_path,
         "await show(loaded({ last_models: ['org/c'] })); return listed();",
     )
-    assert out == ["org/a", "org/b"]
+    assert out == ["org/a"]
 
 
 @needs_node
@@ -479,14 +423,3 @@ def test_removed_models_do_not_come_back(tmp_path):
         " await drop('org/a'); await show(last); return [listed(), main()];",
     )
     assert out == [[], ["Start Server", True]]
-
-
-@needs_node
-def test_a_remembered_large_model_is_warned_but_can_start(tmp_path):
-    out = screen(
-        tmp_path,
-        "single.fits = false; single.total_bytes = 21e9; single.models[0].safe_context = 0;"
-        " await show(view({ last_models: ['org/a'] })); await show(current);"
-        " return [why(), main()];",
-    )
-    assert out[0].startswith("This model may not fit") and out[1] == ["Start Server", False]

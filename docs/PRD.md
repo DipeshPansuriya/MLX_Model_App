@@ -15,11 +15,33 @@ related:
 
 # Product requirements — MLX Studio
 
+> **2.0.13 (unreleased) supersedes parts of this file.** `mlx_guard.py` and the 80%
+> memory rule are removed: MLX is `mlx_lm`'s own server with one model, no memory or
+> prompt limit and no request checks beyond `--allowed-origins`. Text, figures and
+> diagrams about the guard, memory limits or two models apply to 2.0.12 and earlier.
+> [What is no longer protected](../README.md#protections-removed-in-2013).
+
 > **Provenance.** This PRD was written *after* the 2.0.0 implementation, from the
 > shipped source and the release verification run. It therefore records what the
 > product does and what "done" means, rather than specifying a product that was
 > then built. Where a requirement is aspirational it is marked **Design** or
 > **Open** and listed in §9. Nothing here claims a customer sign-off.
+
+> 2.0.13 source (unreleased): F5, F7 and F8 (load, unload, loaded-model delete
+> guard) are replaced. Chat uses the models the running API server serves
+> ([ADR-011](adr/ADR-011-chat-through-the-api-server.md)). The text below that
+> mentions **Load** or **Unload** describes released builds.
+
+> 2.0.13 source (unreleased) also adds:
+>
+> | ID | Requirement | Accepted when |
+> |---|---|---|
+> | C1 | Settings for all models or one, on their own page | Each field shows the effective value; Save stores only changes; Reset clears one entry; invalid values are named and not sent; a lowered context is said |
+> | L1 | Load test of one model at chosen sizes | Offered and typed sizes; refused while the API server runs; progress and Cancel; no chosen size built in |
+> | L2 | Memory safety, shown plainly | Skip over the gate, kill at the kill line, larger sizes not run; the page says 80% cannot be guaranteed |
+> | L3 | Results that can be used | Size, speeds, first-token time, peak memory, settings; earlier runs; Apply only on passed, current rows |
+>
+> Verified with fakes only; no real model.
 
 ## 1. Purpose and premise
 
@@ -89,7 +111,7 @@ person, one Mac, one process.
 | ID | Requirement | Acceptance |
 |---|---|---|
 | F1 | Launch into a native window, not a terminal | A 1360×900 window opens; `pywebview` present. Fallback: default browser at the same URL |
-| F2 | Six destinations reachable without a reload | Chat, Models, Download, API Server, Activity, Setup switch instantly; the URL hash tracks the active view and browser Back works |
+| F2 | Eight destinations reachable without a reload (six in released builds) | API Server, Chat, Models, Download, Configuration, Load Test, Activity, Setup switch instantly (2.0.13 order; the app opens on API Server); the URL hash tracks the active view and browser Back works |
 | F3 | Report the app version | Sidebar shows `v2.0.0`; Setup shows version, latest release and channel |
 | F4 | Report hardware | Sidebar and Setup show chip and unified memory, e.g. `Apple M6 · 32 GB` |
 

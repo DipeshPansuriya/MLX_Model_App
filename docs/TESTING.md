@@ -14,6 +14,12 @@ related:
 
 # Testing — MLX Studio
 
+> **2.0.13 (unreleased) supersedes parts of this file.** `mlx_guard.py` and the 80%
+> memory rule are removed: MLX is `mlx_lm`'s own server with one model, no memory or
+> prompt limit and no request checks beyond `--allowed-origins`. Text, figures and
+> diagrams about the guard, memory limits or two models apply to 2.0.12 and earlier.
+> [What is no longer protected](../README.md#protections-removed-in-2013).
+
 ## 1. Approach
 
 | Layer | Method |
@@ -89,7 +95,18 @@ its latest reported full run had 1059 tests, all passed.
 | `test_row652_icon.py` | Bundle name and icon at start, with stubbed AppKit (unreleased) |
 | `test_row656_guard.py`, `test_row656_app.py`, `test_row656_ui.py` | Two models: admission, cache trim before eviction, start and estimate routes, pickers and notices; fake loader, no real model (unreleased) |
 | `test_row713_fixes.py` | Two-model review and security fixes: Chat load refusal, budget file, cache byte limit, notices, browser fallback; stand-in models (unreleased) |
-| `test_row731_fixes.py` | Budget file safety, `/api/load` installed check, load-failure panel, screen-reader markup, budget on server adoption (unreleased) |
+| `test_row731_fixes.py` | Budget file reading safety, load-failure panel, screen-reader markup (unreleased) |
+| `test_row837_chat.py`, `test_row837_ui.py` | Chat through the API server against a fake upstream; row 835 descriptor leak |
+| `portguard.py`, `test_portguard.py` | The suite cannot bind or connect to 8765/8080 or start the real app or server; a refused try or a child left running fails the run |
+| `test_row838_prompt_limit.py` | Prompt limit with the installed mlx_lm handler and a fake tokenizer; the one-model floor and the 80% of RAM ceiling |
+| `test_prerelease_2013.py` | 80% rule with other apps, refusal words, reply and cache caps, load test limit and port owner, Chat proxy, browser defects |
+| `test_row844_docs.py` | The architecture and diagram pages do not describe a model in the app process |
+| `test_row838_settings.py` | `settings.json`: reading, saving, each key's effect and the memory warning |
+| `test_row848_config.py`, `test_row848_loadtest.py` | Load test backend with a fake server and probe: gate, kill triggers, no orphans, routes, config block, context clamp |
+| `test_row848_ui.py` | Configuration and Load Test pages: fields, validation, clamp message, start, cancel, progress, quiet polls, results, stale, apply (node, stub DOM) |
+| `test_row853_850.py` | MLX cache limit key (flag, per-model map, guard apply and restore with a fake `mx`, load test) and the one-model formula: measured points, other apps' memory, refusal below 4096, app estimate (fake probe) |
+| `test_row_perfmode.py` | Performance mode: settings, flags, per-model guard apply and fallback (fake `mlx_lm`), a source check of the installed `mlx_lm.server`, reply stats |
+| `test_row_perfmode_ui.py` | Configuration choice and Advanced fields, Chat mode header and stats line, under node |
 | `test_row760_limits.py` | Two-model limits: free bytes, context tokens, guard budget, estimate, start, Chat load, `memory_low`, UI words; fake `vm_stat` (unreleased) |
 | `test_row815_preload.py` | `preload_done` however preload ends; context shown whatever the last status event was; no `memory_low` before preload ends; guard-to-app check (unreleased) |
 | `test_row817_review.py` | Pre-release review fixes: running-pair estimate, restart body, status refresh hook, words for oversize, cache hint, memory line; fake request loop (unreleased) |
@@ -116,7 +133,7 @@ Other jobs are listed in [DEPLOYMENT.md](DEPLOYMENT.md) §8.
 | Check | Pass means |
 |---|---|
 | Install the built `.pkg`, launch | `curl -s http://127.0.0.1:8765/api/ping` shows the new version; one app entry in the Dock |
-| Load a model, chat, stop, unload | Tokens stream; stop works |
+| Start the API server, chat, stop | Tokens stream; stop works |
 | Download and cancel a model | Progress shows; cancel leaves it not installed |
 | Start the API server, send a request | Reply from `/v1/chat/completions` |
 | Send a `text/plain` POST to port 8080 | 415 |
@@ -128,6 +145,12 @@ Other jobs are listed in [DEPLOYMENT.md](DEPLOYMENT.md) §8.
 
 | Date | Result | Limit |
 |---|---|---|
+| 2026-11-28 | 2.0.13 pre-release source (background default per engine, open-server warnings, version 2.0.13): full suite 1747 passed, 0 failed, 0 skipped, all 59 test files in 4 groups, temporary `HOME`; `ruff check`, format check, `node --check`, `git diff --check`, `check_docs.py`, `check_secrets.py`, `security_audit.sh --quick` and the release manifest check clean | Fakes only. This change was not viewed in a browser. The real-model check of 2026-11-28 ran on commit `5630379`, before it |
+| 2026-11-28 | 2.0.13 source with the QA fixes, Load Test sizes up to 1M and the Thinking switch (unreleased): full suite 2536 passed, 0 failed, 0 skipped (7:06), temporary `HOME`; `ruff check`, format check, `node --check`, `git diff --check` and `check_docs.py` clean | Fakes only. No real model or engine start; not viewed in a browser |
+| 2026-11-28 | 2.0.13 source with the MLX cache limit setting and the corrected one-model memory formula (unreleased): full suite 2169 passed, 0 failed, 0 skipped (6:10), temporary `HOME`; `ruff check`, format check, `node --check`, `git diff --check` and `check_docs.py` clean | No real model loaded. The formula is fitted to earlier measurements of one model on one Mac and was not re-measured; the cache limit's effect is not measured |
+| 2026-11-28 | 2.0.13 source with the Configuration and Load Test pages (unreleased): full suite 2089 passed, 0 failed, 0 skipped (6:00), temporary `HOME`; `ruff check`, format check, `node --check`, `git diff --check` and `check_docs.py` clean. Screens viewed in a browser with fake models and a fake runner | No real model; no VoiceOver pass; the app window itself not opened |
+| 2026-11-27 | 2.0.13 source with the review fixes (unreleased): **full suite not run**; 14 related test files 766 passed, 0 skipped; `ruff check`, format check, `node --check`, `git diff --check` and `check_docs.py` clean | Reported by the fix run, temporary `HOME`. A real-model benchmark held its test port for the whole 40-minute wait. No real model loaded; not viewed in a browser |
+| 2026-11-27 | 2.0.13 source with user settings, global and per model (unreleased): full suite 1889 passed, 0 failed, 0 skipped (5:25); `ruff check`, format check, `node --check`, `git diff --check` and `check_docs.py` clean | Temporary `HOME`. No real model loaded; the card not viewed in a browser |
 | 2026-11-27 | 2.0.12 source with the Restart and `server.last.json` fixes: 1705 passed, 0 skipped; `ruff check`, format check, `node --check`, `git diff --check` and `check_docs.py` clean. These fixes were not viewed in a browser by the fix run | Reported by the fix run, temporary `HOME` |
 | 2026-11-27 | 2.0.12 source with the browser-test fixes and the remembered model set: 1687 passed, 0 skipped; `ruff check`, format check, `node --check`, `git diff --check` and `check_docs.py` clean. Checked in headless Chrome with fake models and a fake server process; the app window and VoiceOver were not checked | Reported by the fix run, temporary `HOME` |
 | 2026-11-27 | 2.0.12 source with the review fixes: 1645 passed, 0 skipped; `ruff check`, format check, `node --check`, `git diff --check` and `check_docs.py` clean. These fixes were not viewed in a browser | Reported by the fix run, temporary `HOME` |
