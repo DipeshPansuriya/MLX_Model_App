@@ -158,8 +158,8 @@ LOADTEST_WAIT_SECONDS = 40  # longer than the runner waits for its server
 MODEL_SETTINGS = tuple(SETTINGS)
 SETTINGS_MAX_BYTES = 64 * 1024
 SETTINGS_LOCK = threading.Lock()
-# How long a server that replaced another may take to report ready before it counts
-# as started; until then a failure brings the replaced one back.
+# How long a server may take to report ready. After it the app stops the server, and
+# a server that this one replaced is started again.
 START_WATCH_SECONDS = 600
 # Versions verified for this release (mirrors requirements.txt).
 PINNED_PACKAGES = {"mlx": "0.32.4", "mlx-lm": "0.32.2", "huggingface-hub": "2.4.0"}

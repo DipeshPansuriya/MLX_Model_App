@@ -6,6 +6,7 @@ No process is started and no model is loaded: Popen is a stand-in.
 from __future__ import annotations
 
 import importlib.util
+import signal
 from pathlib import Path
 
 import pytest
@@ -216,6 +217,45 @@ class TestFailsAfterTheStart:
         run_watch(rig, monkeypatch, args, [lambda: now.__setitem__(0, late)])
         assert proc.returncode == -15 and rig.app.STATE.server_repos == [A]
         assert "did not answer in time" in rig.app.STATE.server_apply_notice
+
+    def late(self, rig, monkeypatch):
+        """The clock, and the step that moves it past the start watch."""
+        now = [0.0]
+        monkeypatch.setattr(rig.app.time, "monotonic", lambda: now[0])
+        later = rig.app.START_WATCH_SECONDS + 100.0
+        return lambda: now.__setitem__(0, later)
+
+    def test_a_first_start_that_never_answers_is_stopped(self, rig, monkeypatch):
+        rig.app.stop_server()
+        proc, args = replaced(rig)
+        run_watch(rig, monkeypatch, args, [self.late(rig, monkeypatch)])
+        s = rig.app.STATE
+        assert proc.returncode == -15 and s.server_pid is None and len(rig.made) == 2
+        assert "did not answer in time" in s.server_down_notice
+
+    def test_one_that_is_ready_is_left_running_after_the_watch(self, rig, monkeypatch):
+        proc, args = replaced(rig)
+        steps = [
+            lambda: rig.health.update({proc.pid: 200}),
+            self.late(rig, monkeypatch),
+            lambda: None,
+            lambda: setattr(proc, "returncode", 1),
+        ]
+        run_watch(rig, monkeypatch, args, steps)
+        assert proc.returncode == 1  # it exited by itself; the app did not stop it
+        assert "did not answer" not in rig.app.STATE.server_down_notice
+
+    def test_an_adopted_one_whose_port_cannot_be_read_is_stopped(self, rig, monkeypatch):
+        app, killed = rig.app, []
+        proc, args = replaced(rig)
+        app.STATE.server_proc, app.STATE.server_fallback = None, None
+        monkeypatch.setattr(app.engine_runtime, "listener_is", lambda *a, **k: False)
+        monkeypatch.setattr(app, "_pid_alive", lambda pid: not killed)
+        monkeypatch.setattr(app, "_still_our_server", lambda *a: True)
+        monkeypatch.setattr(app.os, "kill", lambda pid, number: killed.append((pid, number)))
+        run_watch(rig, monkeypatch, (proc.pid, args[1], None), [self.late(rig, monkeypatch)])
+        assert killed == [(proc.pid, signal.SIGKILL)]
+        assert "did not answer in time" in app.STATE.server_down_notice
 
     def test_stop_meanwhile_keeps_it_stopped(self, rig, monkeypatch):
         proc, args = replaced(rig)

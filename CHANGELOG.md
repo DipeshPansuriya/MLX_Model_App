@@ -33,6 +33,12 @@ clean offline server environment, process cleanup, key hiding. The Load Test sti
 stops on critical memory pressure, swap growth over 0.5 GB, unreadable memory or a
 sampling gap over 1 second. Clients should send the model name `default_model`.
 
+### Changed
+
+- An MLX server that is not ready after 600 seconds is now **stopped** and the replaced
+  one is started again (the rule OptiQ has); earlier builds left it running. This also
+  covers a server kept from an earlier run whose port owner cannot be read.
+
 ### Added
 
 - **Engines** ([docs/ENGINES.md](docs/ENGINES.md)): the API Server and Load Test can use

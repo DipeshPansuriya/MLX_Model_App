@@ -44,6 +44,14 @@ and the load test. Changes made after that commit are checked with fakes only.
   back, so the saved one is shown as "not reported by OptiQ".
 - If the start fails, the previous server is started again with its own engine.
 
+**Start watch, both engines.** A server that has not reported ready within 600 seconds
+is stopped, and the one it replaced is started again. Ready means that only the
+server's own process listens on its port and also: for MLX started by this run of the
+app, `/health` says 200 and one first request is answered; for OptiQ, the key check
+passes and one first request is answered. `/health` 503, a failed first request or an
+answer without the key stops it at once. A server kept from an earlier run is stopped
+too when its port owner cannot be read for 600 seconds.
+
 ## Client settings
 
 | Client | Base URL | Model | Key |

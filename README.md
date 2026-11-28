@@ -440,7 +440,8 @@ proven and is not recommended here.
 | **Restart** | After the server stops unexpectedly or cannot start: starts the model and mode that last ran, not an unapplied choice |
 | **Start Server** | Off, with the reason shown, when no model is chosen or the engine cannot serve it |
 | **Apply changes** | On a running server, enabled when the model, engine, **Background** or saved server settings differ. It restarts the server, so **a reply in progress is interrupted** |
-| Failed Apply | If the new server cannot be started or cannot load its model before it is ready, the previous model is started again once and **Changes not applied** says why |
+| Failed Apply | If the new server cannot be started, cannot load its model or is not ready in time, the previous model is started again once and **Changes not applied** says why |
+| Not ready in 600 seconds | MLX and OptiQ: the app **stops** a server that has not reported ready within 600 seconds, and starts the replaced one again. A very large model on a slow disk can hit this. The same applies to a server kept from an earlier run of the app, also when it cannot be checked who holds its port |
 | **Stop** | Stops the server, also while it is starting, and forgets the fallback |
 
 ## Model sizing
