@@ -60,7 +60,7 @@ def test_restart_after_a_crash_sends_the_model_that_was_running(tmp_path):
         'await show(running()); await show(view({ down_notice: "gone" }));'
         ' await $("#serverRestartBtn").listeners.click(); return sent("/api/server/start");',
     )
-    assert out == [{"repo": "org/a", "background": True}]
+    assert out == [{"repo": "org/a", "background": False}]
 
 
 @needs_node
