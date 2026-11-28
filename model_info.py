@@ -6,8 +6,11 @@ Read by MLX Studio for its screens and the Load Test. Nothing here runs in the s
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
+# A Hub model id: never an option, a path or a second slash.
+REPO_ID = re.compile(r"(?:[A-Za-z0-9_][\w.-]*/)?[A-Za-z0-9_][\w.-]*", re.ASCII)
 # Their mlx_lm cache is a sliding window, which cannot be compressed.
 SLIDING_MODELS = ("gemma3", "gemma3_text", "gemma3n", "gemma4", "gemma4_text", "gpt_oss")
 SLIDING_WORDS = "it keeps a sliding window of its memory, which mlx_lm cannot compress"

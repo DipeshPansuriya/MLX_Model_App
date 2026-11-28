@@ -1617,9 +1617,6 @@ def _server_pidfile() -> Path:
     return APP_DIR / "server.pid"
 
 
-GUARD_IMPORT_LOCK = threading.Lock()
-
-
 def _snapshot_dir(repo: str) -> Path:
     """The cached snapshot to measure for ``repo``, even while it is downloaded again."""
     # repo may come from a request: it is only compared with listed names, never joined.

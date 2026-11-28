@@ -2,6 +2,8 @@
 
 import sys
 import threading
+import urllib.error
+import urllib.request
 
 import pytest
 from test_app_robustness import make_model
@@ -137,3 +139,40 @@ class TestLoadTest:
         assert record["flags"][:2] == ["--max-tokens", "8192"]
         # No percentage limit exists, so none is recorded or shown.
         assert not {"limit_percent", "margin_percent"} & {*record, *record["values"]}
+
+
+# repo names are checked without the removed guard module ----------------------- #
+@pytest.mark.parametrize(
+    ("repo", "valid"),
+    [
+        ("org/name", True),
+        ("name", True),
+        ("org/Qwen3.5-4B_4bit", True),
+        ("--model", False),
+        ("-x/y", False),
+        ("../x", False),
+        ("org/../x", False),
+        ("a/b/c", False),
+        ("/etc/passwd", False),
+        ("org/name ", False),
+        ("org/näme", False),
+        ("o/" + "n" * 300, False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_a_repo_name_is_checked(app_module, repo, valid):
+    assert app_module._valid_repo(repo) is valid
+
+
+@pytest.mark.parametrize(
+    ("path", "status"),
+    [("/api/engines?repo=org/name", 200), ("/api/engines?repo=--x", 400)],
+)
+def test_the_engines_route_answers(app_module, base_url, path, status):
+    try:
+        with urllib.request.urlopen(base_url + path, timeout=10) as reply:
+            got = reply.status
+    except urllib.error.HTTPError as error:
+        got = error.code
+    assert got == status
