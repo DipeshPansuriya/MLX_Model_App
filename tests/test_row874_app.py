@@ -74,7 +74,7 @@ class Rig:
         return proc
 
     def start(self, engine="optiq", background=False, repo=REPO):
-        self.app.worker_server_start(repo, background, None, None, engine)
+        self.app.worker_server_start(repo, background, None, engine)
         return self.started[-1] if self.started else None
 
     def ready(self):
@@ -106,26 +106,15 @@ def _post(base_url, path, body, headers=None):
         return error.code, json.load(error)
 
 
-# ---- MLX is what it was --------------------------------------------------------
-def test_the_mlx_command_is_the_one_of_c7c3e9c(app_module):
-    app = app_module
-    settings = dict.fromkeys(app.SETTINGS)
-    command = app._server_command(REPO, settings, 8123)
-    assert command == [
-        app.sys.executable, str(app.GUARD_SCRIPT), "--model", REPO,
-        "--host", "127.0.0.1", "--port", "8123", "--max-tokens", "8192",
-        "--allowed-origins", "http://127.0.0.1:8765,http://localhost:8765",
-        "--prompt-cache-size", str(app._guard_module().CACHED_CONVERSATIONS),
-    ]  # fmt: skip
-
-
-def test_an_mlx_start_is_unchanged_and_gets_no_secret(rig):
+# ---- MLX: mlx_lm's own server ----------------------------------------------------
+def test_an_mlx_start_runs_mlx_lm_and_gets_no_secret(rig):
     proc = rig.start("mlx")
-    assert proc.args[1] == str(rig.app.GUARD_SCRIPT)
+    assert proc.args[1:4] == ["-m", "mlx_lm", "server"]
     env = proc.kwargs["env"]
     assert "inherited-value" not in env.values() and not set(SECRETS) & set(env)
-    assert env["HOME"] and env["HF_HUB_OFFLINE"] == "1" and "MLX_STUDIO_SETTINGS" in env
-    assert "cwd" not in proc.kwargs
+    assert env["HOME"] and env["HF_HUB_OFFLINE"] == "1"
+    assert not [name for name in env if name.startswith("MLX_STUDIO")]
+    assert proc.kwargs["cwd"] == str(rig.app.APP_DIR)
     state = rig.app.STATE.snapshot()["server"]
     assert (state["engine"], state["port"]) == ("mlx", 8080)
     saved = json.loads(rig.app._server_pidfile().read_text())
@@ -150,11 +139,11 @@ def test_optiq_starts_its_own_command_on_the_same_port_setting(rig):
     assert rig.key() not in " ".join(proc.args)
     server = app.STATE.snapshot()["server"]
     assert server["engine"] == "optiq" and server["endpoint"] == f"http://127.0.0.1:{PORT}/v1"
-    assert server["ready"] is False and server["unguarded"] is False
+    assert server["ready"] is False
 
 
 def test_the_anthropic_switch_reaches_the_command(rig):
-    rig.app.worker_server_start(REPO, False, None, None, "optiq", False)
+    rig.app.worker_server_start(REPO, False, None, "optiq", False)
     assert "--no-anthropic" in rig.started[-1].args
 
 
@@ -250,13 +239,13 @@ def test_the_watcher_restores_the_previous_engine(app_module, monkeypatch):
     assert previous == ([REPO], False)
     watch(proc.pid, REPO, proc, previous, app_module.STATE.server_stops)
     assert proc.returncode is not None
-    assert rig.started[-1].args[1] == str(app_module.GUARD_SCRIPT)
+    assert rig.started[-1].args[1:4] == ["-m", "mlx_lm", "server"]
     assert "without the key" in app_module.STATE.server_apply_notice
 
 
 def _mlx_ready(app):
     real = app._start_verdict
-    return lambda pid, models: "ready" if app.STATE.server_engine == "mlx" else real(pid, models)
+    return lambda pid: "ready" if app.STATE.server_engine == "mlx" else real(pid)
 
 
 def test_going_back_restores_optiq_with_its_engine(rig):
@@ -270,7 +259,7 @@ def test_going_back_restores_optiq_with_its_engine(rig):
 
 
 # ---- identity and restore -------------------------------------------------------
-def test_a_background_optiq_server_is_adopted_and_not_called_unguarded(rig, monkeypatch):
+def test_a_background_optiq_server_is_adopted(rig, monkeypatch):
     proc = rig.start(background=True)
     app = rig.app
     saved = json.loads(app._server_pidfile().read_text())
@@ -282,7 +271,7 @@ def test_a_background_optiq_server_is_adopted_and_not_called_unguarded(rig, monk
     app.STATE.server_engine = "mlx"
     app.restore_server_state()
     assert (app.STATE.server_pid, app.STATE.server_engine) == (proc.pid, "optiq")
-    assert app.STATE.server_port == PORT and app.STATE.server_unguarded is False
+    assert app.STATE.server_port == PORT
 
 
 # ---- Chat and the key button ------------------------------------------------------
@@ -319,7 +308,7 @@ def test_a_planned_or_unknown_engine_never_starts(rig, base_url, name, path):
 
 @pytest.mark.parametrize("name", ["splash", "rapid-mlx"])
 def test_a_planned_engine_cannot_start_even_past_the_api(rig, name):
-    rig.app.worker_server_start(REPO, False, None, None, name)
+    rig.app.worker_server_start(REPO, False, None, name)
     assert rig.started == []
     assert "security review pending" in rig.app.STATE.server_down_notice
 
