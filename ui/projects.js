@@ -195,5 +195,8 @@ const ProjectsUI = (() => {
   $("#projectAttach")?.addEventListener("click", attach);
   $("#projectDetach")?.addEventListener("click", detach);
 
-  return { load, take, restore, detach };
+  // The paths of the files the last take() handed over.
+  const names = () => (view.taken ? view.taken.files.map((f) => f.path) : []);
+
+  return { load, take, names, restore, detach };
 })();

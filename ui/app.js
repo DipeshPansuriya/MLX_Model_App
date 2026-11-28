@@ -2266,6 +2266,13 @@ function statsLine(data) {
   ].filter(Boolean).join(" · ");
 }
 
+// A message's file text goes out again with the later messages of its chat.
+function addFiles(el, names) {
+  if (!names.length) return;
+  addMeta(el, `Attached files: ${names.join(", ")}. Their saved text is sent again with ` +
+    "your next messages in this chat.");
+}
+
 function addMeta(el, text) {
   if (!text) return;
   const meta = document.createElement("div");
@@ -2301,7 +2308,8 @@ async function sendMessage() {
   const attachment = typeof ProjectsUI === "object" && ProjectsUI.take();
   if (attachment) turn.attachment = attachment;
   state.messages.push(turn);
-  addMessage("user", text);
+  const userEl = addMessage("user", text);
+  const names = attachment ? ProjectsUI.names() : [];
   let replied = false;
   setText($("#chatAnnounce"), "Assistant is replying");
 
@@ -2404,6 +2412,7 @@ async function sendMessage() {
         if (answer && !alone) {
           if (state.messages === history) history.push({ role: "assistant", content: answer });
           replied = true;
+          addFiles(userEl, names);
         }
       } else if (ev === "error") {
         fail(data);
@@ -2668,6 +2677,7 @@ async function openChat(id) {
   for (const message of chat.messages) {
     const reply = message.role === "assistant";
     const el = addMessage(message.role, reply ? "" : message.content);
+    addFiles(el, (message.files || []).map((file) => file.path));
     if (!reply) continue;
     paintReply(el, { thinking: message.thinking || "", answer: message.content });
     addMeta(el, statsLine(message));
@@ -2676,7 +2686,9 @@ async function openChat(id) {
   setText($("#chatSaveError"), "");
   paintSaveState();
   showChatPanel("");
-  setText($("#chatAnnounce"), `Opened chat: ${chat.title}`);
+  const carries = chat.messages.some((m) => m.files?.length);
+  setText($("#chatAnnounce"), `Opened chat: ${chat.title}` + (carries
+    ? ". Its attached files are sent again with your next message." : ""));
   const input = $("#input");
   (input.disabled ? $("#historyBtn") : input).focus();
 }

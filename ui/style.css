@@ -423,7 +423,7 @@ html, body {
   line-height: 1.62; white-space: pre-wrap; word-wrap: break-word;
 }
 .msg-user .msg-body { background: var(--panel-2); border-color: var(--line-2); }
-.msg-meta { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+.msg-meta { font-family: var(--mono); font-size: 11px; color: var(--text-3); overflow-wrap: anywhere; }
 .chat-mode { margin: 0; padding: 6px 20px; }
 .chat-mode a { color: inherit; font-weight: 600; }
 .perf-mode { margin-bottom: 12px; }
