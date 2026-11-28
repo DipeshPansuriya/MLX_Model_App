@@ -1,5 +1,7 @@
 """Row 887: MLX is mlx_lm's own server. Command, model name, probe and Load Test."""
 
+import itertools
+import re
 import sys
 import threading
 import urllib.error
@@ -7,6 +9,8 @@ import urllib.request
 
 import pytest
 from test_app_robustness import make_model
+
+import model_info
 
 REPO = "org/model"
 NO_SETTINGS = dict.fromkeys(
@@ -163,6 +167,20 @@ class TestLoadTest:
 )
 def test_a_repo_name_is_checked(app_module, repo, valid):
     assert app_module._valid_repo(repo) is valid
+
+
+def test_the_repo_name_check_accepts_the_same_ids_without_backtracking():
+    # The one-pattern form it replaces (CodeQL: polynomial regular expression).
+    old = re.compile(r"(?:[A-Za-z0-9_][\w.-]*/)?[A-Za-z0-9_][\w.-]*", re.ASCII)
+    for length in range(7):
+        for chars in itertools.product("a0_.-/ \né", repeat=length):
+            text = "".join(chars)
+            assert model_info.is_repo_id(text) is bool(old.fullmatch(text)), repr(text)
+    # One repeated class and nothing after it that can fail: nothing to retry.
+    assert model_info.REPO_PART.pattern == r"[A-Za-z0-9_][\w.-]*"
+    long = "0" * 1_000_000
+    assert model_info.is_repo_id(f"{long}/{long}") is True
+    assert model_info.is_repo_id(f"{long}/{long}/") is False
 
 
 @pytest.mark.parametrize(

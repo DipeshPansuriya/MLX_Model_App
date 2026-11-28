@@ -1947,11 +1947,7 @@ def _usable(entry: dict, keys, bad: list[str], where: str = "") -> dict[str, int
 
 
 def _valid_repo(repo) -> bool:
-    return (
-        isinstance(repo, str)
-        and len(repo) <= MODEL_NAME_MAX
-        and bool(model_info.REPO_ID.fullmatch(repo))
-    )
+    return isinstance(repo, str) and len(repo) <= MODEL_NAME_MAX and model_info.is_repo_id(repo)
 
 
 def _read_settings() -> tuple[dict, dict]:

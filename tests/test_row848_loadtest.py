@@ -22,6 +22,8 @@ import loadtest_fake as fake
 import portguard
 import pytest
 
+import engine_runtime
+
 ROOT = Path(__file__).resolve().parent.parent
 GB = 10**9
 K = 1024
@@ -41,7 +43,8 @@ def cache_repo(cache: Path, repo: str, files=("config.json", "model.safetensors"
 
 
 @pytest.fixture
-def lt():
+def lt(monkeypatch):
+    monkeypatch.setattr(engine_runtime, "listeners", fake.listeners)
     return fake.load_runner()
 
 
@@ -242,8 +245,6 @@ class TestRunner:
         assert rows[8192]["status"] == "skipped"
 
     def test_another_program_on_the_port_is_never_asked(self, lt, tmp_path, monkeypatch):
-        import engine_runtime
-
         monkeypatch.setattr(engine_runtime, "listeners", lambda port, **_: {1})
         status, reason, *_, spawned = run_job(lt, tmp_path, sizes=(4096,))
         assert status == "failed" and "another program" in reason

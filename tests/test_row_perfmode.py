@@ -289,6 +289,7 @@ class TestShown:
 # mlx_lm's own server -------------------------------------------------------- #
 def test_installed_mlx_lm_still_takes_the_flags_passed(app_module, configs):
     """Reads mlx_lm's source: every flag of the command, and the read step default."""
+    pytest.importorskip("mlx_lm")  # CI's Linux job installs no MLX; macOS must run it
     root = Path(importlib.util.find_spec("mlx_lm").origin).parent
     source = (root / "server.py").read_text("utf-8")
     write(app_module, {"prompt_cache_size": 2, "prompt_cache_bytes": 10**9})

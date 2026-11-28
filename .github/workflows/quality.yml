@@ -136,6 +136,7 @@ jobs:
           python3 .github/scripts/require_no_skips.py "$RUNNER_TEMP/macos-tests.xml"
           tests/test_prerelease_2013.py
           tests/test_app_robustness.py
+          tests/test_row_perfmode.py
           tests/test_packaging.py
 
   release:

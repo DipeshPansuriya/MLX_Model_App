@@ -7,6 +7,7 @@ import io
 import os
 import re
 import socket
+import subprocess
 import threading
 import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,8 +31,16 @@ class TestPortOwner:
             sock.bind(("127.0.0.1", 0))
             sock.listen()
             port = sock.getsockname()[1]
-            assert engine_runtime.listener_is(port, os.getpid()) is True
-            assert engine_runtime.listener_is(port, os.getppid()) is False
+            # macOS asks the real lsof; where it is not, a fake gives the same answer.
+            run = subprocess.run
+            if not Path(engine_runtime.LSOF).exists():
+
+                def run(command, **_):
+                    assert command[0] == engine_runtime.LSOF and f"-iTCP:{port}" in command
+                    return subprocess.CompletedProcess(command, 0, f"{os.getpid()}\n", "")
+
+            assert engine_runtime.listener_is(port, os.getpid(), run=run) is True
+            assert engine_runtime.listener_is(port, os.getppid(), run=run) is False
 
     def test_another_programs_answer_is_not_trusted(self, lt, tmp_path, monkeypatch):
         posts = []

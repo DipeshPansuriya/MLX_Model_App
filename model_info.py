@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 # A Hub model id: never an option, a path or a second slash.
-REPO_ID = re.compile(r"(?:[A-Za-z0-9_][\w.-]*/)?[A-Za-z0-9_][\w.-]*", re.ASCII)
+REPO_PART = re.compile(r"[A-Za-z0-9_][\w.-]*", re.ASCII)
 # Their mlx_lm cache is a sliding window, which cannot be compressed.
 SLIDING_MODELS = ("gemma3", "gemma3_text", "gemma3n", "gemma4", "gemma4_text", "gpt_oss")
 SLIDING_WORDS = "it keeps a sliding window of its memory, which mlx_lm cannot compress"
@@ -20,6 +20,12 @@ SLIDING_WORDS = "it keeps a sliding window of its memory, which mlx_lm cannot co
 KV_BITS = (4, 8)
 KV_GROUPS = (32, 64, 128)
 PREFILL_RANGE = (64, 2048)
+
+
+def is_repo_id(text: str) -> bool:
+    """``name`` or ``owner/name``, each part checked on its own so nothing backtracks."""
+    parts = text.split("/")
+    return len(parts) <= 2 and all(REPO_PART.fullmatch(part) for part in parts)
 
 
 def _text_config(config) -> dict:

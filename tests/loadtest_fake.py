@@ -40,6 +40,23 @@ def count_words(text):
     return len(text.split())
 
 
+SERVERS: dict = {}  # port -> the fake server meant to listen on it
+
+
+def listeners(port, run=None):
+    """Stands in for ``engine_runtime.listeners``, which asks macOS's own lsof.
+
+    A CI runner has none at that path, or one too slow for a test's deadline. A
+    port that answers belongs to its fake server, or else to this other program.
+    """
+    import engine_runtime
+
+    if not engine_runtime.answers(port):
+        return set()
+    proc = SERVERS.get(port)
+    return {proc.pid} if proc and proc.poll() is None else {os.getpid()}
+
+
 def spawner(mode, spawned):
     """``spawn(command, env, log)`` that starts the fake server on the asked port."""
 
@@ -54,6 +71,10 @@ def spawner(mode, spawned):
             env=env,
         )
         proc.args = list(command)
+        if mode != "no-listen":
+            SERVERS[int(port)] = proc
+        else:
+            SERVERS.pop(int(port), None)
         spawned.append(proc)
         return proc
 
@@ -143,6 +164,9 @@ def serve(port, mode):
 def run_runner(mode):
     # The real runner is run as a script in ROOT and imports its neighbours.
     sys.path.insert(0, str(ROOT))
+    import engine_runtime
+
+    engine_runtime.listeners = listeners
     lt = load_runner()
     if mode == "vanish":
         sys.stdin.readline()
