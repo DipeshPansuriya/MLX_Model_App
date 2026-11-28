@@ -40,9 +40,13 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import engine_runtime
-import engines
-import model_info
+# Before the imports below: bytecode written beside them, inside the signed app
+# bundle, breaks its signature.
+sys.dont_write_bytecode = True
+
+import engine_runtime  # noqa: E402
+import engines  # noqa: E402
+import model_info  # noqa: E402
 
 APP_NAME = "MLX Studio"
 APP_VERSION = "2.0.13"

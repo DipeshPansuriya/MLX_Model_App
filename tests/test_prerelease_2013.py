@@ -6,8 +6,10 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
 import socket
 import subprocess
+import sys
 import threading
 import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -211,3 +213,19 @@ class TestSlowNameLookup:
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+
+class TestSignedBundle:
+    """A file added under Contents/Resources breaks the app's signature."""
+
+    def test_loading_the_app_writes_no_bytecode_beside_it(self, tmp_path):
+        resources = tmp_path / "Resources"
+        resources.mkdir()
+        for source in ROOT.glob("*.py"):
+            shutil.copy(source, resources)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+        env["HOME"] = str(tmp_path)
+        # As the launcher does, from the folder itself, but without running main().
+        code = "import runpy; runpy.run_path('app.py', run_name='bundle')"
+        subprocess.run([sys.executable, "-c", code], cwd=resources, env=env, check=True, timeout=60)
+        assert [path.name for path in resources.rglob("*.pyc")] == []
