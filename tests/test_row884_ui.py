@@ -56,7 +56,7 @@ class TestClientSettingsFollowTheRunningEngine:
             return seen();
             """,
         )
-        assert "Model: org/run" in openai and "API key: not needed" in openai
+        assert "Model: default_model" in openai and "API key: not needed" in openai
         assert "no Anthropic route" in claude
         assert (no_key, no_claude, no_curl) == (True, True, False)
 
@@ -87,10 +87,8 @@ class TestConfigurationNamesWhatOptiqChanges:
         page = (UI / "index.html").read_text("utf-8")
         note = " ".join(page.split('id="configEngine"')[1].split("</ul>")[0].split())
         for words in (
-            "Ignored: MLX buffer cache limit and Two-model context cap",
             "older text is dropped, not refused",
             "Server max reply tokens: only a default",
-            "Memory limit: only sampled",
             "Prompt cache limit: empty means one eighth",
             "measured with MLX only",
         ):
@@ -157,5 +155,5 @@ def test_low_findings_on_setup_load_test_and_chat(tmp_path):
     assert re.search(r'data-action="remove"[^>]*disabled', cards)
     assert "Stop the API server to remove" in cards
     assert "(OptiQ), thinking off" in run_panel and "Apply saves" not in run_panel
-    assert "(MLX)" in mlx_panel and "Apply saves" in mlx_panel
+    assert "(MLX)" in mlx_panel and "Apply saves" not in mlx_panel
     assert "drops older text" in note

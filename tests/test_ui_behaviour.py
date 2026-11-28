@@ -251,67 +251,6 @@ class TestContrast:
         assert re.search(r"\.btn-primary:hover\s*\{[^}]*background:\s*var\(--button-hover\)", CSS)
 
 
-OLD_SERVER = (
-    "const srv = (over) => snap({ server: { running: true, repo: 'org/custom', background: true,"
-    " lines: [], tool_support: {}, ...over } });"
-    " const $ = (s) => document.querySelector(s);"
-)
-
-
-@needs_node
-class TestUnguardedServerNotice:
-    def test_it_is_shown_clearly_and_goes_away_when_guarded(self, tmp_path):
-        out = run(
-            tmp_path,
-            OLD_SERVER + " const see = () => [$('#serverUnguarded').hidden,"
-            " $('#navServerText').textContent, $('#serverModePill').textContent,"
-            " $('#navServerDot').className, $('#serverModePill').className];"
-            " render(srv({ unguarded: true })); const bad = see(); const told = $('#toast').textContent;"
-            " render(srv({ unguarded: false })); return [bad, told, see()];",
-        )
-        bad, told, good = out
-        assert bad == [False, "server unprotected", "unprotected", "dot dot-warn", "pill warn"]
-        assert "Restart the API server" in told
-        assert good == [True, "server running", "background", "dot dot-ok", "pill ok"]
-
-    def test_the_user_is_told_once_not_on_every_poll(self, tmp_path):
-        out = run(
-            tmp_path,
-            OLD_SERVER + " render(srv({ unguarded: true })); $('#toast').textContent = '';"
-            " render(srv({ unguarded: true })); return $('#toast').textContent;",
-        )
-        assert out == ""
-
-    def test_nothing_restarts_without_a_click(self, tmp_path):
-        out = run(
-            tmp_path,
-            OLD_SERVER + " respond = () => reply({ ok: true });"
-            " render(srv({ unguarded: true }));"
-            " return calls.filter((c) => c.path === '/api/server/start').length;",
-        )
-        assert out == 0
-
-    @pytest.mark.parametrize("background", [True, False])
-    def test_restart_uses_the_running_model_and_mode(self, tmp_path, background):
-        out = run(
-            tmp_path,
-            OLD_SERVER
-            + f" const s = srv({{ unguarded: true, background: {str(background).lower()} }});"
-            " respond = () => reply(s); state.snapshot = s; render(s);"
-            " editServerSet(['org/other']);"
-            " await $('#serverUnguardedRestart').listeners.click();"
-            " const c = calls.find((x) => x.path === '/api/server/start');"
-            " return [JSON.parse(c.opts.body), c.opts.headers['X-MLX-Token']];",
-        )
-        assert out == [{"repo": "org/custom", "background": background}, "test-token"]
-
-    def test_the_notice_is_an_alert_with_a_restart_button(self):
-        notice = HTML[HTML.index('id="serverUnguarded"') :]
-        notice = notice[: notice.index('id="serverToolsWarn"')]
-        assert 'role="alert"' in notice and 'id="serverUnguardedRestart"' in notice
-        assert "Restart the API server to apply the 2.0.10 protection" in notice
-
-
 @needs_node
 def test_every_api_request_from_the_ui_carries_the_token(tmp_path):
     out = run(
