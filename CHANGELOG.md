@@ -5,6 +5,22 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+2.0.14, not released. The version number and update manifest are still 2.0.13.
+
+### Read before you use it
+
+- The built-in MLX server still has **no password**, and there is still no memory limit.
+- Not in 2.0.14: a built-in agent harness (a model cannot write files or run commands),
+  image input or generation, and video.
+- A reopened saved chat sends its attached file text again without showing the file
+  names. With **Save history** on, that text is stored as plain text in the chat file.
+- With a model alias on the MLX engine, clients must send the alias or `default_model`.
+  Other cached models are no longer found by name; a folder path in a request can still
+  load other files.
+- Going back to 2.0.13: switch start at login off and press **Stop** first. 2.0.13 would
+  not recognise a server started with a model name, and aliases are lost on its next
+  settings save.
+
 ### Added
 - Set a default model and start its server at Mac login (off by default; OptiQ only,
   because it can require a password). The key then stays the same, so tools are set up once.
@@ -15,6 +31,19 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is already saved, also after saving is turned on again.
 - Chat settings for one chat: system prompt, max reply tokens, temperature and top p.
   An empty number uses the Configuration value.
+- Appearance on Setup: System, Light or Dark.
+- **Test Connection** on API Server: one short reply and one tool call (never run).
+- A warning in Test Connection when a tool call holds the text "null" as a value. It
+  only detects this; replies are not changed.
+- Project files in Chat, read only: choose a folder in the app window, preview the exact
+  text, then attach it to a message.
+- Model alias: a short name for a model, shown across the app and used by the server.
+  With OptiQ and no alias the served name is the model's short name, not its folder path.
+- A new Download screen: one filtered list, Hugging Face search, sizes checked for the
+  cards on screen.
+- Memory and speed on API Server (measured values only).
+- Load Test: the last MLX and OptiQ runs of a model side by side.
+- **Install or update all** and **Check GitHub for a new release** on Setup.
 
 ### Fixed
 - Test Connection no longer fails in the app window when a model takes over a minute,
@@ -29,6 +58,14 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - The saved Hugging Face token is sent only to download a gated or private model, not for
   model search or public downloads.
+
+### What was and was not tried
+- One Mac (Apple M6, 32 GB), through the app's functions, not its window, on an earlier
+  2.0.14 commit (`021fa56`): alias names on both engines, the OptiQ key checks and Test
+  Connection with one 7B model, and the name used without an alias with two models.
+- Not tried: a real logout and login, the real folder dialog, real packages through
+  Install or update all, a real GitHub release check, a screen reader. The newer screens
+  were looked at only in a browser with mock or made-up data.
 
 ## [2.0.13] — 2026-11-28
 

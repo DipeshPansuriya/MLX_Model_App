@@ -29,6 +29,10 @@ memory (the `State` class in `app.py`) and in the files below.
 | User limits (unreleased) | `~/.mlx_studio/settings.json` | JSON object of numbers (plus the word `performance_mode`), per-model overrides the load test values and the `ui` block (2.0.14: theme) ([API.md](API.md#6b-user-settings)), mode `0600`; absent until saved, removed by **Reset this entry** when nothing else is saved | `app.py` |
 | Load test results (unreleased) | `~/.mlx_studio/loadtest.json` | Last 5 runs per model, figures only, no prompt or reply text, mode `0600`, read up to 256 KB | `app.py` |
 | Load test processes (unreleased) | `~/.mlx_studio/loadtest.pid`, `loadtest-run-*/` | Runner and server pid with start time; temporary files; removed when the run ends or at the next app start | `app.py` |
+| Saved chats (2.0.14) | `~/.mlx_studio/chats/` | One plain-text file per chat: messages, thinking, figures, system prompt, settings and attached file text. Folder `0700`, files `0600`; no expiry; delete is not a secure erase | `chat_store.py` |
+| Project list (2.0.14) | `~/.mlx_studio/projects.json` | Chosen folder paths | `projects.py` |
+| Start at login (2.0.14) | `~/.mlx_studio/default-model.json`, `autostart.key`, `login-start.json`, `login-start.lock`; `~/Library/LaunchAgents/com.mlxstudio.app.login-server.plist` | Default model and switch, the OptiQ key (removed when switched off), last result, lock; the plist holds no key or model | `login_agent.py` |
+| Model alias (2.0.14) | `settings.json` `ui.models.<repo>.alias`; `server.pid` keys `name`, `alias`; `~/.mlx_studio/engines/optiq/run`, `engines/mlx/hub`, `engines/mlx/run` | Names and links to cached model files | `app.py`, `engines.py` |
 | Model weights | Hugging Face cache | Hugging Face layout | `huggingface_hub` |
 | Download marker | `<cache>/models--<org>--<name>/.mlx_studio_download.json` | JSON | `app.py` |
 
@@ -43,7 +47,7 @@ the default is under `~/.cache/huggingface`.
 | Clear | The activity log clear action removes `activity.log*` only |
 | Permissions | Folders `0700`, files the app writes `0600` ([SECURITY.md](SECURITY.md) section 4.6) |
 | Sensitive content | `server.log` can contain request content ([SECURITY.md](SECURITY.md) section 4.6) |
-| Chat history | The server code writes no transcript to disk |
+| Chat history | Up to 2.0.13 no transcript is written. 2.0.14 saves chats by default (**Save history**); **Temporary** chats are not saved |
 | Budget file reading (unreleased) | The guard accepts only a plain file holding a number above 0 and never follows a link. It uses the lower of this number and the start budget |
 
 ## 4. Migration and backup

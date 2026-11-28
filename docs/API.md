@@ -72,6 +72,11 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/catalog` | model catalogue and hardware |
 | `/api/versions` | version check result |
 | `/api/ping` | `{"ok": true, "app": "<version>"}`; no token needed |
+| `/api/chats`, `/api/chats/get?id=` | 2.0.14: saved chats and unreadable files; one full chat |
+| `/api/projects`, `/api/projects/files?id=` | 2.0.14: project folders; the files that may be chosen |
+| `/api/model-size?repo=` | 2.0.14: one model's published weight size and fit (`mlx-community`) |
+| `/api/install/plan` | 2.0.14: what Install or update all would do, and why it is blocked |
+| `/api/server/test`, `/api/autostart` | 2.0.14: last test state; start at login status (section 4) |
 | other paths | static UI files from a startup allowlist |
 
 ## 4. POST endpoints
@@ -92,12 +97,18 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/server/stop` | - (also cancels a start that has not launched yet) | - |
 | `/api/server/notice/clear` | - (unreleased: clears `down_notice` and `apply_notice`) | - |
 | `/api/server/settings` | unreleased: `values` or `reset`; optional `repo` ([6b](#6b-user-settings)) | 400, 500 |
-| `/api/ui/settings` | 2.0.14: `theme` ([6b](#6b-user-settings)) | 400, 500 |
+| `/api/ui/settings` | 2.0.14: `theme`, `save_history` (`on` or `off`) ([6b](#6b-user-settings)) | 400, 500 |
 | `/api/server/test` | 2.0.14: `{}`; sends the ready server a short reply and one tool call (never run) and returns `reply` and `tool`, each with `status` (`pass`, `warn`, `fail`, `skipped`) and `detail`; no key in the answer A test longer than 20 s answers 202 `{"running": true}`; ask `GET /api/server/test` until it returns the result. | 409 not ready, load test or test running, or another program on the port; GET: 404 before any test |
 | `/api/autostart/default` | 2.0.14: `repo`, `engine`, `anthropic`; saves the default model (an MLX default switches start at login off) and returns the status | 400 types; 409 cannot be served |
 | `/api/autostart` | 2.0.14: `enabled` (true or false); writes or removes the login item, starts nothing now. `GET /api/autostart` returns the status; no key in any answer | 400; 409 no default, MLX (no password), not the installed app |
 | `/api/autostart/clear` | 2.0.14: `{}`; switches off and forgets the default model | 409, 500 |
 | `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running |
+| `/api/install/all` | 2.0.14: `{}`; runs the plan | 409 server or load test running, another install, or nothing to do |
+| `/api/update/check` | 2.0.14: `{}`; one anonymous request to GitHub's latest release; downloads nothing | result is in the answer |
+| `/api/models/alias` | 2.0.14: `repo`, `alias` (`""` or `null` removes). `/api/state` gives `models[].alias` and `server.alias` | refused names ([rules](ENGINES.md#model-alias-2014)) |
+| `/api/chat` (2.0.14) | adds optional `system`, `settings` {`max_tokens`, `temperature`, `top_p`}, `save` {`id`: null} or {`id`, `updated`} (absent: not saved), and `attachment` on a user message. Only `user` and `assistant` roles | 400, 404, 409 |
+| `/api/chats/search`, `/rename`, `/settings`, `/delete`, `/delete-all` (all under `/api/chats`) | 2.0.14: `query`; `id`, `title`; `id`, `updated`, `system`, `settings`; `id`, `confirm`: true; `confirm`: true | 400, 404, 409 |
+| `/api/projects/choose`, `/remove`, `/preview`, `/attach` (all under `/api/projects`) | 2.0.14: `{}` (the app's own folder dialog chooses); `id`; `id`, `paths`; `id`, `picks` [{`path`, `sha256`}] | 400, 404, 409, 500 |
 | `/api/logs/clear` | - | 500 |
 | other paths | - | 404 |
 
