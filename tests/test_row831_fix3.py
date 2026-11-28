@@ -135,7 +135,7 @@ def test_a_planted_temp_link_is_not_followed(idle, tmp_path):
     assert victim.read_text("utf-8") == "keep"
     assert stat.S_IMODE(victim.stat().st_mode) == 0o644
     assert not path.is_symlink() and stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert idle.app._last_models() == [A, B]
+    assert idle.app._last_models() == [A]  # an older pair: its first model
 
 
 def test_a_failed_write_leaves_no_temp_file(idle, monkeypatch):
