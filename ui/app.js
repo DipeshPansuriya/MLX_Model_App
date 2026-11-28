@@ -13,6 +13,8 @@ const state = {
   chatModel: "",
   chatStatus: "",
   chatRef: null, // {id, updated} of the saved chat on screen
+  screenKey: "", // names this chat on screen to the app, so a lost answer saves no copy
+  unsaved: false, // the saved chat on screen lacks turns
   chatBusy: false, // its settings are being saved
   saveHistory: "on",
   historySaving: 0,
@@ -2286,7 +2288,8 @@ async function sendMessage() {
   // Absent for a temporary chat: nothing of it is saved.
   const save = $("#chatTemporary").checked ? undefined
     : state.chatRef ? { ...state.chatRef } : { id: null };
-  setText($("#chatSaveError"), "");
+  state.screenKey = state.screenKey ||
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
   input.value = "";
   input.style.height = "auto";
@@ -2347,6 +2350,7 @@ async function sendMessage() {
       headers: apiHeaders(),
       body: JSON.stringify({
         repo, messages: state.messages, system: extras.system, settings: extras.settings, save,
+        screen: state.screenKey,
       }),
     });
     if (!res.ok) {
@@ -2383,8 +2387,15 @@ async function sendMessage() {
         addMeta(assistantEl, statsLine(data));
         // Only for the chat still on screen: New chat may have replaced it.
         if (state.messages === history) {
-          if (data.chat) state.chatRef = { id: data.chat.id, updated: data.chat.updated };
-          setText($("#chatSaveError"), data.save_error || "");
+          // A warning stays until a later save succeeds.
+          if (data.chat) {
+            state.chatRef = { id: data.chat.id, updated: data.chat.updated };
+            state.unsaved = false;
+            setText($("#chatSaveError"), "");
+          } else {
+            if (save && answer && !alone) state.unsaved = true;
+            if (data.save_error) setText($("#chatSaveError"), data.save_error);
+          }
         }
         if (data.chat && !$("#historyPanel").hidden) loadHistory();
         // A turn with no answer is dropped below, like a failed one: an empty reply,
@@ -2504,7 +2515,8 @@ function paintSaveState() {
     ? "Temporary chat: nothing is saved."
     : state.saveHistory === "off"
       ? "Saving is off: nothing new is saved. Turn Save history on under History."
-      : state.chatRef ? "Saved chat."
+      : state.chatRef ? (state.unsaved
+        ? "Not saved yet: the next reply also saves the missing turns." : "Saved chat.")
         : state.messages.length ? "Not saved yet: the next reply saves this whole chat."
           : "This chat will be saved on this Mac.");
 }
@@ -2537,6 +2549,8 @@ function newChat() {
   state.messages = [];
   if (typeof ProjectsUI === "object") ProjectsUI.detach();
   state.chatRef = null;
+  state.screenKey = "";
+  state.unsaved = false;
   state.openSeq += 1;
   $("#messages").replaceChildren();
   $("#chatEmpty").hidden = false;
@@ -2646,6 +2660,8 @@ async function openChat(id) {
   state.messages = chat.messages.map(({ role, content }) => ({ role, content }));
   if (typeof ProjectsUI === "object") ProjectsUI.detach();
   state.chatRef = { id: chat.id, updated: chat.updated };
+  state.screenKey = "";
+  state.unsaved = false;
   $("#chatTemporary").checked = false;
   $("#messages").replaceChildren();
   $("#chatEmpty").hidden = chat.messages.length > 0;

@@ -13,6 +13,7 @@ No Flask/FastAPI dependency: only stdlib + mlx + huggingface_hub.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import fnmatch
 import functools
@@ -3777,6 +3778,32 @@ def saved_chats() -> chat_store.ChatStore:
     return chat_store.ChatStore(APP_DIR / "chats")
 
 
+# What each page chat last saved, in memory: ``screen -> (named by the page, saved as)``.
+UNSEEN: collections.OrderedDict = collections.OrderedDict()
+UNSEEN_MAX = 32
+UNSEEN_LOCK = threading.Lock()
+
+
+def _page_save(save: dict, screen) -> dict:
+    """Where this send is to be saved.
+
+    A page whose ``done`` event was lost still names the chat as it was before that save.
+    Its next send continues the saved chat: no "changed in another window", no second copy.
+    """
+    named = (save.get("id"), save.get("updated"))
+    screen = screen if isinstance(screen, str) and 0 < len(screen) <= 64 else None
+    target = {"id": named[0], "updated": named[1], "named": named, "screen": screen}
+    with UNSEEN_LOCK:
+        last = UNSEEN.get(screen)
+    if last and last[0] == named:
+        try:
+            saved_chats().current(*last[1])
+        except chat_store.ChatError:
+            return target  # deleted or changed since: as the page names it
+        target.update(id=last[1][0], updated=last[1][1], retry=True)
+    return target
+
+
 def _chat_extras(body: dict) -> tuple[str, dict, dict | None]:
     """``(system, settings, save)`` sent with a message; ChatError if unusable.
 
@@ -3790,8 +3817,9 @@ def _chat_extras(body: dict) -> tuple[str, dict, dict | None]:
         raise chat_store.Invalid("save must name the chat")
     if ui_settings()["save_history"] != "on":
         return system, own, None
-    if save.get("id") is not None:  # a lost or stale chat is said before the model is asked
-        saved_chats().current(save["id"], save.get("updated"))
+    save = _page_save(save, body.get("screen"))
+    if save["id"] is not None:  # a lost or stale chat is said before the model is asked
+        saved_chats().current(save["id"], save["updated"])
     return system, own, save
 
 
@@ -3822,12 +3850,20 @@ def _save_turn(repo: str, messages: list[dict], extras: tuple, reply: dict, done
     )
     kept = {"model": repo, "system": system, "settings": own}
     try:
-        if save.get("id") is None:
+        if save["id"] is None:
             chat = saved_chats().create(turns, **kept)
         else:
-            chat = saved_chats().append(save["id"], save["updated"], turns[-2:], **kept)
+            chat = saved_chats().append(
+                save["id"], save["updated"], turns, whole=True, retry="retry" in save, **kept
+            )
     except chat_store.ChatError as exc:
         return {"save_error": f"This reply was not saved: {exc}."}
+    if screen := save["screen"]:
+        with UNSEEN_LOCK:
+            UNSEEN[screen] = (save["named"], (chat["id"], chat["updated"]))
+            UNSEEN.move_to_end(screen)
+            while len(UNSEEN) > UNSEEN_MAX:
+                UNSEEN.popitem(last=False)
     return {"chat": saved_chats().summary(chat)}
 
 

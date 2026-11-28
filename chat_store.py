@@ -280,6 +280,22 @@ def _summary(chat: dict) -> dict:
     return {**{key: chat[key] for key in keys}, "count": len(chat["messages"])}
 
 
+def _turn(messages: list[dict]) -> list[tuple[str, str]]:
+    return [(m["role"], m["content"].strip()) for m in messages]
+
+
+def _unheld(saved: list[dict], screen: list[dict]) -> list[dict]:
+    """The turns of ``screen``, a whole conversation, from the first one ``saved`` lacks.
+
+    Both are question and reply pairs. The newest pair of ``screen`` is always returned.
+    """
+    held = 0
+    for at in range(0, len(saved), 2):
+        if held < len(screen) - 2 and _turn(saved[at : at + 2]) == _turn(screen[held : held + 2]):
+            held += 2
+    return screen[held:]
+
+
 # --------------------------------------------------------------------------- #
 # The store
 # --------------------------------------------------------------------------- #
@@ -381,8 +397,15 @@ class ChatStore:
         model: str | None = None,
         system: str | None = None,
         settings: dict | None = None,
+        whole: bool = False,
+        retry: bool = False,
     ) -> dict:
-        """Add a turn to the chat last seen at ``updated``, with what it was asked with."""
+        """Add a turn to the chat last seen at ``updated``, with what it was asked with.
+
+        With ``whole``, ``messages`` is the whole conversation and every turn the chat
+        lacks is added; saved turns stay. With ``retry``, the writer never saw the chat's
+        last turn: it is replaced if the newest question is the same one.
+        """
         now = _now_ms()
         added = _messages(messages, now)
         if not added:
@@ -399,7 +422,9 @@ class ChatStore:
                 chat["settings"] = settings
             if not chat["messages"] and chat["title"] == NEW_TITLE:
                 chat["title"] = _auto_title(added)
-            chat["messages"] += added
+            if retry and _turn(chat["messages"][-2:-1]) == _turn(added[-2:-1]):
+                del chat["messages"][-2:]
+            chat["messages"] += _unheld(chat["messages"], added) if whole else added
             if model is not None:
                 chat["model"] = _text(model, "the model", MODEL_MAX)
             chat["updated"] = max(now, updated + 1)
