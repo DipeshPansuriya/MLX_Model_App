@@ -32,8 +32,12 @@ def run(tmp_path, scenario, **boot):
     path = tmp_path / "scenario.js"
     path.write_text(PRELUDE + scenario, encoding="utf-8")
     harness = str(ROOT / "tests" / "ui_harness.js")
+    ui = tmp_path / "ui.js"  # the two scripts, in the page's load order
+    ui.write_text(
+        (ROOT / "ui" / "download.js").read_text() + "\n" + (ROOT / "ui" / "app.js").read_text()
+    )
     proc = subprocess.run(
-        [NODE, harness, str(ROOT / "ui" / "app.js"), str(path), json.dumps(boot)],
+        [NODE, harness, str(ui), str(path), json.dumps(boot)],
         capture_output=True,
         text=True,
         timeout=20,
@@ -54,7 +58,7 @@ class TestModelCards:
     def test_catalogue_fields_are_added_and_escaped(self, tmp_path):
         out = run(
             tmp_path,
-            'state.catalog = [{ repo: "org/custom", params: "7B", category: "Code",'
+            'state.catalog = [{ repo: "org/custom", params: "7B", pick: "Code",'
             ' use: "<b>x</b>", fit: "good", size_gb: 4 }];'
             ' render(snap()); return html("#modelCards");',
         )

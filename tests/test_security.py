@@ -305,6 +305,7 @@ def test_two_host_headers_are_refused(server, app_module, method, order):
 
 # F4: every /api GET needs the token ----------------------------------------- #
 API_GETS = [
+    "/api/model-size?repo=mlx-community/x",
     "/api/state",
     "/api/models",
     "/api/search?q=qwen",

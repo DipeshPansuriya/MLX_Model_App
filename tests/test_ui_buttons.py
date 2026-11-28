@@ -83,8 +83,8 @@ OFFERS = {
         "const draw = (rows) => { state.catalog = rows; renderCatalog(); };",
     ),
     "search": (
-        "#searchResults",
-        "const draw = (rows) => { state.search = rows; renderSearch(); };",
+        "#catalogCards",
+        "const draw = (rows) => { state.search = rows; renderCatalog(); };",
     ),
 }
 

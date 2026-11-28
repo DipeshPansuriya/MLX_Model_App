@@ -439,7 +439,6 @@ function render(snap) {
   renderModelCards(models, server, downloads);
   renderDownloads(downloads);
   renderCatalog();
-  renderSearch();
   renderConfigPage(server);
   renderLoadTest(snap);
   paintEngineCards(install);
@@ -1918,7 +1917,7 @@ function renderModelCards(models, server, downloads) {
     return modelCard(
       m.repo,
       badge,
-      `${metaLine(m.size_h, info.params, info.category)}
+      `${metaLine(m.size_h, info.params, info.pick)}
        ${metaLine(info.use)}
        <div class="card-path" title="${esc(m.path)}">📁 ${esc(m.path)}</div>`,
       (partial ? button("download", "Resume download", "", MAIN) : "") +
@@ -2001,84 +2000,6 @@ async function modelAction(act, repo) {
 async function refreshModels() { await refreshState(); }
 
 /* ───────────── catalogue ───────────── */
-async function loadCatalog() {
-  try {
-    const { catalog, hardware } = await api("/api/catalog");
-    state.catalog = catalog;
-    $("#catalogHardware").textContent =
-      `${hardware.chip} · ${hardware.ram} unified — rated on 4-bit weight size`;
-    renderCatalog();
-  } catch (err) { toast(err.message, true); }
-}
-
-function renderCatalog() {
-  const wrap = $("#catalogCards");
-  if (!wrap || !state.catalog) return;
-  const filter = $("#catalogFilter").value || "all";
-  const rows = state.catalog.filter((m) =>
-    filter === "all" || m.fit === filter || m.category === filter);
-  $("#catalogEmpty").hidden = rows.length > 0;
-  renderOfferCards(wrap, rows);
-}
-
-function renderSearch() {
-  if (state.search) renderOfferCards($("#searchResults"), state.search);
-}
-
-// A model that can be downloaded: recommended and search cards are the same card.
-function offerCard(m, busy, ready) {
-  const running = busy.has(m.repo);
-  const disabled = m.fit === "too-large";
-  const label = running ? "Downloading…" : disabled ? "Needs more RAM" : "Download";
-  // The snapshot is live; the catalogue flag is only used before the first one.
-  const installed = state.snapshot ? ready.has(m.repo) : m.installed;
-  const slot = `data-slot="main" data-repo="${esc(m.repo)}"`;
-  const size = !m.size_gb ? "size unknown"
-    : m.size_estimated ? `~${m.size_gb} GB (estimate)` : `${m.size_gb} GB`;
-  return modelCard(
-    m.repo,
-    fitBadge(m.fit || "unknown"),
-    `${metaLine(m.params || "params unknown", size, m.category || "category unknown")}
-       ${metaLine(m.use || "use unknown")}`,
-    (!running && installed
-      // aria-disabled keeps the focus the Download button had.
-      ? `<button class="btn btn-mini" ${slot} aria-disabled="true">Installed</button>`
-      // aria-disabled, not disabled: a busy button must keep keyboard focus.
-      : `<button class="btn btn-mini btn-primary" ${slot} data-cat-download="${esc(m.repo)}" ${disabled ? "disabled" : running ? 'aria-disabled="true"' : ""}>${label}</button>`) +
-      copyButton(m.repo),
-  );
-}
-
-function renderOfferCards(wrap, rows) {
-  // Button state comes from the latest snapshot, so a cancel or failure restores it.
-  const busy = new Set((state.snapshot?.downloads || [])
-    .filter((d) => d.status === "running").map((d) => d.repo));
-  const ready = new Set((state.snapshot?.models || [])
-    .filter((m) => m.complete !== false).map((m) => m.repo));
-  if (!setHTML(wrap, rows.map((m) => offerCard(m, busy, ready)).join(""))) return;
-
-  wrap.querySelectorAll("[data-cat-download]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (btn.getAttribute("aria-disabled") === "true") return;
-      btn.setAttribute("aria-disabled", "true");
-      btn.textContent = "Downloading…";
-      // The button no longer matches the cached markup: the next render redraws it.
-      wrap._lastHtml = null;
-      try {
-        // Switch to Download view so user can see progress
-        showView("download");
-        await api("/api/download", { method: "POST", body: JSON.stringify({ repo: btn.dataset.catDownload }) });
-        toast("Download started");
-        refreshState();
-      } catch (err) {
-        toast(err.message, true);
-        btn.removeAttribute("aria-disabled");
-        btn.textContent = "Download";
-      }
-    });
-  });
-}
-
 /* ───────────── downloads ───────────── */
 // Shown in the header, so a collapsed section still reports progress.
 function downloadSummary(downloads) {
@@ -2164,32 +2085,6 @@ function renderDownloads(downloads) {
       });
     }
   });
-}
-
-async function doSearch(q) {
-  const wrap = $("#searchResults");
-  const seq = ++state.searchSeq; // only the newest search may draw
-  const show = (html) => { wrap._lastHtml = null; wrap.innerHTML = html; };
-  const nothing = (title, text) => {
-    show("");
-    $("#searchEmpty").hidden = false;
-    $("#searchEmpty").querySelector("h2").textContent = title;
-    $("#searchEmpty").querySelector("p").textContent = text;
-  };
-  state.search = null;
-  show(`<div class="card"><div class="card-sub">Searching…</div></div>`);
-  $("#searchEmpty").hidden = true;
-  try {
-    const { results } = await api(`/api/search?q=${encodeURIComponent(q)}`);
-    if (seq !== state.searchSeq) return;
-    if (!results.length) { nothing("No results", "Try a different query."); return; }
-    state.search = results;
-    renderSearch();
-  } catch (err) {
-    if (seq !== state.searchSeq) return;
-    nothing("Search failed", "Check the connection and try again.");
-    toast(err.message, true);
-  }
 }
 
 /* ───────────── chat model ───────────── */

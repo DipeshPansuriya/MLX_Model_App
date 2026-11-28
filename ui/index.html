@@ -6,6 +6,7 @@
 <title>MLX Studio</title>
 <link rel="icon" href="data:," />
 <link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/download.css" />
 </head>
 <body>
 <div id="app">
@@ -218,8 +219,7 @@
         </div>
         <div class="topbar-right">
           <input class="input" id="searchInput" aria-label="Search mlx-community" placeholder="Search mlx-community…" />
-          <button class="btn btn-primary" id="searchBtn">Search</button>
-          <button class="btn btn-ghost" id="showAllBtn">Show all</button>
+          <button class="btn btn-primary" type="button" id="searchBtn">Search</button>
         </div>
       </header>
       <div class="scroll">
@@ -239,40 +239,47 @@
 
         <div class="catalog-head">
           <div>
-            <h2>Best for your Mac</h2>
+            <h2>Models</h2>
             <span class="muted" id="catalogHardware">—</span>
           </div>
-          <select id="catalogFilter" class="select" aria-label="Filter models">
-            <option value="all">All models</option>
-            <option value="great">Great fit</option>
-            <option value="good">Good fit</option>
-            <option value="tight">Tight fit</option>
-            <option value="Code">Code</option>
-            <option value="Reasoning">Reasoning</option>
-            <option value="Fast">Fast</option>
-          </select>
+          <div class="dl-controls">
+            <button class="btn btn-mini btn-ghost" type="button" id="picksBtn" hidden>Recommended only</button>
+            <select id="catalogFilter" class="select" aria-label="Filter models">
+              <option value="all">All models</option>
+              <optgroup label="This Mac">
+                <option value="best">Best for Mac</option>
+                <option value="great">Great fit</option>
+                <option value="good">Good fit</option>
+                <option value="tight">Tight fit</option>
+              </optgroup>
+              <optgroup label="Use">
+                <option value="Code">Code</option>
+                <option value="Reasoning">Reasoning</option>
+                <option value="Fast">Fast</option>
+              </optgroup>
+              <optgroup label="Task">
+                <option value="Text">Text</option>
+                <option value="Vision">Vision</option>
+                <option value="Speech to text">Speech to text</option>
+                <option value="Speech and audio">Speech and audio</option>
+                <option value="Embedding">Embedding</option>
+              </optgroup>
+            </select>
+          </div>
         </div>
+        <div class="dl-notice" id="catalogNotice" role="status"></div>
         <div class="cards" id="catalogCards"></div>
         <div class="empty" id="catalogEmpty" hidden>
           <div class="empty-mark">🎯</div>
           <h2>Nothing matches that filter</h2>
           <p>Pick another fit or category.</p>
         </div>
-
-        <div class="catalog-head">
-          <div>
-            <h2>Search Hugging Face</h2>
-            <span class="muted">Anything else in <code>mlx-community</code></span>
-          </div>
-        </div>
-        <div class="cards" id="searchResults"></div>
-        <div class="empty" id="searchEmpty">
-          <div class="empty-mark">⬇</div>
-          <h2>Find a model</h2>
-          <p>Search the <code>mlx-community</code> organisation on Hugging Face.</p>
+        <div class="dl-more">
+          <button class="btn" type="button" id="showAllBtn">More from Hugging Face</button>
         </div>
       </div>
     </section>
+
 
     <!-- ══════════ Server ══════════ -->
     <section class="view active" id="view-server">
@@ -924,6 +931,7 @@
   </main>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
+<script src="/download.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

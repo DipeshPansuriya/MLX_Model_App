@@ -113,7 +113,7 @@ FOUND = (
 )
 
 
-def searched(tmp_path, result, then='return html("#searchResults");', models="[]"):
+def searched(tmp_path, result, then='return html("#catalogCards");', models="[]"):
     return run(
         tmp_path,
         f" const s = snap({{ models: {models} }}); state.snapshot = s;"
@@ -127,25 +127,31 @@ class TestSearchCards:
         out = searched(
             tmp_path,
             FOUND,
-            f"state.catalog = [{FOUND}]; renderCatalog();"
-            ' return [html("#searchResults"), html("#catalogCards")];',
+            'const found = html("#catalogCards");'
+            f" state.search = null; state.catalog = [{FOUND}]; renderCatalog();"
+            ' return [found, html("#catalogCards")];',
         )
         assert out[0] == out[1]
-        for text in ("good fit", "8B · 4.62 GB · Quality", "Chat", "Copy model name"):
+        line = "8B params · bits not published · 4.62 GB · Quality"
+        for text in ("good fit", line, "Chat", "Copy model name"):
             assert text in out[0]
 
     def test_unknown_fields_are_labelled_and_download_stays_available(self, tmp_path):
         out = searched(tmp_path, "{ repo: 'org/bare' }")
-        assert "fit unknown" in out
-        assert "params unknown · size unknown · category unknown" in out
-        assert "use unknown" in out
+        assert "fit unknown" in out and "size not published" in out
+        # The Hub was not asked, so nothing else is called unpublished.
+        assert out.count("not published") == 1
+        assert "undefined" not in out and "null" not in out
         assert re.search(r'data-cat-download="org/bare"\s*>Download<', out)
 
-    def test_an_estimated_size_says_so(self, tmp_path):
+    def test_no_size_is_shown_as_an_estimate(self, tmp_path):
         out = searched(
-            tmp_path, "{ repo: 'org/e', size_gb: 4.61, size_estimated: true, fit: 'good' }"
+            tmp_path,
+            "{ repo: 'org/e', size_gb: 4.61, size_estimated: true,"
+            " size_status: 'unchecked', fit: 'good' }",
         )
-        assert "~4.61 GB (estimate)" in out
+        assert "checking size" in out
+        assert "4.61" not in out and "estimate" not in out
 
     def test_too_large_cannot_be_downloaded(self, tmp_path):
         out = searched(tmp_path, "{ repo: 'org/big', size_gb: 90, fit: 'too-large' }")
@@ -159,7 +165,7 @@ class TestSearchCards:
         out = searched(
             tmp_path,
             FOUND,
-            "const w = document.querySelector('#searchResults');"
+            "const w = document.querySelector('#catalogCards');"
             " const busy = { ...s, downloads: [{ repo: 'org/m', status: 'running', pct: 3 }] };"
             " const poll = (x) => { state.snapshot = x; render(x); };"
             " poll(busy); const a = w.innerHTML; const writes = w.writes; poll(busy);"
@@ -178,7 +184,7 @@ class TestSearchCards:
             " const old = doSearch('a');"
             " respond = () => reply({ results: [{ repo: 'org/new' }] }); await doSearch('b');"
             " first({ ok: true, json: async () => ({ results: [{ repo: 'org/old' }] }) });"
-            ' await old; render(snap()); return html("#searchResults");',
+            ' await old; render(snap()); return html("#catalogCards");',
         )
         assert "org/new" in out and "org/old" not in out
 
@@ -187,8 +193,8 @@ class TestSearchCards:
             tmp_path,
             FOUND,
             "respond = () => reply({ results: [] }); await doSearch('z'); render(s);"
-            " return [html('#searchResults'),"
-            " document.querySelector('#searchEmpty').hidden];",
+            " return [html('#catalogCards'),"
+            " document.querySelector('#catalogEmpty').hidden];",
         )
         assert out == ["", False]
 

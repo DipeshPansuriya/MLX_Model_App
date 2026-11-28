@@ -84,6 +84,7 @@ SHIPPED = (
     "loadtest_compare.py",
     "engine_plan.py",
     "update_check.py",
+    "catalog_routes.py",
     "ui",
     "packaging",
 )
@@ -103,10 +104,13 @@ BUNDLED = (
     "loadtest_compare.py",
     "engine_plan.py",
     "update_check.py",
+    "catalog_routes.py",
     "packaging/optiq-lock.txt",
     "ui/index.html",
     "ui/style.css",
     "ui/app.js",
+    "ui/download.js",
+    "ui/download.css",
 )
 
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+")

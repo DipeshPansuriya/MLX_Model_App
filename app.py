@@ -44,6 +44,7 @@ from pathlib import Path
 # bundle, breaks its signature.
 sys.dont_write_bytecode = True
 
+import catalog_routes  # noqa: E402
 import chat_store  # noqa: E402
 import engine_runtime  # noqa: E402
 import engines  # noqa: E402
@@ -247,6 +248,7 @@ def _build_static_allowlist(root: Path) -> dict[str, Path]:
 
 
 STATIC_FILES = _build_static_allowlist(UI_DIR)
+DOWNLOAD_ROUTES = catalog_routes.Routes(sys.modules[__name__])
 # Error messages and server output in the logs can quote chat text, so keep the
 # whole tree owner-only.
 for _private in (APP_DIR, LOG_DIR):
@@ -4087,6 +4089,10 @@ class Handler(BaseHTTPRequestHandler):
             self._reject(403, BAD_TOKEN)
             return
 
+        answer = DOWNLOAD_ROUTES.get(path, query)
+        if answer is not None:
+            self._json(*answer)
+            return
         if path == "/api/state":
             self._json(STATE.snapshot())
             return

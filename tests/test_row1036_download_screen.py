@@ -1,8 +1,4 @@
-"""The combined Download Model screen: its routes, its page and its script.
-
-app.py, ui/app.js and ui/index.html are wired by a few edits. ``wired_*`` applies
-them to a copy, and changes nothing once the real files already have them.
-"""
+"""The combined Download Model screen: its routes, its page and its script."""
 
 from __future__ import annotations
 
@@ -24,70 +20,10 @@ from test_ui_behaviour import NODE, PRELUDE, needs_node
 
 ROOT = Path(__file__).resolve().parent.parent
 UI = ROOT / "ui"
-FRAGMENT = UI / "download_view.fragment.html"
-
-APP_IMPORT = "import catalog_routes  # noqa: E402\n"
-APP_ROUTES = "DOWNLOAD_ROUTES = catalog_routes.Routes(sys.modules[__name__])\n"
-APP_ANSWER = """        answer = DOWNLOAD_ROUTES.get(path, query)
-        if answer is not None:
-            self._json(*answer)
-            return
-"""
-TOKEN_CHECK = """not self._has_token():
-            self._reject(403, BAD_TOKEN)
-            return
-
-        if path == "/api/state":
-"""
 
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
-
-def swap(text: str, old: str, new: str) -> str:
-    assert text.count(old) == 1, f"anchor not found once: {old!r}"
-    return text.replace(old, new)
-
-
-def cut(text: str, start: str, end: str) -> str:
-    """Drop everything from ``start`` up to ``end``; nothing to do once ``start`` is gone."""
-    if start not in text:
-        return text
-    first = text.index(start)
-    return text[:first] + text[text.index(end, first) :]
-
-
-def wired_app_py() -> str:
-    text = read(ROOT / "app.py")
-    if "DOWNLOAD_ROUTES" in text:
-        return text
-    text = swap(text, "import chat_store", APP_IMPORT + "import chat_store")
-    anchor = "STATIC_FILES = _build_static_allowlist(UI_DIR)\n"
-    text = swap(text, anchor, anchor + APP_ROUTES)
-    marker = '        if path == "/api/state":\n'
-    return swap(text, TOKEN_CHECK, TOKEN_CHECK.replace(marker, APP_ANSWER + marker))
-
-
-def wired_app_js() -> str:
-    text = read(UI / "app.js")
-    text = cut(text, "async function loadCatalog() {", "/* ───────────── downloads ")
-    text = cut(text, "async function doSearch(q) {", "/* ───────────── chat model ")
-    text = text.replace("  renderSearch();\n", "")
-    return text.replace("info.params, info.category)", "info.params, info.pick)")
-
-
-def wired_index() -> str:
-    text = read(UI / "index.html")
-    if "/download.js" in text:
-        return text
-    start = text.index("    <!-- ══════════ Download ══════════ -->")
-    end = text.index("    <!-- ══════════ Server ══════════ -->")
-    text = text[:start] + read(FRAGMENT) + "\n" + text[end:]
-    style = re.search(r'^.*href="/style\.css".*\n', text, re.MULTILINE)[0]
-    text = swap(text, style, style + style.replace("/style.css", "/download.css"))
-    script = '<script src="/app.js"></script>'
-    return swap(text, script, '<script src="/download.js"></script>\n' + script)
 
 
 # ---- routes ----------------------------------------------------------------------
@@ -178,7 +114,7 @@ def wired(app_module, tmp_path):
     import catalog_routes
 
     path = tmp_path / "app_wired.py"
-    path.write_text(wired_app_py(), encoding="utf-8")
+    path.write_text(read(ROOT / "app.py"), encoding="utf-8")
     spec = importlib.util.spec_from_file_location("mlxapp_wired", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -260,7 +196,7 @@ globalThis.IntersectionObserver = class {
 
 def run(tmp_path, scenario):
     script = tmp_path / "screen.js"
-    script.write_text(read(UI / "download.js") + "\n" + wired_app_js(), encoding="utf-8")
+    script.write_text(read(UI / "download.js") + "\n" + read(UI / "app.js"), encoding="utf-8")
     path = tmp_path / "scenario.js"
     path.write_text(PRELUDE + SCREEN + scenario, encoding="utf-8")
     proc = subprocess.run(
@@ -568,9 +504,12 @@ class TestSizes:
 
 class TestPage:
     def test_one_list_with_labelled_controls(self):
-        page = wired_index()
-        for gone in ('id="searchResults"', 'id="searchEmpty"', ">Show all<"):
+        page = read(UI / "index.html")
+        for gone in ('id="searchResults"', 'id="searchEmpty"'):
             assert gone not in page
+        # History has a "Show all" of its own, so only the Download screen is checked.
+        start = page.index("<!-- ══════════ Download")
+        assert ">Show all<" not in page[start : page.index("<!-- ══════════ Server")]
         for one in (
             "catalogCards",
             "catalogFilter",
@@ -600,7 +539,7 @@ class TestPage:
         assert not re.search(r"\beval\(|new Function|insertAdjacentHTML|window\.open", script)
 
     def test_the_old_screen_code_is_gone_after_wiring(self):
-        script = wired_app_js()
+        script = read(UI / "app.js")
         for name in ("loadCatalog", "renderCatalog", "offerCard", "renderOfferCards", "doSearch"):
             assert f"function {name}(" not in script
         assert "renderSearch" not in script
