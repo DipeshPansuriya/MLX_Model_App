@@ -1,10 +1,9 @@
-"""User limits in ``~/.mlx_studio/settings.json`` (row 838).
+"""User settings in ``~/.mlx_studio/settings.json`` (row 838).
 
 Every key is optional and an absent one keeps the built-in rule. No server process
 is started and no model is loaded: the launch command is read from a fake Popen.
 """
 
-# ruff: noqa: F811 - the imported fixtures are used by name
 from __future__ import annotations
 
 import json
@@ -14,18 +13,14 @@ import urllib.error
 import urllib.request
 
 import pytest
-from test_row838_prompt_limit import CONFIG, REPO, guard, limited, reached, room_for  # noqa: F401
 from test_ui_behaviour import needs_node, run
 
 KEYS = {
     "max_context_tokens": (4096, 100_000_000),
-    "two_model_context_tokens": (8192, 32768),
-    "memory_limit_percent": (30, 80),
     "server_max_reply_tokens": (64, 131072),
     "chat_max_reply_tokens": (64, 131072),
     "prompt_cache_size": (1, 100),
     "prompt_cache_bytes": (100_000_000, 100_000_000_000),
-    "mlx_cache_limit_mb": (0, 1_000_000),
     "chat_temperature": (0, 2),
     "chat_top_p": (0.05, 1),
 }
@@ -39,6 +34,7 @@ PERFORMANCE_KEYS = {
 }
 ALL_KEYS = {**KEYS, **PERFORMANCE_KEYS}
 GB = 10**9
+REPO, OTHER = "org/seven", "org/other"
 
 
 def write(app, text):
@@ -80,15 +76,22 @@ class TestReading:
         assert chosen(app_module) == {other: KEYS[other][0]}
 
     def test_a_bad_value_is_logged_once(self, app_module):
-        write(app_module, {"memory_limit_percent": 95})
+        write(app_module, {"max_context_tokens": 95})
         for _ in range(3):
             app_module.user_settings()
         assert len(complaints(app_module)) == 1
-        assert "memory_limit_percent" in complaints(app_module)[0]
+        assert "max_context_tokens" in complaints(app_module)[0]
 
     def test_null_and_unknown_keys_are_quietly_automatic(self, app_module):
         write(app_module, {"max_context_tokens": None, "port": 1})
         assert chosen(app_module) == {}
+        assert complaints(app_module) == []
+
+    def test_a_removed_setting_in_an_old_file_is_quietly_ignored(self, app_module):
+        old = {"memory_limit_percent": 70, "two_model_context_tokens": 9000}
+        write(app_module, {**old, "mlx_cache_limit_mb": 1, "models": {REPO: old}})
+        assert chosen(app_module) == {}
+        assert app_module.user_settings(REPO) == dict.fromkeys(ALL_KEYS)
         assert complaints(app_module) == []
 
     @pytest.mark.parametrize(
@@ -186,7 +189,8 @@ class TestSaving:
         assert not app_module._settings_file().exists()
 
 
-def launch(app, monkeypatch, also=None):
+def launch(app, monkeypatch, repo=REPO):
+    """The command and environment a start would use; nothing is started."""
     seen = {}
 
     def fake_popen(cmd, **kwargs):
@@ -196,7 +200,7 @@ def launch(app, monkeypatch, also=None):
     monkeypatch.setattr(app, "stop_server", lambda *a, **k: None)
     monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
     app.LOG_DIR.mkdir(parents=True, exist_ok=True)
-    app.worker_server_start(REPO, False, also=also)
+    app.worker_server_start(repo, False)
     return seen
 
 
@@ -205,168 +209,42 @@ def after(cmd, flag):
     return cmd[cmd.index(flag) + 1] if flag in cmd else None
 
 
-ONE_MODEL_FLAGS = {
-    "max_context_tokens": ("--studio-max-context", 5000),
-    "memory_limit_percent": ("--studio-memory-percent", 40),
+CACHE_FLAGS = {
     "prompt_cache_size": ("--prompt-cache-size", 3),
     "prompt_cache_bytes": ("--prompt-cache-bytes", 2 * GB),
 }
 
 
 class TestLaunch:
-    def test_with_nothing_set_the_command_is_as_before(self, app_module, monkeypatch):
+    def test_with_nothing_set_only_the_reply_default_is_passed(self, app_module, monkeypatch):
         cmd = launch(app_module, monkeypatch)["cmd"]
         assert after(cmd, "--max-tokens") == "8192"
-        assert after(cmd, "--prompt-cache-size") == "2"  # always passed since 2.0.13
-        for flag, _ in ONE_MODEL_FLAGS.values():
-            assert flag == "--prompt-cache-size" or flag not in cmd
+        assert not [flag for flag, _ in CACHE_FLAGS.values() if flag in cmd]
+        assert not [flag for flag in cmd if flag.startswith("--studio")]
 
-    @pytest.mark.parametrize("key", ONE_MODEL_FLAGS)
+    @pytest.mark.parametrize("key", CACHE_FLAGS)
     def test_a_set_key_adds_its_flag_only(self, app_module, monkeypatch, key):
-        flag, value = ONE_MODEL_FLAGS[key]
+        flag, value = CACHE_FLAGS[key]
         write(app_module, {key: value})
         cmd = launch(app_module, monkeypatch)["cmd"]
         assert after(cmd, flag) == str(value)
-        passed = {f for f, _ in ONE_MODEL_FLAGS.values() if f in cmd}
-        assert passed == {flag, "--prompt-cache-size"}
+        assert [f for f, _ in CACHE_FLAGS.values() if f in cmd] == [flag]
 
     def test_the_server_reply_cap(self, app_module, monkeypatch):
         write(app_module, {"server_max_reply_tokens": 1000})
         assert after(launch(app_module, monkeypatch)["cmd"], "--max-tokens") == "1000"
 
-    def test_the_server_is_told_what_it_was_started_with(self, app_module, monkeypatch):
-        write(app_module, {"prompt_cache_size": 3, "chat_max_reply_tokens": 100})
-        env = launch(app_module, monkeypatch)["env"]
-        assert json.loads(env["MLX_STUDIO_SETTINGS"]) == {"prompt_cache_size": 3}
-
-
-def pair_estimate(app, monkeypatch, budget_tokens=32768):
-    guard = app._guard_module()
-    monkeypatch.setattr(guard, "context_tokens", lambda *a: budget_tokens)
-    monkeypatch.setattr(app, "hardware", lambda: {"ram_bytes": 100 * GB})
-    return app.server_memory_estimate([REPO, "org/other"], fresh=True)
-
-
-class TestTwoModels:
-    def test_the_context_cap_lowers_the_context(self, app_module, monkeypatch):
-        assert pair_estimate(app_module, monkeypatch)["context_tokens"] == 32768
-        write(app_module, {"two_model_context_tokens": 10000})
-        estimate = pair_estimate(app_module, monkeypatch)
-        assert estimate["context_tokens"] == 9216  # whole steps of 1024
-        assert estimate["capped_by_setting"] is True
-
-    def test_the_cap_never_raises_the_calculated_context(self, app_module, monkeypatch):
-        write(app_module, {"two_model_context_tokens": 32768})
-        estimate = pair_estimate(app_module, monkeypatch, 12288)
-        assert estimate["context_tokens"] == 12288
-        assert estimate["capped_by_setting"] is False
-
-    @pytest.mark.parametrize(("cache", "expected"), [(10**8, 10**8), (10**11, None)])
-    def test_the_cache_bytes_only_lower_the_planned_cap(
-        self, app_module, monkeypatch, cache, expected
-    ):
-        limits = {
-            "fits": True,
-            "context_tokens": 8192,
-            "cache_cap_bytes": 3 * GB,
-            "budget_bytes": 9 * GB,
+    def test_the_start_records_only_what_its_command_was_given(self, app_module, monkeypatch):
+        settings = {
+            "prompt_cache_size": 3,
+            "chat_max_reply_tokens": 100,
+            "max_context_tokens": 5000,
         }
-        monkeypatch.setattr(app_module, "server_memory_estimate", lambda *a, **k: limits)
-        write(app_module, {"prompt_cache_bytes": cache, "max_context_tokens": 5000})
-        cmd = launch(app_module, monkeypatch, also=["org/other"])["cmd"]
-        assert after(cmd, "--prompt-cache-bytes") == str(expected or 3 * GB)
-
-
-class TestMemoryPercent:
-    @pytest.mark.parametrize(("percent", "share"), [(None, 0.52), (40, 0.40), (80, 0.52)])
-    def test_the_apps_budget(self, app_module, monkeypatch, percent, share):
-        monkeypatch.setattr(app_module, "hardware", lambda: {"ram_bytes": 100 * GB})
-        if percent:
-            write(app_module, {"memory_limit_percent": percent})
-        assert app_module._server_budget() == int(share * 100 * GB)
-
-    @pytest.mark.parametrize(
-        ("percent", "share", "most"),
-        [(None, 0.52, 0.80), (40, 0.40, 0.40), (70, 0.52, 0.70), (99, 0.52, 0.80)],
-    )
-    def test_the_guards_figures_are_only_ever_lowered(
-        self, guard, monkeypatch, percent, share, most
-    ):
-        monkeypatch.setattr(guard, "ram_bytes", lambda: 100 * GB)
-        opts = guard.Options(memory_percent=percent)
-        assert guard.memory_budget(opts) == int(share * 100 * GB)
-        assert guard.memory_ceiling(percent) == int(most * 100 * GB)
-
-    def test_the_guard_reads_both_options(self, guard):
-        rest, opts = guard.split_studio_args(
-            ["--studio-memory-percent", "40", "--studio-max-context", "5000", "--model", REPO]
-        )
-        assert rest == ["--model", REPO]
-        assert (opts.memory_percent, opts.max_context) == (40, 5000)
-        assert guard.PromptTooLong(5, 0, 40).args[0].count("40%") == 1
-
-
-BIG = {**CONFIG, "max_position_embeddings": 10**6}
-
-
-class TestServerLimit:
-    # Nothing chosen: 200 tokens is below 4096, so the automatic figure refuses (0).
-    @pytest.mark.parametrize(("chosen", "limit"), [(50, 50), (400, 0), (None, 0)])
-    def test_the_users_figure_wins_up_to_the_ceiling(self, guard, chosen, limit):
-        budget = room_for(guard, 200)
-        assert guard.prompt_limit(BIG, 2, budget, None, budget, chosen) == limit
-
-    def test_never_above_the_models_limit(self, guard):
-        assert guard.prompt_limit(CONFIG, 2, GB, None, 100 * GB, 5000) == 100
-        assert guard.prompt_limit({}, 0, 0, None, 0, 5000) == 5000
-
-    def test_the_refusal_and_the_report_name_it(self, limited, guard):
-        api = limited(BIG, max_context=50)
-        assert reached(api.send("x" * 50))
-        status, body = api.send("x" * 51)
-        assert status == 400
-        assert "maximum context length is 50 tokens" in body["error"]["message"]
-        assert api.reports == [{"prompt_limits": {REPO: 50}}]
-
-    def test_it_applies_when_the_config_cannot_be_read(self, limited):
-        api = limited(config_text="not json", max_context=50)
-        assert api.send("x" * 51)[0] == 400
-
-    def test_main_passes_it_for_one_model_only(self, guard):
-        names = guard.main.__code__.co_names
-        assert "max_context" in names and "memory_percent" in names
-        assert "started_with" in guard.main.__code__.co_consts.__repr__()
-
-
-def one_estimate(app, monkeypatch, config=BIG, auto_tokens=6000):
-    guard = app._guard_module()
-    budget = room_for(guard, auto_tokens)
-    monkeypatch.setattr(app, "_server_budget", lambda: budget)
-    monkeypatch.setattr(guard, "memory_ceiling", lambda percent=None: budget)
-    monkeypatch.setattr(app, "_server_models", lambda repos: [(REPO, config, 2)])
-    return app.server_memory_estimate([REPO])
-
-
-class TestWarning:
-    @pytest.mark.parametrize("chosen", [None, 5000, 6000])
-    def test_none_up_to_the_automatic_figure(self, app_module, monkeypatch, chosen):
-        if chosen:
-            write(app_module, {"max_context_tokens": chosen})
-        assert one_estimate(app_module, monkeypatch)["context_warning"] is None
-
-    def test_above_it_the_applied_figure_is_said(self, app_module, monkeypatch):
-        write(app_module, {"max_context_tokens": 7000})
-        warning = one_estimate(app_module, monkeypatch)["context_warning"]
-        assert "7000" in warning and "6000 tokens apply" in warning
-
-    def test_it_names_the_chosen_percent(self, app_module, monkeypatch):
-        write(app_module, {"max_context_tokens": 7000, "memory_limit_percent": 40})
-        assert "more than 40%" in one_estimate(app_module, monkeypatch)["context_warning"]
-
-    def test_none_when_the_models_limit_is_what_applies(self, app_module, monkeypatch):
-        write(app_module, {"max_context_tokens": 7000})
-        small = {**CONFIG, "max_position_embeddings": 5000}
-        assert one_estimate(app_module, monkeypatch, small)["context_warning"] is None
+        write(app_module, settings)
+        env = launch(app_module, monkeypatch)["env"]
+        assert json.loads(app_module.STATE.server_started_with) == {"prompt_cache_size": 3}
+        assert not [name for name in env if name.startswith("MLX_STUDIO")]
+        assert env["HF_HUB_OFFLINE"] == "1"
 
 
 class TestChatReplyCap:
@@ -389,24 +267,23 @@ class TestSnapshot:
         }  # fmt: skip
         assert shown["server_max_reply_tokens"]["effective"] == "automatic (8192)"
         assert shown["chat_max_reply_tokens"]["effective"] == "automatic (2048)"
-        assert shown["max_context_tokens"]["effective"] == "automatic (calculated from memory)"
-        assert shown["memory_limit_percent"]["effective"].startswith("automatic (80% ceiling")
+        assert shown["max_context_tokens"]["effective"] == (
+            "automatic (OptiQ: its own default. MLX: not available)"
+        )
         assert shown["prompt_cache_bytes"]["value"] is None
 
-    def pending(self, app, started, resident=None):
-        app.STATE.server_started_with = started
-        view = {**app._resident_view(None), "started_with": resident}
-        return app._settings_pending(True, view)
+    def pending(self, app, started):
+        app.STATE.server_repos, app.STATE.server_started_with = [REPO], started
+        return app._settings_pending(True)
 
     def test_a_changed_launch_setting_waits_for_apply(self, app_module):
         assert self.pending(app_module, "{}") is False
         write(app_module, {"prompt_cache_size": 3})
         assert self.pending(app_module, "{}") is True
         assert self.pending(app_module, '{"prompt_cache_size": 3}') is False
-        # An adopted server says it itself.
-        assert self.pending(app_module, None, '{"prompt_cache_size": 3}') is False
+        # An adopted server with no recorded settings started with none.
         assert self.pending(app_module, None) is True
-        assert app_module._settings_pending(False, app_module._resident_view(None)) is False
+        assert app_module._settings_pending(False) is False
 
     def test_the_chat_cap_needs_no_restart(self, app_module):
         write(app_module, {"chat_max_reply_tokens": 100})
@@ -432,19 +309,6 @@ class TestCard:
         )
         assert out == [False, True]
 
-    def test_the_warning_is_shown(self, tmp_path):
-        out = run(
-            tmp_path,
-            """
-            const el = document.querySelector("#serverContextWarn");
-            showEstimate({ context_warning: "Memory may pass 80%." });
-            const shown = el.textContent;
-            showEstimate({ context_warning: null });
-            return [shown, el.textContent];
-            """,
-        )
-        assert out == ["Memory may pass 80%.", ""]
-
     def test_every_key_has_a_labelled_field(self):
         from pathlib import Path
 
@@ -465,24 +329,14 @@ class TestDocs:
             assert f"{low} to {high}" in row
 
 
-OTHER = "org/other"
-MODEL_KEYS = [key for key in KEYS if key != "memory_limit_percent"]
-
-
 class TestPerModel:
-    @pytest.mark.parametrize("key", MODEL_KEYS)
+    @pytest.mark.parametrize("key", KEYS)
     def test_the_model_value_beats_the_global_one(self, app_module, key):
         low, high = KEYS[key]
         write(app_module, {key: low, "models": {REPO: {key: high}}})
         assert app_module.user_settings(REPO)[key] == high
         assert app_module.user_settings(OTHER)[key] == low
         assert app_module.user_settings()[key] == low
-
-    def test_the_memory_percent_is_global_only(self, app_module):
-        entry = {"memory_limit_percent": 70}
-        write(app_module, {"memory_limit_percent": 40, "models": {REPO: entry}})
-        assert app_module.user_settings(REPO)["memory_limit_percent"] == 40
-        assert "memory_limit_percent" in complaints(app_module)[0]
 
     def test_a_bad_model_value_falls_back_to_the_global_one_and_is_logged_once(self, app_module):
         write(app_module, {"prompt_cache_size": 2, "models": {REPO: {"prompt_cache_size": 0}}})
@@ -516,7 +370,7 @@ class TestPerModel:
     @pytest.mark.parametrize(
         "body",
         [
-            {"repo": REPO, "values": {"memory_limit_percent": 40}},
+            {"repo": REPO, "values": {"memory_limit_percent": 40}},  # removed setting
             {"repo": REPO, "values": {"prompt_cache_size": 0}},
             {"repo": "a b", "values": {"prompt_cache_size": 2}},
             {"repo": 5, "values": {"prompt_cache_size": 2}},
@@ -534,57 +388,28 @@ class TestPerModel:
         assert status == 400 and "too many" in body["error"]
         assert not app_module._settings_file().exists()
 
-    def test_one_model_starts_with_its_own_values(self, app_module, monkeypatch):
-        models = {REPO: {"max_context_tokens": 5000}, OTHER: {"prompt_cache_size": 9}}
-        write(app_module, {"models": models})
+    def test_a_model_starts_with_its_own_values(self, app_module, monkeypatch):
+        models = {REPO: {"prompt_cache_size": 5}, OTHER: {"server_max_reply_tokens": 99}}
+        write(app_module, {"prompt_cache_size": 3, "models": models})
         cmd = launch(app_module, monkeypatch)["cmd"]
-        assert "--studio-max-context" not in cmd  # no global value: the map has it
-        assert after(cmd, "--prompt-cache-size") == "2"
+        assert after(cmd, "--prompt-cache-size") == "5"
+        assert after(cmd, "--max-tokens") == "8192"
+        cmd = launch(app_module, monkeypatch, OTHER)["cmd"]
+        assert after(cmd, "--prompt-cache-size") == "3"
+        assert after(cmd, "--max-tokens") == "99"
 
-    @pytest.mark.parametrize(
-        ("key", "flag", "mine", "theirs", "applied"),
-        [
-            ("prompt_cache_size", "--prompt-cache-size", 5, 3, "3"),
-            ("prompt_cache_size", "--prompt-cache-size", 5, None, "5"),
-            ("prompt_cache_bytes", "--prompt-cache-bytes", 2 * GB, GB, str(GB)),
-            ("server_max_reply_tokens", "--max-tokens", 2000, 1000, "1000"),
-            # The other model is automatic (8192), which is stricter than 20000.
-            ("server_max_reply_tokens", "--max-tokens", 20000, None, "8192"),
-        ],
-    )
-    def test_two_models_take_the_stricter_value(
-        self, app_module, monkeypatch, key, flag, mine, theirs, applied
-    ):
-        limits = {
-            "fits": True,
-            "context_tokens": 8192,
-            "cache_cap_bytes": 3 * GB,
-            "budget_bytes": 9 * GB,
-        }
-        monkeypatch.setattr(app_module, "server_memory_estimate", lambda *a, **k: limits)
-        write(app_module, {"models": {REPO: {key: mine}, OTHER: {key: theirs}}})
-        assert after(launch(app_module, monkeypatch, also=[OTHER])["cmd"], flag) == applied
-
-    def test_the_smaller_two_model_cap_wins(self, app_module, monkeypatch):
-        key = "two_model_context_tokens"
-        write(app_module, {"models": {REPO: {key: 20480}, OTHER: {key: 10240}}})
-        assert pair_estimate(app_module, monkeypatch)["context_tokens"] == 10240
-
-    def test_chat_and_the_warning_use_the_models_value(self, app_module, monkeypatch):
-        values = {"chat_max_reply_tokens": 100, "max_context_tokens": 7000}
-        write(app_module, {"models": {REPO: values}})
+    def test_chat_uses_the_models_value(self, app_module):
+        write(app_module, {"models": {REPO: {"chat_max_reply_tokens": 100}}})
         assert app_module.chat_settings(REPO)["max_tokens"] == 100
         assert app_module.chat_settings(OTHER)["max_tokens"] == 2048
-        assert "7000" in one_estimate(app_module, monkeypatch)["context_warning"]
 
     def test_only_a_served_models_change_waits_for_apply(self, app_module):
         app = app_module
         app.STATE.server_repos, app.STATE.server_started_with = [REPO], "{}"
-        view = app._resident_view(None)
         write(app, {"models": {OTHER: {"prompt_cache_size": 3}}})
-        assert app._settings_pending(True, view) is False
+        assert app._settings_pending(True) is False
         write(app, {"models": {REPO: {"prompt_cache_size": 3}}})
-        assert app._settings_pending(True, view) is True
+        assert app._settings_pending(True) is True
 
     def test_the_snapshot_lists_the_overrides(self, app_module):
         write(app_module, {"models": {REPO: {"prompt_cache_size": 3}}})
