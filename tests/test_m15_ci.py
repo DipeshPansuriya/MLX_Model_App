@@ -17,7 +17,7 @@ CHECKER = ROOT / ".github" / "scripts" / "require_no_skips.py"
 SKIP_CHECK = ["python3", ".github/scripts/require_no_skips.py"]
 REPORT = "$RUNNER_TEMP/macos-tests.xml"
 SUITE_STEP = "Run the suite on macOS"
-CHECK_STEP = "Guard and packaging tests ran, none skipped"
+CHECK_STEP = "Packaging tests ran, none skipped"
 
 
 def test_ci_builds_the_app_on_macos():
@@ -131,7 +131,7 @@ def test_every_file_needing_mlx_is_in_the_no_skip_check():
             r"importorskip\(\s*[\"'](mlx|huggingface_hub)", path.read_text(encoding="utf-8")
         )
     }
-    assert {"tests/test_guard.py", "tests/test_guard_null_args.py"} <= needing
+    assert "tests/test_app_robustness.py" in needing  # mlx_lm's own origin check
     assert needing <= set(guarded_files())
 
 
@@ -225,7 +225,7 @@ def test_skip_check_fails_when_a_listed_file_did_not_run(tmp_path):
 
 def test_skip_check_fails_without_a_report(tmp_path):
     done = subprocess.run(
-        [sys.executable, str(CHECKER), str(tmp_path / "none.xml"), "tests/test_guard.py"],
+        [sys.executable, str(CHECKER), str(tmp_path / "none.xml"), "tests/test_sample.py"],
         capture_output=True,
         text=True,
         timeout=60,

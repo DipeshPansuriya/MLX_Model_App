@@ -11,6 +11,7 @@ import os
 import socket
 import threading
 import time
+import types
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -338,6 +339,11 @@ class TestFailures:
         assert kind == "error"
         assert "boom while loading" in text
         assert finished(app_module)
+
+    def test_a_servers_openai_refusal_is_said_in_its_own_words(self, app_module):
+        said = json.dumps({"error": {"message": "maximum context length is 5 tokens"}})
+        stream = types.SimpleNamespace(read=lambda n: said.encode(), status=400, reason="Bad")
+        assert "maximum context length is 5 tokens" in app_module._chat_refusal(stream)
 
     def test_a_refusal_that_is_not_json(self, app_module, upstream, base_url):
         running(app_module)
