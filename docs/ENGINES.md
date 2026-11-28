@@ -97,8 +97,9 @@ too when its port owner cannot be read for 600 seconds.
 | Claude Code (OptiQ, Anthropic route on) | `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` | `ANTHROPIC_MODEL=default_model` | `ANTHROPIC_AUTH_TOKEN` |
 | MLX | `http://127.0.0.1:8080/v1` | `default_model` (or the exact started id; another name loads that model) | none; no Anthropic route |
 
-The OpenAI and Anthropic routes answered plain HTTP requests in the live check. A
-connection from Claude Code or another client program has not been tried.
+The OpenAI and Anthropic routes answered plain HTTP requests in the live check.
+Claude Code 2.1.332 was tried once with OptiQ (commit `5630379`). DeepSeek Harness
+and other client programs have not been tried.
 
 ## Protections the engines do not have
 
