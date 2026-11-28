@@ -231,37 +231,29 @@ Origin and Content-Type rules as every other route.
 
 | Route | Body, reply |
 |---|---|
-| `GET /api/config?repo=` | `settings` (for each key `value`, `own`, `inherited`, `effective`, `min`, `max`, `decimal`, `global_only`), `applied_context`, `context_message`, `load_test`. Without `repo`: the global values |
+| `GET /api/config?repo=` | `settings` (for each key `value`, `own`, `inherited`, `effective`, `min`, `max`, `decimal`, `global_only`, now always false), `performance`, `load_test`. Without `repo`: the global values |
 | `GET /api/loadtest?repo=` | `status`, `rows`, `results` (stored runs, each with `stale`), `sizes` the model allows, `load_test`, `blocked` |
 | `POST /api/loadtest/start` | `{"repo", "sizes"}` and optional `"thinking"` (true or false; default on where `GET /api/loadtest` says `thinking.supported`, sent as `chat_template_kwargs.enable_thinking`; `true` is a 400 where it is not): 1 to 12 different sizes from 4096 to the model's limit. 400 bad input or model not installed completely; 409 while the API server is running, starting or adopted, a test runs, an install runs, or the model is downloading or being deleted |
 | `POST /api/loadtest/cancel` | `{}`; 404 when no test runs |
-| `POST /api/loadtest/apply` | `{"repo", "run_id", "size"}`: saves `max_context_tokens` for the model, only from a stored, passed size of a run that is not stale. 400, 404 or 409 otherwise |
 
 While a test runs, server start, install, and download or delete of that model
 answer 409. `/api/state` adds `loadtest` (`active`, `repo`, `run_id`, `status`,
 `reason`, `size`, `index`, `of`, `step`, `done`, `total`, `memory_percent`).
 
-`mlx_loadtest.py` starts one guarded server for each size on a free port (never
+`mlx_loadtest.py` starts the engine's own server for each size on a free port (never
 8765 or 8080), sends generated filler prompts (cold and follow-up, twice by
-default) and reports figures. The server of a test is started with a max context
-of the largest size plus `reply_tokens`, which the guard lowers to the model's own
-limit and the 80% memory ceiling. When the limit the server reports leaves a
-follow-up prompt less than `reply_tokens` for its reply, that size is `skipped`
-(the run ends as `memory`), not `passed`; this includes a size at the model's own
-limit. A run is `done`, `cancelled`, `memory`, `failed` or
+default) and reports figures. At the model's own limit the prompts stop
+`reply_tokens` short of it. A run is `done`, `cancelled`, `memory`, `failed` or
 `interrupted`; a row is `passed`, `skipped`, `stopped`, `failed`, `cancelled` or
 `interrupted`. A size that does not pass ends the run. Results are in
 `~/.mlx_studio/loadtest.json` (mode `0600`, the last 5 runs for each model, no
 prompt or reply text).
 
-**Memory limits of a test.** The limit L is 80% of RAM, or the lower memory
-percent. A load or request is sent only if the projected use is at most L - 5 (75%,
-or lower with a wider `margin_percent`). The server is killed at L - 3 (77%), on
-critical memory pressure, on swap growth over 0.5 GB, when memory cannot be read,
-or when samples (every 0.1 s) are more than 1 s apart. Sampling **cannot guarantee**
-that use never passes 80%: a jump between two samples cannot be stopped (one
-measured jump was 5 points in 0.54 s). A passed size is evidence for the Mac as it
-was during the test, not a promise.
+**Stops of a test.** There is no memory limit and no estimate: every size is tried.
+The test server is killed on critical memory pressure, on swap growth over 0.5 GB,
+when memory cannot be read, when samples (every 0.1 s) are more than 1 s apart, on
+the size's time limit, or after 120 s without a byte of a reply. A passed size is
+evidence for the Mac as it was during the test, not a promise.
 
 ## 7. Not applicable
 
