@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import socketserver
 import subprocess
 import sys
 import threading
@@ -19,6 +20,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REPLY_WORD = "zebra"
 LOG_LINE = "fake server log line"
+
+
+class Server(ThreadingHTTPServer):
+    """No host name lookup at bind (as ``app.LocalServer``): a CI Mac is slow at it."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def load_module(name):
@@ -157,7 +166,7 @@ def serve(port, mode):
 
     if mode == "no-listen":  # alive, but another program holds its port
         threading.Event().wait()
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd = Server(("127.0.0.1", port), Handler)
     httpd.serve_forever()
 
 

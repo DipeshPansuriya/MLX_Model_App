@@ -14,7 +14,6 @@ import sys
 import threading
 import urllib.request
 import uuid
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import portguard
@@ -73,7 +72,7 @@ def app_module(tmp_path, monkeypatch):
 @pytest.fixture
 def server(app_module):
     """Run the real request handler on an ephemeral loopback port."""
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app_module.Handler)
+    httpd = app_module.LocalServer(("127.0.0.1", 0), app_module.Handler)
     httpd.daemon_threads = True
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

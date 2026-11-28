@@ -194,3 +194,20 @@ class TestBrowserDefectsInPython:
         assert status == "cancelled"
         for row in rows.values():
             assert (row["status"], row["reason"]) == ("cancelled", "cancelled by you")
+
+
+class TestSlowNameLookup:
+    """Some Macs take tens of seconds to look a host name up."""
+
+    def test_the_app_server_starts_without_looking_one_up(self, app_module, monkeypatch):
+        asked = []
+        monkeypatch.setattr(socket, "getfqdn", lambda name="": asked.append(name) or name)
+        monkeypatch.setattr(app_module, "PORT", 0)
+        httpd = app_module.serve()
+        try:
+            assert asked == []
+            assert httpd.server_name == app_module.HOST
+            assert httpd.server_port == httpd.server_address[1] > 0
+        finally:
+            httpd.shutdown()
+            httpd.server_close()

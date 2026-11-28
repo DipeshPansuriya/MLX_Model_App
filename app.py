@@ -26,6 +26,7 @@ import secrets
 import shutil
 import signal
 import socket
+import socketserver
 import stat
 import subprocess
 import sys
@@ -4180,8 +4181,18 @@ def adopt_bundle_identity() -> None:
         log_app("warning", "could not set the app icon", error=str(exc)[:200])
 
 
+class LocalServer(ThreadingHTTPServer):
+    """The stdlib server looks the host's name up between bind and listen. On a
+    Mac with slow name lookup that takes tens of seconds, and nothing here uses
+    the name."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def serve() -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    httpd = LocalServer((HOST, PORT), Handler)
     httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
