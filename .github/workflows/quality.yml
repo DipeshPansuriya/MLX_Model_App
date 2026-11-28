@@ -126,10 +126,6 @@ jobs:
         run: python3 packaging/release_manifest.py --inspect --dist dist
 
       # The macOS-only launcher and build tests skip themselves on Linux.
-      - name: TEMPORARY diag 1020
-        run: |
-          python3 .github/scripts/tmp_diag_1020.py
-
       - name: Run the suite on macOS
         run: python3 -m pytest -q -rs --junitxml="$RUNNER_TEMP/macos-tests.xml"
 
