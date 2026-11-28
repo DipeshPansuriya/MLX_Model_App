@@ -3,7 +3,6 @@
 No server process is started and no model is loaded.
 """
 
-
 from __future__ import annotations
 
 import json
