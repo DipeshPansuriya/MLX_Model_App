@@ -17,7 +17,7 @@ available.
 > This page describes **2.0.9**, released on 2026-11-26 as the
 > [latest release](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
 > Text marked **unreleased** came with the 2.0.10 source or later, is in the
-> 2.0.12 source, and is not in the released app ([CHANGELOG](CHANGELOG.md)). The
+> 2.0.13 source, and is not in the released app ([CHANGELOG](CHANGELOG.md)). The
 > screenshots show an earlier version.
 
 ![Chat view](screenshots/02-chat-loaded.png)
@@ -206,7 +206,9 @@ model of its own. Released builds load a second copy for Chat.
   [what is no longer protected](#protections-removed-in-2013).
 - One model per server. Live server output, copyable endpoint and `curl` example.
 - Warns when the chosen model is marked as unable to call tools.
-- **Run in background** (on by default): the server keeps running, and holding memory, until **Stop**, after the window closes. Its process
+- **Run in background** (on by default for OptiQ, off for MLX; your choice is kept per
+  engine): the server keeps running, and holding memory, until **Stop**, after the window
+  closes. A background MLX server has no password and keeps running until **Stop**. Its process
   id is saved in `~/.mlx_studio/server.pid` and adopted on the next launch only if
   the command line and start time still match.
 - If the server dies, the view shows a banner with **Restart** and records the
@@ -248,8 +250,8 @@ A model that cannot use compressed memory has the choice switched off, with the
 reason, and runs in Standard.
 
 ### Load Test
-2.0.13 source (unreleased). Measures one model on this Mac. **Not yet run with a
-real model.** [How to run it safely](docs/RUNBOOK.md#37a-run-a-load-test-safely).
+2.0.13 source (unreleased). Measures one model on this Mac. **One 4096-token run on
+OptiQ has passed with a real model; other sizes and MLX have not been tried.** [How to run it safely](docs/RUNBOOK.md#37a-run-a-load-test-safely).
 
 - Tick context sizes (4096 up to 1,048,576) or type your own (up to 12 in one
   test); a size over the model's limit is off. The API server must be stopped; the
@@ -347,10 +349,10 @@ them. See [docs/ENGINES.md](docs/ENGINES.md).
 
 ## Connect DeepSeek Harness or any OpenAI-compatible client
 
-The MLX server (the default) offers the OpenAI-style API only. It has no
+The MLX server offers the OpenAI-style API only. It has no
 `/v1/messages` route, so a client that speaks only the Anthropic API (such as Claude
 Code) cannot connect to it directly. OptiQ has that route, switched on by default; see
-[docs/ENGINES.md](docs/ENGINES.md) (not yet tried with Claude Code itself).
+[docs/ENGINES.md](docs/ENGINES.md) (tried once with Claude Code 2.1.332).
 
 1. Download the model in MLX Studio, then start it in the **API Server** tab.
 2. Point the client at it:
@@ -385,9 +387,9 @@ gone; the MLX engine is `mlx_lm`'s own server.
 | Reply token cap | The setting is a default; a request may ask for more |
 | Two models in one server | One model |
 | MLX buffer cache limit setting | Gone |
-| `Host`, JSON-only and `Origin` checks on port 8080 | Only `--allowed-origins`: it limits which web pages can read replies, and does not stop them sending requests |
+| `Host`, JSON-only and `Origin` checks on port 8080 | Only `--allowed-origins`: it limits which web pages can read replies. It does not stop them sending requests, and it does not stop DNS rebinding, through which a website may read replies and the list of downloaded models |
 | Request size limits | Gone |
-| Refusal of other models, draft models, adapters and file paths | Any local program, and possibly a web page, can make the server load another cached model, a local folder, an adapter or a draft model |
+| Refusal of other models, draft models, adapters and file paths | Any local program, and a web page, can make the server load another cached model, a local folder, an adapter or a draft model |
 | Null tool argument fix | Gone |
 | Loaded model and memory readout | Delete is refused only for the model the server was started with |
 | Default prompt cache of 2 conversations with a byte cap | `mlx_lm`'s default (10), no byte cap unless set |

@@ -257,11 +257,11 @@
           <p class="hint server-link"><a href="#config">Reply, cache and context settings: open Configuration</a></p>
           <div class="server-row">
             <label class="check">
-              <input type="checkbox" id="serverBackground" checked aria-describedby="serverBackgroundNote" />
+              <input type="checkbox" id="serverBackground" aria-describedby="serverBackgroundNote" />
               <span>Run in background</span>
             </label>
           </div>
-          <p class="hint" id="serverBackgroundNote">Closing the window leaves the server on: it keeps running and holding memory until you press Stop.</p>
+          <p class="hint" id="serverBackgroundNote">Closing the window leaves the server on: it keeps running and holding memory until you press Stop. A background MLX server has no password and keeps running until Stop.</p>
           <div class="server-row">
             <button class="btn btn-primary" id="serverStartBtn" aria-describedby="serverStartWhy serverApplyNote">Start Server</button>
             <button class="btn btn-ghost" id="serverStopBtn" hidden>Stop</button>
@@ -307,6 +307,7 @@
               <span class="hint" id="confirm-server_max_reply_tokens-note"></span>
             </div>
             <label class="check"><input type="checkbox" id="confirmBackground" /><span>Run in background (keeps holding memory until Stop)</span></label>
+            <p class="hint">A background MLX server has no password and keeps running until Stop.</p>
             <p class="hint">Changes here are saved as this model's settings.</p>
             <p class="field-error" id="confirmError" role="alert"></p>
             <div class="server-row">
@@ -328,7 +329,7 @@
           </div>
           <div class="endpoint" id="endpointText">http://127.0.0.1:8080/v1</div>
           <p class="hint">Point DeepSeek Harness or any OpenAI-compatible client here.</p>
-          <p class="hint" id="mlxModelHint">Send the model name default_model. Another name makes the MLX server load that model instead.</p>
+          <p class="hint" id="mlxModelHint">Send the model name default_model. Another name makes the MLX server load that model instead. No password: any program on this Mac, and a website open in your browser, can send it requests while it runs.</p>
           <pre class="code" id="curlExample"></pre>
         </div>
         <div class="panel" id="connectPanel" hidden>
@@ -337,6 +338,7 @@
             <button class="btn btn-mini" type="button" id="copyKey" hidden>Copy key</button>
           </div>
           <p class="hint" id="connectState" role="status"></p>
+          <p class="field-error" id="mlxOpenWarn" hidden>Open server: no password. Any program on this Mac, and a website open in your browser, can send it requests. Press Stop when you are not using it.</p>
           <p class="hint">Copy these into your tool yourself: MLX Studio does not change any other app's settings files. The key is never shown here; use Copy key.</p>
           <p class="hint">Claude Code</p>
           <pre class="code" id="claudeSettings"></pre>

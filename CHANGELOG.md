@@ -3,19 +3,63 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.13] — unreleased
+## [2.0.13] — 2026-11-28
+
+Not released as the latest version: pre-release build; the released 2.0.9 app has none
+of these changes. It holds the 2.0.10, 2.0.11 and 2.0.12 changes and those below.
+
+### Read before you use it
+
+- The MLX server on port 8080 has **no password**. Any program or user on this Mac can
+  use it while it runs.
+- **A website open in your browser can also send it requests**, even though it normally
+  cannot read the answer. Such a request can make it work hard, switch to another
+  downloaded model or a folder on this Mac, and so **freeze or crash the Mac**.
+- With a known web trick (DNS rebinding), a website **may also read** the answers and the
+  list of your downloaded models. The "allowed origins" setting does not stop this.
+- There is **no memory limit**. Save your work before trying a large model or a long
+  prompt.
+- **Stop the API server when you are not using it.** **Run in background** is off by
+  default for MLX: keep it off. With it on, the open server keeps running after you close
+  the app. It is on by default for OptiQ. After a crash or force quit, open the app again,
+  check the server and press **Stop**.
+- If you must leave a server running while browsing, use the OptiQ engine, which asks
+  for a key.
+- Do not expose port 8080 to your network or through a tunnel or proxy.
+- The server log can contain text from bad requests. Check it before sharing logs.
+
+### What was and was not tried with real models
+
+One check on one Mac (Apple M6, 32 GB) on 2026-11-28, with one model per engine and
+outgoing network blocked, before the version number and the background default changed:
+
+- Both engines started, answered chat and made tool calls. This includes the direct
+  `mlx_lm` server.
+- OptiQ: Claude Code answered and wrote a file; one 4096-token load test passed; calls
+  without the key or with a wrong one were refused.
+- **Not tried:** DeepSeek Harness, the Install button, the native window, closing it with
+  background on, **Apply changes**, **Restart**, the copy buttons, an MLX request naming
+  another downloaded model, other load test sizes and long contexts.
+
+The automated tests use fakes only.
+
+### Known limits
+
+- OptiQ's `/v1/models` (key needed) lists the served model by its **full folder path**,
+  which includes your user name, plus `:think` and `:no-think` forms. OptiQ 0.8.6 has no
+  option to rename it. Send `default_model`.
 
 ### Easier server start and connect
 
 - OptiQ is the default engine on API Server and Load Test; the engine of the last ready
   server is kept. A missing engine can be installed from the Start area, or use MLX.
-- **Run in background** is on by default and the saved choice is kept: the server keeps
-  running and holding memory until **Stop**.
+- **Run in background** is on by default for OptiQ and off for MLX, and follows the
+  engine you pick. The choice you last started a ready server with is kept for that
+  engine. A background server keeps running and holding memory until **Stop**; a
+  background MLX server has no password.
+- The MLX connect and client lines carry an open-server warning.
 - Start shows a check panel before launching. New server setting `server_reasoning`.
 - **Connect your tool** gives copy-ready settings after a start. Clearer error messages.
-
-Checked with automated tests and the screen served against a fake API server. No
-model was loaded. The direct `mlx_lm` server below has never been started for real.
 
 ### Removed (protections: read before upgrading)
 
@@ -51,11 +95,10 @@ sampling gap over 1 second. Clients should send the model name `default_model`.
 ### Added
 
 - **Engines** ([docs/ENGINES.md](docs/ENGINES.md)): the API Server and Load Test can use
-  OptiQ 0.8.6 beside MLX (default). Setup installs, updates and removes it from a hashed
+  OptiQ 0.8.6 (now the default) beside MLX. Setup installs, updates and removes it from a hashed
   package lock. It has a key, an Anthropic route and fewer protections than MLX; the
-  card lists them. Splash and Rapid-MLX are shown as not available yet. A live check over
-  the app's HTTP routes passed with a real model; the Setup install button, clicks in the
-  screens, a Claude Code client and the load test are untried.
+  card lists them. Splash and Rapid-MLX are shown as not available yet. What was tried
+  with a real model is listed at the top of this entry.
 - Under OptiQ: the engine folder is checked at each start, keys are hidden in the
   server log, and an installed engine is never installed over. These were checked
   with fakes only.
@@ -63,7 +106,7 @@ sampling gap over 1 second. Clients should send the model name `default_model`.
 - Load Test: sizes up to 1,048,576 (up to 12 in one test), with 3600 seconds for a
   size above 32768; at the model's own limit the prompts stop short so the replies
   fit. A **Thinking** switch where the chat template has `enable_thinking`; results
-  say which it was. Checked with fakes only.
+  say which it was. The new sizes and the switch were checked with fakes only.
 
 ### Fixed
 

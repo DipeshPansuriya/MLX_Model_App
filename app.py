@@ -44,7 +44,7 @@ import engines
 import model_info
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.12"
+APP_VERSION = "2.0.13"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
@@ -1123,7 +1123,7 @@ class State:
                 "engines": [engine.view(APP_DIR) for engine in engines.REGISTRY],
                 "last_engine": _last_engine(),
                 "last_anthropic": _last_anthropic(),
-                "last_background": _last_background(),
+                "last_background": _saved_backgrounds(),
                 "tool_support": tool_support(),
                 "lines": self.server_lines[-200:],
                 "background": self.server_background,
@@ -2327,13 +2327,14 @@ def _last_anthropic() -> bool:
         return True
 
 
-def _last_background() -> bool:
-    """The remembered "run in background" choice. On unless it was saved off."""
+def _saved_backgrounds() -> dict[str, bool]:
+    """The saved "run in background" choice, by engine. The page has the defaults."""
     try:
         raw = _read_small(_last_models_file(), LAST_MODELS_MAX_BYTES)
-        return json.loads(raw.decode("utf-8")).get("background") is not False
+        saved = json.loads(raw.decode("utf-8"))["backgrounds"]
+        return {k: v for k, v in saved.items() if engines.get(k) and isinstance(v, bool)}
     except Exception:  # parsing can fail in more ways than ValueError
-        return True
+        return {}
 
 
 def _remember_models(pid: int) -> None:
@@ -2342,7 +2343,8 @@ def _remember_models(pid: int) -> None:
     if not repos:
         return
     with contextlib.suppress(OSError):
-        saved = {"repos": repos, "background": STATE.server_background}
+        chosen = {STATE.server_engine: STATE.server_background}
+        saved = {"repos": repos, "backgrounds": _saved_backgrounds() | chosen}
         if _running_engine().direct:
             saved["engine"] = STATE.server_engine
             saved["anthropic"] = STATE.server_anthropic

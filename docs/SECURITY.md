@@ -98,7 +98,7 @@ and the 80% memory rule are **removed, with no replacement**.
 | Still in place | Detail |
 |---|---|
 | Bind | `127.0.0.1` only |
-| CORS | `--allowed-origins` is the app's two origins (the default of `mlx_lm` is `*`). It limits which pages can read replies; it does not block requests from being sent |
+| CORS | `--allowed-origins` is the app's two origins (the default of `mlx_lm` is `*`). It limits which pages can read replies; it does not block requests from being sent, and it does not stop DNS rebinding, through which a website may read replies and the list of downloaded models |
 | Offline | `HF_HUB_OFFLINE=1` and a minimal environment: no keys or tokens of the app are passed on |
 | Remote code | No `--trust-remote-code` |
 | Processes | Port ownership is checked before the first request; leftover servers are matched by command line, port and start time |

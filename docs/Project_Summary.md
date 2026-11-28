@@ -6,7 +6,7 @@
 > diagrams about the guard, memory limits or two models apply to 2.0.12 and earlier.
 > [What is no longer protected](../README.md#protections-removed-in-2013).
 
-**Date:** 2026-11-27 | **Latest release:** 2.0.9 (2026-11-26, `v2.0.9`) | **Working source:** `APP_VERSION` 2.0.12, with the 2.0.10, 2.0.11 and 2.0.12 changes not in the latest release ([CHANGELOG](../CHANGELOG.md))
+**Date:** 2026-11-28 | **Latest release:** 2.0.9 (2026-11-26, `v2.0.9`) | **Working source:** `APP_VERSION` 2.0.13, with the 2.0.10, 2.0.11, 2.0.12 and 2.0.13 changes not in the latest release ([CHANGELOG](../CHANGELOG.md))
 
 ## Executive summary
 

@@ -107,21 +107,16 @@ return installEngine("mlx").then(() => [...seen, sent.find((c) => c[0].includes(
 
 
 class TestRow891Background:
-    def test_the_choice_is_saved_and_on_by_default(self, app_module, monkeypatch):
+    def test_the_choice_is_saved(self, app_module, monkeypatch):
         app = app_module
-        app._last_models_file().unlink(missing_ok=True)
-        assert app._last_background() is True
         _remember(app, {"repos": ["org/a"]})  # saved before this release
-        assert app._last_background() is True
         monkeypatch.setattr(app.STATE, "server_pid", 4242)
         monkeypatch.setattr(app.STATE, "server_repos", ["org/a"])
         monkeypatch.setattr(app.STATE, "server_background", False)
         app._remember_models(4242)
-        assert app._last_background() is False
-        assert app.STATE.snapshot()["server"]["last_background"] is False
+        assert app.STATE.snapshot()["server"]["last_background"] == {"mlx": False}
 
-    def test_the_page_checks_it_and_says_what_it_does(self):
-        assert 'id="serverBackground" checked' in PAGE
+    def test_the_page_says_what_it_does(self):
         words = " ".join(PAGE.split())
         assert "Run in background" in words
         assert "keeps running and holding memory until you press Stop" in words
@@ -129,9 +124,9 @@ class TestRow891Background:
 
 @needs_node
 class TestRow891Box:
-    def test_default_on_saved_off_kept_and_a_click_stays(self, tmp_path):
-        for saved, shown in ((None, True), (False, False)):
-            over = "" if saved is None else "last_background: false"
+    def test_a_saved_choice_wins_over_the_default_and_a_click_stays(self, tmp_path):
+        for saved, shown in ((None, False), (True, True)):
+            over = "" if saved is None else "last_background: { mlx: true }"
             out = run(
                 tmp_path,
                 CARD
@@ -216,7 +211,7 @@ return openStartConfirm().then(() => {
         )
         assert out[:4] == [False, "MLX (built in)", "org/custom", True]
         assert "MLX has no context limit" in out[4]
-        assert out[5:] == ["4096", True, True, 0]
+        assert out[5:] == ["4096", False, True, 0]
         assert "Vision" in PAGE and "Not supported by either engine" in PAGE
 
     def test_confirm_saves_the_edits_for_the_model_then_starts(self, tmp_path):

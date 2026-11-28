@@ -7,8 +7,10 @@ the same install as Setup, or MLX.
 
 A live check of commit `ee4cbc6` over the app's HTTP routes passed with a real model on a
 copied engine folder: OptiQ start, key, Chat, OpenAI and Anthropic tool calls, Stop, then
-MLX. Still untried: the Setup install button, clicks in the screens, a Claude Code client
-and the load test. Changes made after that commit are checked with fakes only.
+MLX. A later check on 2026-11-28 (commit `5630379`, outgoing network blocked) started both
+engines with real models: chat and tool calls on both, Claude Code 2.1.332 on OptiQ, and
+one 4096-token load test on OptiQ. Still untried: the Setup install button, DeepSeek
+Harness, the native window, **Apply changes** and **Restart**.
 
 | Engine | State |
 |---|---|
@@ -40,6 +42,9 @@ and the load test. Changes made after that commit are checked with fakes only.
   matches the shipped lock, and no package (pip aside) that the lock does not name at that
   version. Files inside a package are not checked.
 - Memory: no limit. The app does not stop the server for memory (removed in 2.0.13).
+- `/v1/models` (key needed) lists the served model by its full folder path, which includes
+  your user name, plus `:think` and `:no-think` forms. OptiQ 0.8.6 `serve` takes the name
+  from `--model` and has no option to change it. Send `default_model`.
 - Keys are replaced by `[key hidden]` in the server output, also in the background
   `server.log`.
 - Only the max reply tokens, max context, prompt cache and performance settings are passed
@@ -62,7 +67,9 @@ too when its port owner cannot be read for 600 seconds.
   saved as that model's settings; **Cancel** saves and starts nothing. MLX has no context
   limit and neither engine serves images, so those are off. Reasoning and the other flags
   were read in the installed engine source, not tried with a running engine.
-- **Run in background** is on by default; the choice of the last ready server is kept.
+- **Run in background** is on by default for OptiQ and off for MLX, and follows the engine
+  picked. The choice of the last ready server is kept for its engine. A background MLX
+  server has no password and keeps running until **Stop**.
 - **Connect your tool** appears while a server runs: Claude Code (OptiQ with the Anthropic
   route), DeepSeek Harness (you choose the context window) and other OpenAI clients. The
   app writes no other app's settings file and shows no key.

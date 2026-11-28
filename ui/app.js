@@ -29,6 +29,8 @@ const state = {
   serverRan: null, // { engine, anthropic } of the server that ran last
   keptSet: false,
   keptBox: false,
+  boxEngine: null, // the engine the background box shows
+  boxPick: {}, // clicks on that box, by engine
   serverStartError: "",
   serverSending: false,
   lastApplyNotice: null,
@@ -264,17 +266,16 @@ function render(snap) {
   const mode = server.running ? `${server.pid}:${!!server.background}` : "";
   if (mode && mode !== state.serverMode) {
     // Edits made after that server's start was sent are the newer wish: they stay.
-    if (!state.keptBox) $("#serverBackground").checked = !!server.background;
+    if (!state.keptBox) {
+      $("#serverBackground").checked = !!server.background;
+      state.boxEngine = server.engine || "mlx";
+      state.boxPick = {};
+    }
     if (!state.keptSet) state.serverDraft = null;
     state.keptSet = state.keptBox = false;
     state.serverMode = mode;
     state.serverStartError = "";
   }
-  // The saved choice, once; on when nothing is saved. A later click stays.
-  if (!state.boxLoaded && !mode) {
-    $("#serverBackground").checked = server.last_background !== false;
-  }
-  state.boxLoaded = true;
   state.server = server;
   if (server.running) {
     state.serverLast = runningSet(server);
@@ -438,6 +439,23 @@ const anthropicWanted = () => state.anthropic ?? (state.server?.running
   ? (engineInfo(runningEngine())?.direct ? !!state.server.anthropic : true)
   : state.serverRan?.anthropic ?? state.server?.last_anthropic ?? true);
 
+// "Run in background": what was clicked here, else the running server's mode, else
+// the saved choice. With none, on for OptiQ and off for MLX (it has no password).
+function backgroundFor(engine) {
+  const server = state.server;
+  return state.boxPick[engine] ??
+    (server.running && engine === runningEngine() ? !!server.background
+      : server.last_background?.[engine] ?? engine !== "mlx");
+}
+
+// The box follows the engine selection.
+function paintBackground() {
+  const engine = engineId();
+  if (engine === state.boxEngine) return;
+  state.boxEngine = engine;
+  $("#serverBackground").checked = backgroundFor(engine);
+}
+
 function engineChanged() {
   const server = state.server;
   if (!server?.running) return false;
@@ -572,6 +590,7 @@ function paintClientSettings(picked) {
   -H "Content-Type: application/json" \\
   -d '{"model":"${model}","messages":[{"role":"user","content":"Hello!"}]}'`);
   $("#mlxModelHint").hidden = direct;
+  $("#mlxOpenWarn").hidden = direct;
   setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
     (direct ? "press Copy key (new at every start)" : "not needed"));
   $("#connectPanel").hidden = !running;
@@ -1293,6 +1312,7 @@ function paintServerCard() {
   const server = state.server;
   if (!server) return;
   const set = serverSet();
+  paintBackground(); // before serverPending, which reads the box
   const pending = serverPending();
 
   const list = $("#serverModelList");
@@ -2304,7 +2324,8 @@ async function openStartConfirm() {
     if (key === "kv_bits") {
       value = mode === "save_memory" ? 8 : mode === "advanced" ? value : "";
       note = "A change sets this model's performance mode to Advanced, or Standard when off.";
-      off = performance?.blocked?.save_memory || "";
+      const why = performance?.blocked?.save_memory;
+      off = why ? `Not available for this model: ${why}.` : "";
     } else if (key === "server_reasoning") {
       note = "A model without a thinking switch ignores it.";
     } else if (key === "max_context_tokens") {
@@ -2363,6 +2384,7 @@ async function confirmStart() {
   // Cancel or a changed card while saving: no start.
   if (state.confirm !== open) return;
   $("#serverBackground").checked = $("#confirmBackground").checked;
+  state.boxPick[engineId()] = $("#confirmBackground").checked;
   closeStartConfirm();
   // The button just pressed is gone: the focus goes back to Start, which moves it on.
   $("#serverStartBtn").focus();
@@ -2472,6 +2494,7 @@ function wire() {
   $("#ltStopServerBtn").addEventListener("click", stopServer);
   $("#serverBackground").addEventListener("change", () => {
     if (startOnItsWay()) state.keptBox = true;
+    state.boxPick[engineId()] = $("#serverBackground").checked;
     serverCardChanged();
   });
   // The first click of a double click moves things: the second would press whatever
@@ -2509,9 +2532,11 @@ function wire() {
     if (!set.length) set = usable([state.snapshot?.server?.repo].filter(Boolean));
     if (!set.length) { toast("No model chosen. Press + Add model, then Start.", true); return; }
     const box = $("#serverBackground").checked;
-    const background = state.serverLastBackground ?? box;
     const ran = state.serverRan ||
       { engine: state.server?.last_engine || "mlx", anthropic: state.server?.last_anthropic };
+    // The box may show another engine's choice: that one is not for this start.
+    const background = state.serverLastBackground ??
+      (ran.engine === engineId() ? box : backgroundFor(ran.engine));
     const choice = serverChoice(set, ran.engine, ran.anthropic ?? true);
     try {
       await sendStart({ ...choice, background }, "Restarting server…",

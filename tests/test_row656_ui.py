@@ -51,7 +51,7 @@ def test_start_sends_the_chosen_model(tmp_path):
         ' await $("#confirmStartBtn").listeners.click();'
         ' return sent("/api/server/start");',
     )
-    assert out == [{"repo": "org/b", "background": True}]
+    assert out == [{"repo": "org/b", "background": False}]
 
 
 @needs_node

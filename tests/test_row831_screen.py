@@ -128,7 +128,7 @@ def test_one_model_fills_the_card_and_can_start(tmp_path):
     assert out["main"] == ["Start Server", False]
     assert 'aria-label="Remove org/a"' in out["rows"] and 'data-remove="org/a"' in out["rows"]
     assert ">a<" in out["rows"] and "context" not in out["rows"]
-    assert out["sent"] == [{"repo": "org/a", "background": True}]
+    assert out["sent"] == [{"repo": "org/a", "background": False}]
 
 
 @needs_node

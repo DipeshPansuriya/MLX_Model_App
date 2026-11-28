@@ -276,7 +276,7 @@ class TestPidIdentity:
 
 class TestVersion:
     def test_release_version(self, app_module):
-        assert app_module.APP_VERSION == "2.0.12"
+        assert app_module.APP_VERSION == "2.0.13"
 
 
 # F3: exactly one Host header ------------------------------------------------ #

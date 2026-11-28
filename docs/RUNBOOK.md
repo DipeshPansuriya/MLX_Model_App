@@ -161,8 +161,8 @@ the request guard.
 
 ### 3.7a Run a load test safely
 
-2.0.13 source (unreleased). Tested with fakes only; treat the first real run as a
-trial.
+2.0.13 source (unreleased). One 4096-token run on OptiQ has passed with a real model;
+treat any other size or MLX as a trial.
 
 1. Save your work and close apps you do not need. Their memory counts: more free
    memory means more sizes run.
