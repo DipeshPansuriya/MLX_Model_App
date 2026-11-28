@@ -4216,13 +4216,13 @@ class Handler(BaseHTTPRequestHandler):
                 extras = _chat_extras(body)
                 app = sys.modules[__name__]
                 saved = project_routes.saved_messages(app, body)
-                send, keep, own = project_routes.prepare(
+                send, keep, limits = project_routes.prepare(
                     app, repo, messages, extras[0], extras[1], saved
                 )
             except chat_store.ChatError as exc:
                 self._json({"error": str(exc)}, exc.status)
                 return
-            self._stream_chat(repo, send, (extras[0], own, extras[2]), keep)
+            self._stream_chat(repo, send, extras, keep, limits)
             return
 
         if path.startswith("/api/projects/"):
@@ -4496,8 +4496,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- SSE chat -------------------------------------------------------- #
     def _stream_chat(
-        self, repo: str, messages: list[dict], extras: tuple, keep: list[dict]
+        self, repo: str, messages: list[dict], extras: tuple, keep: list[dict], limits: dict
     ) -> None:
+        """``limits`` are the settings asked with; ``extras`` holds the user's, which are saved."""
         stop = threading.Event()
         busy = _chat_problem(repo)
         with STATE.lock:
@@ -4524,7 +4525,7 @@ class Handler(BaseHTTPRequestHandler):
             parts = {"token": "", "reasoning": ""}
             own = {
                 name: value
-                for name, value in zip(("system", "own"), extras[:2], strict=True)
+                for name, value in zip(("system", "own"), (extras[0], limits), strict=True)
                 if value
             }
             asked = stream_chat(repo, messages, stop, **own)
