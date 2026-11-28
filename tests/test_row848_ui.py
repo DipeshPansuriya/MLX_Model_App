@@ -18,8 +18,6 @@ const asked = [];
 const AUTO = { max_context_tokens: [4096, 100000000], server_max_reply_tokens: [64, 131072],
   chat_max_reply_tokens: [64, 131072], chat_temperature: [0, 2], chat_top_p: [0.05, 1],
   prompt_cache_size: [1, 100], prompt_cache_bytes: [100000000, 100000000000],
-  mlx_cache_limit_mb: [0, 1000000],
-  two_model_context_tokens: [8192, 32768], memory_limit_percent: [30, 80],
   performance_mode: ["standard", "advanced"], kv_bits: [4, 8], kv_group_size: [32, 128],
   prefill_step_size: [64, 2048] };
 const config = (repo, over = {}, extra = {}) => ({
@@ -27,11 +25,10 @@ const config = (repo, over = {}, extra = {}) => ({
   settings: Object.fromEntries(Object.entries(AUTO).map(([key, [min, max]]) => [key, {
     value: null, own: null, inherited: null, effective: "automatic (calculated)", min, max,
     decimal: key === "chat_temperature" || key === "chat_top_p",
-    global_only: key === "memory_limit_percent", ...(over[key] || {}) }])),
+    ...(over[key] || {}) }])),
   ...extra });
 const NUMBERS = { reply_tokens: { value: 256, default: 256, min: 32, max: 1024 },
   rounds: { value: 2, default: 2, min: 1, max: 3 },
-  margin_percent: { value: 5, default: 5, min: 5, max: 20 },
   timeout_seconds: { value: 900, default: 900, min: 60, max: 3600 } };
 const view = (over = {}) => ({ repo: "org/custom", status: null, rows: [], results: [],
   blocked: null, load_test: { ...NUMBERS, sizes: { value: [4096, 8192] },
@@ -44,8 +41,8 @@ const row = (over = {}) => ({ size: 4096, status: "passed", reason: "", steps_do
   ...over });
 const runRecord = (over = {}) => ({ id: "run1", repo: "org/custom",
   time: "2026-11-27 10:00:00", status: "done", reason: "", sizes: [4096], rows: [row()],
-  stale: false, limit_percent: 80, flags: ["--max-tokens", "8192"],
-  values: { reply_tokens: 256, rounds: 2, margin_percent: 5, timeout_seconds: 900 },
+  stale: false, flags: ["--max-tokens", "8192"],
+  values: { reply_tokens: 256, rounds: 2, timeout_seconds: 900 },
   ...over });
 let routes = {};
 let refuse = {};
@@ -72,8 +69,7 @@ function URLSearchParamsLite(query) {
 const tick = () => new Promise((r) => setTimeout(r, 5));
 const srv = (over = {}) => ({ running: false, starting: false, endpoint: "e", lines: [],
   tool_support: {}, ...over });
-// The API Server card asks for its own figures; the pages' own requests are these.
-const posted = () => sent.map((s) => s[0]).filter((p) => p !== "/api/server/estimate");
+const posted = () => sent.map((s) => s[0]);
 const show = (over = {}) => { const s = snap(over); state.snapshot = s; render(s); };
 const type = (key, value) => { el(`#cfg-${key}`).value = value; };
 const progress = (over = {}) => ({ active: true, repo: "org/custom", run_id: "run2",
@@ -121,7 +117,8 @@ class TestPage:
             assert f'for="cfg-{key}"' in PAGE
             assert f'id="cfg-{key}"' in PAGE
             scope = f"( cfg-{key}-(scope|help|blocked))*"  # the other hints
-            assert re.search(f'aria-describedby="cfg-{key}-now cfg-{key}-error{scope}"', PAGE)
+            first = f"(cfg-{key}-scope )?cfg-{key}-now cfg-{key}-error"
+            assert re.search(f'aria-describedby="{first}{scope}"', PAGE), key
         for key in app_module.LOAD_TEST_NUMBERS:
             assert f'for="lt-{key}"' in PAGE and f'id="lt-{key}"' in PAGE
 
@@ -136,7 +133,7 @@ class TestPage:
 
     def test_no_context_size_is_written_into_the_new_pages(self):
         start = SCRIPT.index("configuration page")
-        end = SCRIPT.index("\n}\n", SCRIPT.index("async function applyLoadTest"))
+        end = SCRIPT.index("\n}\n", SCRIPT.index("async function cancelLoadTest"))
         for number in ("4096", "8192", "16384", "24576", "32768"):
             assert number not in SCRIPT[start:end]
 
@@ -190,15 +187,13 @@ class TestConfiguration:
               unset: el("#cfg-max_context_tokens").value,
               hint: el("#cfg-max_context_tokens-now").textContent,
               range: [el("#cfg-chat_top_p").min, el("#cfg-chat_top_p").max],
-              step: [el("#cfg-chat_top_p").step, el("#cfg-prompt_cache_size").step],
-              memory: el("#cfg-memory_limit_percent").disabled };
+              step: [el("#cfg-chat_top_p").step, el("#cfg-prompt_cache_size").step] };
             """,
         )
         assert out["asked"] == ["/api/config"]
         assert (out["set"], out["unset"]) == ("3", "")
         assert out["hint"] == "Effective: automatic (calculated)"
         assert out["range"] == [0.05, 1] and out["step"] == ["any", "1"]
-        assert out["memory"] is False
 
     def test_a_model_shows_own_and_inherited(self, tmp_path):
         out = ui(
@@ -209,16 +204,12 @@ class TestConfiguration:
             const f = (k) => [el(`#cfg-${k}`).value, el(`#cfg-${k}-now`).textContent,
               el(`#cfg-${k}`).placeholder];
             return { url: asked.filter((u) => u.startsWith("/api/config?")),
-              inherited: f("prompt_cache_size"), own: f("chat_max_reply_tokens"),
-              memory: [el("#cfg-memory_limit_percent").disabled,
-                el("#cfg-memory_limit_percent-now").textContent] };
+              inherited: f("prompt_cache_size"), own: f("chat_max_reply_tokens") };
             """,
         )
         assert out["url"] == ["/api/config?repo=org%2Fcustom"]
         assert out["inherited"] == ["", "Effective: 3 (from All models)", "inherited: 3"]
         assert out["own"][:2] == ["500", "Effective: 500 (set for this model)"]
-        assert out["memory"][0] is True
-        assert "All models (defaults)" in out["memory"][1]
 
     def test_save_sends_only_what_changed(self, tmp_path):
         out = ui(
@@ -308,24 +299,22 @@ class TestConfiguration:
         )
         assert out == [["no answer", "no answer"], "", ""]
 
-    def test_the_clamp_message_is_shown(self, tmp_path):
+    def test_a_context_above_the_tested_sizes_is_warned(self, tmp_path):
         out = ui(
             tmp_path,
             """
             routes["/api/config"] = (repo) => config(repo, repo ? {
-              max_context_tokens: { value: 90000, own: 90000, effective: "90000" } } : {},
-              repo ? { applied_context: 20000, context_message: "So 20000 tokens apply." } : {});
+              max_context_tokens: { value: 90000, own: 90000, effective: "90000" } } : {});
             routes["/api/loadtest"] = () => view({ results: [runRecord({ rows: [
               row(), row({ size: 8192, status: "skipped" })] })] });
             show(); showView("config"); await tick();
-            const none = [el("#configClamp").textContent, el("#configTestWarn").textContent];
+            const none = el("#configTestWarn").textContent;
             await chooseConfigModel("org/custom"); await tick();
-            return [none, el("#configClamp").textContent, el("#configTestWarn").textContent];
+            return [none, el("#configTestWarn").textContent];
             """,
         )
-        assert out[0] == ["", ""]
-        assert out[1] == "So 20000 tokens apply."
-        assert "20000" in out[2] and "4096" in out[2] and "load test" in out[2]
+        assert out[0] == ""
+        assert "90000" in out[1] and "4096" in out[1] and "load test" in out[1]
 
     def test_reset_clears_this_entry_only(self, tmp_path):
         out = ui(
@@ -416,7 +405,6 @@ class TestLoadTestControls:
                     "load_test": {
                         "reply_tokens": 128,
                         "rounds": None,
-                        "margin_percent": 5,
                         "timeout_seconds": 900,
                         "last_sizes": [6000, 8192, 12000],
                     }
@@ -594,11 +582,11 @@ class TestLoadTestRun:
             """
             routes["/api/loadtest"] = () => view({ results: [
               runRecord({ id: "old", time: "2026-11-26 09:00:00", stale: true }),
-              runRecord({ status: "memory", reason: "memory: loading is over the 75% gate",
+              runRecord({ status: "memory", reason: "macOS reports critical memory pressure",
                 rows: [row(), row({ size: 8192, status: "skipped", read_tps: null,
                   write_tps: "n/a", first_token_s: null, follow_up_first_token_s: null,
                   peak_percent: undefined, server_peak_bytes: undefined,
-                  prompt_tokens: undefined, projected_percent: 82.4,
+                  prompt_tokens: undefined,
                   reason: "<b>memory</b>" })] })] });
             show(); showView("loadtest"); await tick();
             return [html("#ltResults"), el("#ltOutcome").hidden,
@@ -615,17 +603,16 @@ class TestLoadTestRun:
             "Settings used",
         ):
             assert head in table
-        for value in ("512.3", "7.9 s", "follow-up 0.4 s", "21.1", "61.2%", "9.4 GB", "82.4%"):
+        for value in ("512.3", "7.9 s", "follow-up 0.4 s", "21.1", "61.2%", "9.4 GB"):
             assert value in table
         assert "reply 256 tokens, 2 rounds" in table and "--max-tokens 8192" in table
         assert "&lt;b&gt;memory" in table and "<b>memory" not in table
         # Newest first; the old run is history, tagged, and cannot be applied.
         assert table.index("2026-11-27") < table.index("Earlier runs") < table.index("2026-11-26")
         assert "stale" in table
-        assert re.findall(r'data-apply="(\d+)" data-run="(\w+)"', table) == [("4096", "run1")]
-        assert "one-model mode" in table
+        assert "data-apply" not in table and "%" not in text
         assert hidden is False and "memory" in title.lower()
-        assert "75% gate" in text and "80%" in text
+        assert "critical memory pressure" in text and "Larger sizes were not run" in text
 
     def test_a_failed_run_gives_one_reason_and_a_done_run_none(self, tmp_path):
         out = ui(
@@ -640,37 +627,3 @@ class TestLoadTestRun:
             """,
         )
         assert out == [["Test failed", "timeout"], True]
-
-    def test_apply_saves_through_the_server(self, tmp_path):
-        out = ui(
-            tmp_path,
-            """
-            routes["/api/config"] = (repo) => config(repo);
-            routes["/api/loadtest"] = (repo) => view({ results: [runRecord()] });
-            show(); showView("config"); await tick();
-            await chooseConfigModel("org/custom"); await tick();
-            type("prompt_cache_size", "7");
-            showView("loadtest"); await tick();
-            const press = () => el("#ltResults").querySelectorAll("[data-apply]")[0]
-              .listeners.click();
-            globalThis.confirm = () => false; await press(); const refused = sent.length;
-            globalThis.confirm = () => true; await press(); await tick();
-            return { refused, sent, field: el("#cfg-prompt_cache_size").value };
-            """,
-        )
-        assert out["refused"] == 0
-        assert out["sent"] == [
-            ["/api/loadtest/apply", {"repo": "org/custom", "run_id": "run1", "size": 4096}]
-        ]
-        assert out["field"] == ""  # the unsaved edit was dropped, as the user agreed
-
-    def test_apply_is_off_while_a_test_runs(self, tmp_path):
-        out = ui(
-            tmp_path,
-            """
-            routes["/api/loadtest"] = () => view({ results: [runRecord()] });
-            show({ loadtest: progress() }); showView("loadtest"); await tick();
-            return html("#ltResults");
-            """,
-        )
-        assert re.search(r"data-apply=\"4096\"[^>]*disabled", out)
