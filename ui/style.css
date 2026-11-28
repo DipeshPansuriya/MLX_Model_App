@@ -522,3 +522,6 @@ html, body {
   .nav-item { justify-content: center; }
   .kv-row > span:first-child { width: 120px; flex-basis: 120px; }
 }
+
+.engine-install { margin: 8px 0; }
+.engine-install .btn { margin-right: 8px; }

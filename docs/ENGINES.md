@@ -1,6 +1,9 @@
 # Engines
 
-The API Server runs one engine at a time. MLX is the default.
+The API Server runs one engine at a time. On the API Server and Load Test screens OptiQ
+is the default; the engine of the last ready server is kept. A start request that names
+no engine still means MLX. If the chosen engine is not installed, the Start area offers
+the same install as Setup, or MLX.
 
 A live check of commit `ee4cbc6` over the app's HTTP routes passed with a real model on a
 copied engine folder: OptiQ start, key, Chat, OpenAI and Anthropic tool calls, Stop, then
@@ -9,8 +12,8 @@ and the load test. Changes made after that commit are checked with fakes only.
 
 | Engine | State |
 |---|---|
-| MLX (built in) | default; 2.0.13 starts `mlx_lm server` itself, without the earlier request guard |
-| OptiQ 0.8.6 | install on Setup, then choose it on the API Server card |
+| MLX (built in) | 2.0.13 starts `mlx_lm server` itself, without the earlier request guard |
+| OptiQ 0.8.6 | default; install on Setup or from the Start area |
 | Splash, Rapid-MLX | shown as "Not available yet: security review pending"; no install, no command |
 
 ## Install, update, remove (Setup, "Other engines")

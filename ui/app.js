@@ -213,6 +213,7 @@ function refreshState() {
 }
 
 function render(snap) {
+  state.setup = snap; // what the Start areas read about installs
   const { app, hardware, python, versions, models, server, downloads, install } = snap;
 
   // sidebar
@@ -473,7 +474,8 @@ function paintEngine(set) {
   select.value = engineId();
   $("#anthropicBox").hidden = !engine?.anthropic;
   $("#engineAnthropic").checked = anthropicWanted();
-  showLine("#engineWhy", engineReason(set));
+  showLine("#engineWhy", engineNeed(engineId()) ? "" : engineReason(set));
+  paintInstall("server", engineId());
   const missing = engine?.missing || [];
   const box = $("#engineMissing");
   if (box.hidden && missing.length) box.open = true;
@@ -482,6 +484,70 @@ function paintEngine(set) {
   setHTML($("#engineMissingList"), missing.map(([what, why]) =>
     `<li>${esc(what)}: ${esc(why)}</li>`).join(""));
   paintClientSettings(engine);
+}
+
+/* ───────────── install from the Start area ───────────── */
+const PACKAGE_KINDS = ["install", "update", "reinstall"];
+
+// What the engine still needs before it can start, or null.
+function engineNeed(id) {
+  const versions = state.setup?.versions || {};
+  if (id !== "mlx") {
+    const found = engineInfo(id)?.state;
+    return ["not_installed", "unsupported", "broken", "update"].includes(found) ? found : null;
+  }
+  return versions.mlx_missing || versions.mlx_lm_missing ? "not_installed" : null;
+}
+
+// The box under a Start button: ``prefix`` is "server" or "lt".
+function paintInstall(prefix, id) {
+  const need = engineNeed(id);
+  $(`#${prefix}Install`).hidden = !need;
+  if (!need) return;
+  const install = state.setup?.install || {};
+  const kind = String(install.kind || "");
+  const mine = id === "mlx" ? PACKAGE_KINDS.includes(kind) : kind.startsWith(`${id} `);
+  const lines = install.lines || [];
+  const name = id === "mlx" ? "MLX" : engineInfo(id)?.name || id;
+  const never = need === "unsupported";
+  const busy = !!install.running;
+  const failed = mine && !busy && lines.length > 0;
+  let words;
+  if (never) {
+    words = `${engineInfo(id)?.unsupported || ""} ${name} cannot be installed on this Mac. ` +
+      "Press Use MLX instead.";
+  } else if (busy) {
+    words = mine ? `Installing ${name}… This can take several minutes. Start when it is done.`
+      : `${name} is not installed. Another install is running: wait for it to finish.`;
+  } else if (failed) {
+    const reason = [...lines].reverse().find((line) => /^error/i.test(line)) || lines.at(-1);
+    words = `The install did not finish: ${reason.replace(/^error:\s*/i, "")}. Check the ` +
+      "internet connection and free disk space, then press Install again" +
+      (id === "mlx" ? "." : ", or use MLX instead.");
+  } else {
+    const what = { broken: "has a broken install", update: "needs an update" }[need] ||
+      "is not installed";
+    words = `${name} ${what}. Press Install, wait for it to finish, then start.`;
+  }
+  setText($(`#${prefix}InstallText`), words.trim());
+  const log = $(`#${prefix}InstallLog`);
+  log.hidden = !(mine && lines.length);
+  setText(log, mine ? lines.slice(-8).join("\n") : "");
+  const button = $(`#${prefix}InstallBtn`);
+  button.hidden = never;
+  button.disabled = busy;
+  $(`#${prefix}UseMlx`).hidden = id === "mlx";
+}
+
+// The same two actions as the Setup page.
+async function installEngine(id) {
+  if (id !== "mlx") return changeEngine(id, "install");
+  const kind = state.setup?.versions?.mlx_missing ? "install" : "update";
+  try {
+    await api("/api/install", { method: "POST", body: JSON.stringify({ kind }) });
+    toast("Install started");
+    refreshState();
+  } catch (err) { toast(err.message, true); }
 }
 
 function paintClientSettings(picked) {
@@ -578,6 +644,20 @@ function wireEngines() {
     if (button) changeEngine(button.dataset.engine, button.dataset.action);
   });
   $("#copyKey").addEventListener("click", copyServerKey);
+  $("#serverInstallBtn").addEventListener("click", () => installEngine(engineId()));
+  $("#serverUseMlx").addEventListener("click", () => {
+    state.engine = "mlx";
+    serverCardChanged();
+  });
+  $("#ltInstallBtn").addEventListener("click", () => installEngine($("#ltEngine").value));
+  $("#ltUseMlx").addEventListener("click", () => {
+    state.lt.engine = "mlx";
+    if (state.setup) renderLoadTest(state.setup);
+  });
+  $("#ltEngine").addEventListener("change", () => {
+    state.lt.engine = $("#ltEngine").value;
+    paintLoadTestControls();
+  });
   for (const [button, box] of [["#copyOpenai", "#openaiSettings"],
     ["#copyClaude", "#claudeSettings"]]) {
     $(button).addEventListener("click", async () => {
@@ -932,7 +1012,9 @@ function paintLoadTestControls() {
   const held = document.activeElement;
   $("#ltNoModel").hidden = !none;
   setText($("#ltWhy"), why);
-  start.disabled = none || testing || !!why || !view;
+  const engine = $("#ltEngine").value || "mlx";
+  paintInstall("lt", engine);
+  start.disabled = none || testing || !!why || !view || !!engineNeed(engine);
   cancel.hidden = !testing;
   // aria-disabled, not disabled: the button keeps the focus while the test stops.
   if (snap.loadtest?.status === "cancelling") cancel.setAttribute("aria-disabled", "true");
@@ -1078,6 +1160,8 @@ function renderLoadTest(snap) {
   lt.signature = signature;
   // What blocked a start may be over: it is asked for again below.
   if (changed && lt.view) lt.view = { ...lt.view, blocked: null };
+  // The user's pick, else the saved engine of the API Server.
+  $("#ltEngine").value = (testing && run.engine) || lt.engine || snap.server?.last_engine || "mlx";
   paintProgress(run);
   paintLoadTestControls();
   if (state.view === "loadtest" && (changed || (!testing && lt.view?.blocked))) loadLoadTest();
@@ -1229,7 +1313,7 @@ function paintServerCard() {
   const focused = document.activeElement;
   setText(start, server.starting ? "Starting…" : server.running ? "Apply changes" : "Start Server");
   start.disabled = !!server.starting || !set.length || (server.running && !pending) ||
-    !!engineReason(set);
+    !!engineReason(set) || !!engineNeed(engineId());
   stop.hidden = !server.running && !server.starting;
   // Focus must not stay on a button that can no longer be used, nor move from Start
   // to Stop, where a second Enter would stop the server.
@@ -2328,11 +2412,7 @@ function wire() {
     catch (err) { toast(err.message, true); }
   });
 
-  $("#installBtn").addEventListener("click", async () => {
-    const kind = state.snapshot?.versions?.mlx_missing ? "install" : "update";
-    try { await api("/api/install", { method: "POST", body: JSON.stringify({ kind }) }); toast("Install started"); refreshState(); }
-    catch (err) { toast(err.message, true); }
-  });
+  $("#installBtn").addEventListener("click", () => installEngine("mlx"));
 
   // Toggle Active Downloads section
   $("#toggleDownloads").addEventListener("click", () => setDownloadsOpen(!state.downloadsOpen));

@@ -224,6 +224,12 @@
             </label>
           </div>
           <p class="hint" id="engineWhy" role="status" hidden></p>
+        <div class="engine-install" id="serverInstall" hidden>
+          <p class="hint" id="serverInstallText" role="status"></p>
+          <pre class="console" id="serverInstallLog" hidden></pre>
+          <button class="btn btn-mini btn-primary" type="button" id="serverInstallBtn">Install</button>
+          <button class="btn btn-mini" type="button" id="serverUseMlx">Use MLX instead</button>
+        </div>
           <ul class="model-list" id="serverModelList" aria-labelledby="serverModelsTitle"></ul>
           <p class="hint" id="serverModelEmpty">No model chosen.</p>
           <div class="server-row">
@@ -509,6 +515,12 @@
           </details>
           <div class="field-error" id="ltError" role="alert"></div>
           <p class="server-why" id="ltWhy" role="status"></p>
+        <div class="engine-install" id="ltInstall" hidden>
+          <p class="hint" id="ltInstallText" role="status"></p>
+          <pre class="console" id="ltInstallLog" hidden></pre>
+          <button class="btn btn-mini btn-primary" type="button" id="ltInstallBtn">Install</button>
+          <button class="btn btn-mini" type="button" id="ltUseMlx">Use MLX instead</button>
+        </div>
           <div class="server-row">
             <label for="ltEngine">Engine</label>
             <select id="ltEngine" class="select">

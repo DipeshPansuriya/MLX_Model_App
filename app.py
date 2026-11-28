@@ -2300,13 +2300,14 @@ def _last_models() -> list[str]:
 
 
 def _last_engine() -> str:
-    """The engine of the last server reported ready; MLX when unknown."""
+    """The engine of the last server reported ready; OptiQ when none is saved."""
     try:
         raw = _read_small(_last_models_file(), LAST_MODELS_MAX_BYTES)
+        # A saved start that names no engine was an MLX one.
         engine = engines.get(json.loads(raw.decode("utf-8")).get("engine"))
     except Exception:  # parsing can fail in more ways than ValueError
-        return "mlx"
-    return engine.id if engine and engine.selectable else "mlx"
+        return engines.OPTIQ.id
+    return engine.id if engine and engine.selectable else engines.OPTIQ.id
 
 
 def _last_anthropic() -> bool:
