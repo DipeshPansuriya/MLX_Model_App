@@ -25,7 +25,7 @@ function renderFeatures(snap) {
     return;
   }
   const signature = JSON.stringify([ft.installing, snap.server?.running, snap.server?.starting,
-    !!snap.loadtest?.active, snap.versions?.checked_at]);
+    !!snap.loadtest?.active, snap.versions?.checked_at, snap.server?.engines]);
   if (signature === ft.planSig) return;
   ft.planSig = signature;
   loadInstallPlan();
@@ -91,6 +91,14 @@ function renderCompare(compare) {
       </tbody></table>`).join(""));
 }
 
+/* Disabling the focused button would drop the keyboard to the top of the page, so
+   that one only says it is off; its click handler asks ftIsOff. */
+function ftOff(button, off) {
+  button.disabled = off && document.activeElement !== button;
+  button.setAttribute("aria-disabled", String(off));
+}
+const ftIsOff = (button) => button.getAttribute("aria-disabled") === "true";
+
 /* ───────────── install or update all ───────────── */
 function ftChange(item) {
   const from = item.action === "update" && item.current ? `${item.current} to ` : "";
@@ -109,7 +117,7 @@ function paintPlan(plan) {
   setText($("#planWhy"), ft.installing
     ? "An install is running. Its output appears under Runtime packages."
     : plan.blocked || (plan.needed ? "" : "Nothing to install or update."));
-  $("#planBtn").disabled = ft.installing || !!plan.blocked || !plan.needed;
+  ftOff($("#planBtn"), ft.installing || !!plan.blocked || !plan.needed);
 }
 
 async function loadInstallPlan() {
@@ -120,24 +128,27 @@ async function loadInstallPlan() {
   } catch (err) {
     if (seq !== ft.seq) return;
     ft.plan = null;
-    $("#planBtn").disabled = true;
+    ft.planSig = null; // asked again with the next state
+    ftOff($("#planBtn"), true);
     setText($("#planWhy"), err.message);
   }
 }
 
 async function installAll() {
   const plan = ft.plan;
-  if (!plan?.needed || plan.blocked) return;
+  const button = $("#planBtn");
+  if (!plan?.needed || plan.blocked || ftIsOff(button)) return;
   const changes = plan.items.filter((i) => ["install", "update"].includes(i.action));
   const skipped = plan.items.filter((i) => i.action === "unsupported");
   const question = ["Install or update these now?", ...changes.map(ftChange),
     ...skipped.map(ftLine), "This can be a large download."].join("\n");
   if (!confirm(question)) return;
-  $("#planBtn").disabled = true;
+  ftOff(button, true);
   try {
     await api("/api/install/all", { method: "POST", body: "{}" });
     refreshState();
   } catch (err) {
+    ftOff(button, false);
     setText($("#planWhy"), err.message);
     toast(err.message, true);
   }
@@ -146,7 +157,8 @@ async function installAll() {
 /* ───────────── release check (only when asked) ───────────── */
 async function checkRelease() {
   const button = $("#ftUpdateBtn");
-  button.disabled = true;
+  if (ftIsOff(button)) return;
+  button.setAttribute("aria-disabled", "true"); // not disabled: the focus stays
   ft.releaseUrl = null;
   $("#ftUpdateOpen").hidden = true;
   setText($("#ftUpdateMsg"), "Asking GitHub…");
@@ -158,7 +170,7 @@ async function checkRelease() {
   } catch (err) {
     setText($("#ftUpdateMsg"), err.message);
   } finally {
-    button.disabled = false;
+    button.setAttribute("aria-disabled", "false");
   }
 }
 

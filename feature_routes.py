@@ -129,6 +129,10 @@ def start_install_all(app) -> tuple[int, dict]:
             return 409, {"error": UP_TO_DATE}
         if not app.STATE.reserve_install(INSTALL_KIND):
             return 409, {"error": app.LOADTEST_BUSY if app.STATE.testing() else INSTALL_BUSY}
+        # A start may have queued before the slot was taken; later ones are refused.
+        if busy := _busy(app):
+            app.STATE.install["running"] = False
+            return 409, {"error": busy}
     threading.Thread(target=worker_install_all, args=(app,), daemon=True).start()
     return 200, {"ok": True}
 

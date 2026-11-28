@@ -1750,8 +1750,18 @@ def _snapshot_dir(repo: str) -> Path:
     return whole or max(reversed(found), key=weights, default=entry)
 
 
+class _Unanswered(str):
+    """The empty text of a ``ps`` that never answered, told apart by identity."""
+
+
+PS_UNANSWERED = _Unanswered()
+
+
 def _ps_field(pid: int, field: str) -> str:
-    """One ``ps`` column for a pid, in a fixed locale and zone. Empty if unknown."""
+    """One ``ps`` column for a pid, in a fixed locale and zone. Empty if unknown.
+
+    ``PS_UNANSWERED`` (also empty) when ``ps`` itself timed out or could not run.
+    """
     try:
         proc = subprocess.run(
             ["ps", "-ww", "-p", str(pid), "-o", f"{field}="],
@@ -1762,7 +1772,7 @@ def _ps_field(pid: int, field: str) -> str:
             env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
         )
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return PS_UNANSWERED
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
@@ -1773,15 +1783,20 @@ def _is_our_server(
     port=None,
     direct: str | None = None,
     name: str | None = None,
-) -> bool:
+) -> bool | None:
     """True only when ``pid`` is still the API server we launched.
+
+    None, which is also not true, when ``ps`` did not answer: nothing is proved.
 
     A pid is reused after a crash or reboot, so both the command line and, when
     recorded, the process start time must match before it is adopted or signalled.
     """
     if not repo or not _pid_alive(pid):
         return False
-    command = f"{_ps_field(pid, 'command')} "
+    shown = _ps_field(pid, "command")
+    if shown is PS_UNANSWERED:
+        return None
+    command = f"{shown} "
     launchers = (" -m mlx_lm server", OLD_WRAPPER)
     # ``name``: what --model was given, when that was not the repo id.
     marks = [f"{start} --model {name or repo} --host " for start in launchers]
@@ -1791,7 +1806,10 @@ def _is_our_server(
         return False
     if f" --port {port or SERVER_PORT} " not in command:
         return False
-    return not started or _ps_field(pid, "lstart") == started
+    if not started:
+        return True
+    born = _ps_field(pid, "lstart")
+    return None if born is PS_UNANSWERED else born == started
 
 
 def _running_engine() -> engines.Engine:
@@ -1807,7 +1825,7 @@ def _key_file() -> Path:
     return APP_DIR / "server.key"
 
 
-def _still_our_server(pid: int | None, repo: str | None) -> bool:
+def _still_our_server(pid: int | None, repo: str | None) -> bool | None:
     """``_is_our_server`` for the engine that was started."""
     engine = _running_engine()
     if not engine.direct:
@@ -1833,21 +1851,32 @@ def _engine_refusal(engine_id, repos: list[str], port_too: bool = True) -> str |
         return "Unknown engine."
     if not engine.selectable:
         return f"{engine.name}: {engine.refusal}"
+    if why := _install_refusal(engine):
+        return why
     if not engine.direct:
         return _port_refusal(SERVER_PORT) if port_too else None
     if len(repos) > 1:
         return f"{engine.name} serves one model. Remove the second one."
-    kind = STATE.install.get("kind") or ""
-    if STATE.install["running"] and (
-        kind == feature_routes.INSTALL_KIND or kind.startswith(engine.id)
-    ):
-        return f"{engine.name}: an install is running."
     try:
         engine.program(APP_DIR)
         engine.check_model(repos[0], _snapshot_dir(repos[0]))
     except engine_runtime.Refused as exc:
         return str(exc)
     return _port_refusal(engine.port) if port_too else None
+
+
+def _install_refusal(engine: engines.Engine) -> str | None:
+    """Why a running install rules this engine out: its files are half replaced."""
+    if not STATE.install["running"]:
+        return None
+    kind = STATE.install.get("kind") or ""
+    if engine.direct:
+        touched = kind == feature_routes.INSTALL_KIND or kind.startswith(engine.id)
+    else:  # MLX runs on the app's own packages: only an engine's own install spares them
+        touched = not any(
+            kind.startswith(f"{other.id} ") for other in engines.REGISTRY if other.installable
+        )
+    return f"{engine.name}: an install is running." if touched else None
 
 
 def _port_refusal(port: int) -> str | None:
@@ -2752,7 +2781,7 @@ def _watch_server(
                 break
         elif not _pid_alive(pid):
             break
-        elif checks % 15 == 14 and not _still_our_server(pid, repo):
+        elif checks % 15 == 14 and _still_our_server(pid, repo) is False:
             break  # the pid now belongs to another process
         checks += 1
         time.sleep(2)
@@ -3169,12 +3198,12 @@ def restore_server_state() -> None:
     extra = {"name": name}
     if engine is not None and engine.direct:
         extra = {"direct": engine.identity(name or data.get("snapshot"))}
-    if (
-        engine is None
-        or not engine.selectable
-        or not isinstance(pid, int)
-        or not _is_our_server(pid, data.get("repo"), data.get("started"), data.get("port"), **extra)
-    ):
+    ours = False
+    if engine is not None and engine.selectable and isinstance(pid, int):
+        ours = _is_our_server(pid, data.get("repo"), data.get("started"), data.get("port"), **extra)
+    if ours is None:
+        return  # ps did not answer: the file stays, and a later state poll asks again
+    if not ours:
         log_app("info", "dropped a stale api server pidfile", pid=pid)
         _clear_server_pidfile()
         _reset_engine()
@@ -4354,12 +4383,14 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 deleting = repo in STATE.deleting
                 testing = STATE.testing()
-                if not (deleting or testing):
+                # Asked under the lock an install is reserved with.
+                installing = _install_refusal(engines.get(engine))
+                if not (deleting or testing or installing):
                     STATE.server_pending.append(repo)
                     ticket = STATE.server_stops
-            if deleting or testing:
+            if deleting or testing or installing:
                 gone = "the model is being deleted. Choose another model, then press Start."
-                why = gone if deleting else LOADTEST_BUSY
+                why = gone if deleting else LOADTEST_BUSY if testing else installing
                 self._json({"error": why}, 409)
                 return
             threading.Thread(
