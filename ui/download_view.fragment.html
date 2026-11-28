@@ -1,0 +1,69 @@
+    <!-- ══════════ Download ══════════ -->
+    <section class="view" id="view-download">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="title">Download models</h1>
+        </div>
+        <div class="topbar-right">
+          <input class="input" id="searchInput" aria-label="Search mlx-community" placeholder="Search mlx-community…" />
+          <button class="btn btn-primary" type="button" id="searchBtn">Search</button>
+        </div>
+      </header>
+      <div class="scroll">
+        <div class="catalog-head" id="downloadSection">
+          <div>
+            <h2>Active Downloads</h2>
+            <span class="muted" id="downloadCount">0 downloads</span>
+          </div>
+          <button class="btn btn-mini btn-toggle" type="button" id="toggleDownloads" aria-expanded="false" aria-controls="downloadCards downloadEmpty" aria-label="Active downloads" title="Collapse or expand"><span id="toggleDownloadsIcon" aria-hidden="true">▶</span></button>
+        </div>
+        <div class="cards collapsed" id="downloadCards"></div>
+        <div class="empty collapsed" id="downloadEmpty" hidden>
+          <div class="empty-mark">⬇</div>
+          <h2>No downloads</h2>
+          <p>Downloads will appear here.</p>
+        </div>
+
+        <div class="catalog-head">
+          <div>
+            <h2>Models</h2>
+            <span class="muted" id="catalogHardware">—</span>
+          </div>
+          <div class="dl-controls">
+            <button class="btn btn-mini btn-ghost" type="button" id="picksBtn" hidden>Recommended only</button>
+            <select id="catalogFilter" class="select" aria-label="Filter models">
+              <option value="all">All models</option>
+              <optgroup label="This Mac">
+                <option value="best">Best for Mac</option>
+                <option value="great">Great fit</option>
+                <option value="good">Good fit</option>
+                <option value="tight">Tight fit</option>
+              </optgroup>
+              <optgroup label="Use">
+                <option value="Code">Code</option>
+                <option value="Reasoning">Reasoning</option>
+                <option value="Fast">Fast</option>
+              </optgroup>
+              <optgroup label="Task">
+                <option value="Text">Text</option>
+                <option value="Vision">Vision</option>
+                <option value="Speech to text">Speech to text</option>
+                <option value="Speech and audio">Speech and audio</option>
+                <option value="Embedding">Embedding</option>
+              </optgroup>
+            </select>
+          </div>
+        </div>
+        <div class="dl-notice" id="catalogNotice" role="status"></div>
+        <div class="cards" id="catalogCards"></div>
+        <div class="empty" id="catalogEmpty" hidden>
+          <div class="empty-mark">🎯</div>
+          <h2>Nothing matches that filter</h2>
+          <p>Pick another fit or category.</p>
+        </div>
+        <div class="dl-more">
+          <button class="btn" type="button" id="showAllBtn">More from Hugging Face</button>
+        </div>
+      </div>
+    </section>
+
