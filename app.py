@@ -2645,15 +2645,21 @@ def _probe_direct(pid: int, adopted: bool = False) -> str | None:
 
     Nothing is sent until every listener on the port is seen to be this process. A
     keyed engine is checked again while it runs. Sets ``server_verdict`` when it
-    answers. ``adopted``: an MLX server left by an earlier session, not warmed again.
+    answers. ``adopted``: an MLX server left by an earlier session. It is not warmed
+    again, so only /health tells whether its model failed, also after it was ready.
     """
     engine, port = _running_engine(), _server_port()
     ready = STATE.server_verdict == "ready"
-    if STATE.server_pid != pid or (ready and not engine.direct):
+    if STATE.server_pid != pid or (ready and not (engine.direct or adopted)):
         return None
     holders = engine_runtime.listeners(port)
     if holders is None:
         return None  # unknown: nothing is sent, and the next look tries again
+    if ready and not engine.direct:  # adopted MLX: its load can still fail
+        failed = holders == {pid} and engine_runtime.listener_is(port, pid)
+        if failed and engine_runtime.health(port) == 503:
+            return "its model could not be loaded"
+        return None
     if holders - {pid}:
         unsent = "; the key was not sent to it" if engine.direct else ""
         return f"another program listens on port {port}{unsent}"
@@ -2669,7 +2675,7 @@ def _probe_direct(pid: int, adopted: bool = False) -> str | None:
             return "it answered without the key"
         if answer != "ready":
             return None
-    elif not adopted:
+    else:
         health = engine_runtime.health(port)
         if health == 503:
             return "its model could not be loaded"
@@ -2722,10 +2728,11 @@ def _watch_server(
     direct = _running_engine().direct
     stopped_why = None  # the app stopped the server, and why
     while True:
-        # Until it answers at every look, then every half minute.
+        # Until it answers at every look, then every half minute (not for an MLX
+        # server this app started: its first reply already proved the model).
         if STATE.server_pid == pid and not STATE.server_stopping:
             came_up = STATE.server_verdict == "ready"
-            if not came_up or (direct and checks % 15 == 14):
+            if not came_up or ((direct or proc is None) and checks % 15 == 14):
                 stopped_why = _probe_direct(pid, adopted=proc is None)
                 late = STATE.server_verdict != "ready" and time.monotonic() > deadline
                 if late and not stopped_why:
@@ -3499,7 +3506,9 @@ def start_loadtest(
             APP_DIR.mkdir(parents=True, exist_ok=True)
             workdir = Path(tempfile.mkdtemp(prefix="loadtest-run-", dir=APP_DIR))
             job, env = _loadtest_job(repo, sizes, run_id, workdir, engine.id, thinking)
-            where, after = {}, "--max-tokens"
+            # ``python -m`` imports from the working directory, which the MLX server
+            # inherits: a fresh private one, never wherever the app was started.
+            where, after = {"cwd": str(workdir)}, "--max-tokens"
             if engine.direct:
                 where = {"cwd": job["server_dir"]}
                 run["pids"] = {"repo": repo, "engine": engine.id, "snapshot": job["snapshot"]}

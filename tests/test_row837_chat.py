@@ -249,6 +249,7 @@ class TestProxy:
         runtime = app_module.engine_runtime
         monkeypatch.setattr(runtime, "listeners", lambda port, **k: {PID})
         monkeypatch.setattr(runtime, "listener_is", lambda port, pid, **k: True)
+        monkeypatch.setattr(runtime, "health", lambda port: 200)
         assert app_module._probe_direct(PID, adopted=True) is None
         assert not upstream.requests, "an adopted server is not warmed again"
         with ask(base_url) as resp:
