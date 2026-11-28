@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import threading
 
@@ -182,6 +183,25 @@ class TestHostileInput:
         ):
             with pytest.raises(chat_store.NotFound):
                 call()
+        assert outside.read_text(encoding="utf-8") == "{}"
+
+    @pytest.mark.parametrize(
+        "chat_id", ["../settings", "../../settings", "x/../../settings", "outside"]
+    )
+    def test_the_path_stays_inside_even_if_the_id_check_passes(
+        self, store, folder, monkeypatch, chat_id
+    ):
+        store.create([ASK])
+        outside = folder.parent / "settings.json"
+        outside.write_text("{}", encoding="utf-8")
+        if chat_id == "outside":
+            chat_id = str(folder.parent / "settings")  # an absolute path
+        monkeypatch.setattr(chat_store, "ID_PATTERN", re.compile(r".+"))
+        for call in (store.get, store.delete):
+            with pytest.raises(chat_store.NotFound):
+                call(chat_id)
+        with pytest.raises(chat_store.NotFound):
+            store._write({"id": chat_id})
         assert outside.read_text(encoding="utf-8") == "{}"
 
     @pytest.mark.parametrize(

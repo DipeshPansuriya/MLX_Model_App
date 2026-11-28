@@ -195,11 +195,14 @@ def _store(app, write_tps, engine="mlx"):
     app._save_loadtest(record)
 
 
-def test_a_stopped_server_shows_the_mac_only(app):
+# The RAM probe answers on macOS and reads 0 elsewhere, so both answers are given here.
+@pytest.mark.parametrize(("ram_bytes", "total"), [(64 * 2**30, 64 * 2**30), (0, None)])
+def test_a_stopped_server_shows_the_mac_only(app, monkeypatch, ram_bytes, total):
+    monkeypatch.setattr(app, "hardware", lambda: {"ram_bytes": ram_bytes})
     app.STATE.server_pid = None
     stats = routes.server_stats(app, _probe)
     assert stats["memory"]["mac_used_percent"] == 40.0
-    assert stats["memory"]["mac_total_bytes"] == app.hardware()["ram_bytes"]
+    assert stats["memory"]["mac_total_bytes"] == total
     assert stats["memory"]["server_bytes"] is None
     assert stats["speed"] == {"chat": None, "test": None}
 

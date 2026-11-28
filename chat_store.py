@@ -314,7 +314,12 @@ class ChatStore:
     def _path(self, chat_id) -> Path:
         if not (isinstance(chat_id, str) and ID_PATTERN.fullmatch(chat_id)):
             raise NotFound("no such chat")
-        return self.folder / f"{chat_id}.json"
+        # Second check, on the path itself: it must still be inside the folder.
+        root = os.path.abspath(self.folder)
+        path = os.path.normpath(os.path.join(root, f"{chat_id}.json"))
+        if not path.startswith(os.path.join(root, "")):
+            raise NotFound("no such chat")
+        return Path(path)
 
     def _names(self) -> list[str]:
         if not self._there():
@@ -494,7 +499,7 @@ class ChatStore:
 
     def delete(self, chat_id: str) -> None:
         """Remove one chat, readable or not. Not a secure erase."""
-        path = self._path(chat_id)
+        self._path(chat_id)  # refuses any other id
         with WRITE_LOCK:
             found = [
                 name
@@ -506,7 +511,7 @@ class ChatStore:
                 raise NotFound("no such chat")
             try:
                 for name in found:
-                    (path.parent / name).unlink(missing_ok=True)
+                    (self.folder / name).unlink(missing_ok=True)
             except OSError:
                 raise Unavailable("the chat could not be deleted") from None
 
