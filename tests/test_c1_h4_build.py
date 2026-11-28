@@ -38,6 +38,14 @@ def clone(target: Path) -> Path:
         "engine_runtime.py",
         "engines.py",
         "login_agent.py",
+        "chat_store.py",
+        "projects.py",
+        "hub_catalog.py",
+        "live_stats.py",
+        "tool_null_text.py",
+        "loadtest_compare.py",
+        "engine_plan.py",
+        "update_check.py",
         "packaging/optiq-lock.txt",
     ):
         shutil.copy(ROOT / name, target / name)
