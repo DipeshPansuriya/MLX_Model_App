@@ -36,6 +36,7 @@ function element(selector) {
     querySelectorAll(s) { return buttons(this, s); },
     appendChild(c) { this.children.push(c); return c; },
     prepend(c) { this.children.unshift(c); return c; },
+    replaceChildren(...c) { this.children = c; },
     remove() { this.removed = true; },
     click() {},
     focus() { ctx.document.activeElement = this; },

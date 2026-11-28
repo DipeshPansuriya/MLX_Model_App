@@ -12,6 +12,14 @@ const state = {
   // The model the user chats with, and whether the server can be asked.
   chatModel: "",
   chatStatus: "",
+  chatRef: null, // {id, updated} of the saved chat on screen
+  chatBusy: false, // its settings are being saved
+  saveHistory: "on",
+  historySaving: 0,
+  historyRows: new Map(),
+  historySeq: 0,
+  openSeq: 0,
+  renameId: "",
   catalog: null,
   search: null,
   aliases: {}, // repo to its saved alias
@@ -272,6 +280,7 @@ function render(snap) {
   if (state.aliasRepo && !models.some((m) => m.repo === state.aliasRepo)) hideAlias();
 
   if (!state.themeSaving) paintTheme(snap.ui?.theme);
+  if (!state.historySaving) paintSaveHistory(snap.ui?.save_history);
 
   // sidebar
   setText($("#appVersion"), `v${app.version}`);
@@ -2308,11 +2317,29 @@ function statsLine(data) {
   ].filter(Boolean).join(" · ");
 }
 
+function addMeta(el, text) {
+  if (!text) return;
+  const meta = document.createElement("div");
+  meta.className = "msg-meta";
+  meta.textContent = text;
+  el.appendChild(meta);
+}
+
 async function sendMessage() {
   const input = $("#input");
   const text = input.value.trim();
-  if (!text || state.streaming || state.chatStatus !== "ready") return;
+  if (!text || state.streaming || state.chatBusy || state.chatStatus !== "ready") return;
   const repo = $("#chatModelSelect").value;
+  const extras = chatExtras();
+  if (extras.invalid) {
+    showChatPanel("settings");
+    extras.invalid.focus();
+    return;
+  }
+  // Absent for a temporary chat: nothing of it is saved.
+  const save = $("#chatTemporary").checked ? undefined
+    : state.chatRef ? { ...state.chatRef } : { id: null };
+  setText($("#chatSaveError"), "");
 
   input.value = "";
   input.style.height = "auto";
@@ -2368,7 +2395,9 @@ async function sendMessage() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: apiHeaders(),
-      body: JSON.stringify({ repo, messages: state.messages }),
+      body: JSON.stringify({
+        repo, messages: state.messages, system: extras.system, settings: extras.settings, save,
+      }),
     });
     if (!res.ok) {
       // Refused before anything was asked: give the typed text back.
@@ -2401,10 +2430,13 @@ async function sendMessage() {
         if (alone) notes.push("No answer came after the thinking, so it is shown here.");
         if (!answer) notes.push(stopped ? "Stopped before any reply." : "The reply was empty.");
         replyNote(assistantEl, notes.join(" "));
-        const metaEl = document.createElement("div");
-        metaEl.className = "msg-meta";
-        metaEl.textContent = statsLine(data);
-        if (metaEl.textContent) assistantEl.appendChild(metaEl);
+        addMeta(assistantEl, statsLine(data));
+        // Only for the chat still on screen: New chat may have replaced it.
+        if (state.messages === history) {
+          if (data.chat) state.chatRef = { id: data.chat.id, updated: data.chat.updated };
+          setText($("#chatSaveError"), data.save_error || "");
+        }
+        if (data.chat && !$("#historyPanel").hidden) loadHistory();
         // A turn with no answer is dropped below, like a failed one: an empty reply,
         // or thinking alone, which the model must not take for what it answered.
         unanswered = alone;
@@ -2433,8 +2465,360 @@ async function sendMessage() {
     $("#sendBtn").hidden = false;
     $("#stopBtn").hidden = true;
     if (held) $("#input").focus();
+    paintSaveState();
     refreshState();
   }
+}
+
+/* ───────────── saved chats ───────────── */
+// Chat text, titles and file names are drawn as text nodes only, never as markup.
+// field, key, lowest, highest, whole number, name
+const CHAT_SETTINGS = [
+  ["#chatMaxTokens", "max_tokens", 64, 131072, true, "Max reply tokens"],
+  ["#chatTemp", "temperature", 0, 2, false, "Temperature"],
+  ["#chatTopP", "top_p", 0.05, 1, false, "Top p"],
+];
+// button, panel, what takes the focus
+const CHAT_PANELS = {
+  history: ["#historyBtn", "#historyPanel", "#historySave"],
+  settings: ["#chatSettingsBtn", "#chatSettingsPanel", "#chatSystem"],
+};
+const REPLY_RUNS = "Wait for the reply to end, or press Stop,";
+
+const post = (body) => ({ method: "POST", body: JSON.stringify(body) });
+
+// What the settings panel asks for; an empty field leaves the Configuration value.
+// invalid is the first field that cannot be sent.
+function chatExtras() {
+  const settings = {};
+  let invalid = null;
+  let problem = "";
+  for (const [field, key, low, high, whole, name] of CHAT_SETTINGS) {
+    const input = $(field);
+    const text = String(input.value).trim();
+    const value = Number(text);
+    const bad = !!input.validity?.badInput
+      || (!!text && !(value >= low && value <= high && (!whole || Number.isInteger(value))));
+    input.setAttribute("aria-invalid", String(bad));
+    if (bad) {
+      invalid ||= input;
+      problem ||= `${name} must be ${whole ? "a whole number " : ""}from ${low} to ${high}.`;
+    } else if (text) settings[key] = value;
+  }
+  setText($("#chatSettingsError"), problem);
+  return { system: $("#chatSystem").value, settings, invalid };
+}
+
+function fillSettings(chat) {
+  $("#chatSystem").value = chat?.system || "";
+  for (const [field, key] of CHAT_SETTINGS) {
+    $(field).value = String(chat?.settings?.[key] ?? "");
+    $(field).removeAttribute("aria-invalid");
+  }
+  setText($("#chatSettingsError"), "");
+  setText($("#chatSettingsState"), "");
+}
+
+async function saveChatSettings() {
+  const { system, settings, invalid } = chatExtras();
+  const say = (text) => setText($("#chatSettingsState"), text);
+  if (invalid) { say(""); invalid.focus(); return; }
+  const ref = state.chatRef;
+  if (state.saveHistory === "off" || $("#chatTemporary").checked) {
+    return say("Used from the next message. Not saved.");
+  }
+  if (!ref) return say("Used from the next message.");
+  if (state.streaming) return say("A reply is running: used from the next message.");
+  if (state.chatBusy) return;
+  state.chatBusy = true;
+  say("Saving…");
+  try {
+    const chat = await api("/api/chats/settings",
+      post({ id: ref.id, updated: ref.updated, system, settings }));
+    if (state.chatRef !== ref) return;
+    state.chatRef = { id: chat.id, updated: chat.updated };
+    say("Saved with this chat.");
+  } catch (err) {
+    if (state.chatRef !== ref) return;
+    say("");
+    setText($("#chatSettingsError"), err.message);
+  } finally {
+    state.chatBusy = false;
+  }
+}
+
+function paintSaveState() {
+  setText($("#chatSaveState"), $("#chatTemporary").checked
+    ? "Temporary chat: nothing is saved."
+    : state.saveHistory === "off"
+      ? "Saving is off: nothing new is saved. Turn Save history on under History."
+      : state.chatRef ? "Saved chat."
+        : state.messages.length ? "Not saved yet: the next reply saves this whole chat."
+          : "This chat will be saved on this Mac.");
+}
+
+function paintSaveHistory(value) {
+  state.saveHistory = value === "off" ? "off" : "on";
+  $("#historySave").checked = state.saveHistory === "on";
+  paintSaveState();
+}
+
+async function chooseSaveHistory(value) {
+  const before = state.saveHistory;
+  state.historySaving += 1;
+  paintSaveHistory(value);
+  try {
+    await api("/api/ui/settings", post({ save_history: value }));
+  } catch (err) {
+    paintSaveHistory(before);
+    toast(`Could not change Save history: ${err.message}`, true);
+  } finally {
+    state.historySaving -= 1;
+  }
+  refreshState();
+}
+
+// Throws the chat on screen away; a saved one stays in History.
+function newChat() {
+  // The reply being generated belongs to that chat.
+  if (state.streaming) api("/api/chat/stop", post({})).catch(() => {});
+  state.messages = [];
+  state.chatRef = null;
+  state.openSeq += 1;
+  $("#messages").replaceChildren();
+  $("#chatEmpty").hidden = false;
+  fillSettings(null);
+  setText($("#chatSaveError"), "");
+  paintSaveState();
+}
+
+// name is "history", "settings" or "" for neither.
+function showChatPanel(name) {
+  for (const [key, [button, panel]] of Object.entries(CHAT_PANELS)) {
+    $(panel).hidden = key !== name;
+    $(button).setAttribute("aria-expanded", String(key === name));
+  }
+  if (!name) return;
+  $(CHAT_PANELS[name][2]).focus();
+  if (name === "history") {
+    hideRename();
+    loadHistory();
+  }
+}
+
+// Closed by the user: the focus goes back to the button that opened it.
+function closeChatPanel(name) {
+  showChatPanel("");
+  $(CHAT_PANELS[name][0]).focus();
+}
+
+const historyStatus = (text) => setText($("#historyStatus"), text);
+
+function textNode(tag, className, text = "") {
+  const el = document.createElement(tag);
+  el.className = className;
+  el.textContent = text;
+  return el;
+}
+
+function rowButton(className, text, label, onClick) {
+  const button = textNode("button", className, text);
+  button.setAttribute("type", "button");
+  button.setAttribute("aria-label", label);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function rowOf(...parts) {
+  const row = textNode("li", "history-row");
+  for (const part of parts) row.appendChild(part);
+  return row;
+}
+
+function historyRow(chat) {
+  const open = rowButton("history-open", chat.title, `Open chat: ${chat.title}`,
+    () => openChat(chat.id));
+  if (state.chatRef?.id === chat.id) open.setAttribute("aria-current", "true");
+  const meta = textNode("span", "history-meta", [
+    new Date(chat.updated).toLocaleString(),
+    `${chat.count} messages`,
+    chat.model ? displayName(chat.model) : "",
+  ].filter(Boolean).join(" · "));
+  const rename = rowButton("btn btn-mini", "Rename", `Rename chat: ${chat.title}`,
+    () => openRename(chat));
+  const remove = rowButton("btn btn-mini btn-danger", "Delete", `Delete chat: ${chat.title}`,
+    () => deleteChat(chat.id, `"${chat.title}"`));
+  state.historyRows.set(chat.id, rename);
+  return rowOf(open, meta, rename, remove);
+}
+
+function brokenRow({ id, reason }) {
+  const name = `${id}.json`;
+  return rowOf(textNode("span", "history-broken", `Broken file ${name}: ${reason}`),
+    rowButton("btn btn-mini btn-danger", "Delete", `Delete broken file ${name}`,
+      () => deleteChat(id, `the file ${name}`)));
+}
+
+async function loadHistory() {
+  const seq = ++state.historySeq;
+  const query = $("#historyQuery").value.trim();
+  try {
+    const { chats, broken } = await (query
+      ? api("/api/chats/search", post({ query })) : api("/api/chats"));
+    if (seq !== state.historySeq) return;
+    state.historyRows = new Map();
+    $("#historyList").replaceChildren(...chats.map(historyRow));
+    $("#historyBroken").replaceChildren(...broken.map(brokenRow));
+    historyStatus([
+      chats.length ? `${chats.length} saved chat(s)${query ? " match the search" : ""}.`
+        : query ? "No saved chat matches the search." : "No saved chats yet.",
+      broken.length ? `${broken.length} file(s) cannot be read.` : "",
+    ].filter(Boolean).join(" "));
+  } catch (err) {
+    if (seq === state.historySeq) historyStatus(`Could not read the saved chats: ${err.message}`);
+  }
+}
+
+async function openChat(id) {
+  if (state.streaming) return historyStatus(`${REPLY_RUNS} before opening a chat.`);
+  const seq = ++state.openSeq;
+  let chat;
+  try {
+    chat = await api(`/api/chats/get?id=${encodeURIComponent(id)}`);
+  } catch (err) {
+    return historyStatus(`Could not open the chat: ${err.message}`);
+  }
+  // A message, New chat or a later Open came first.
+  if (seq !== state.openSeq || state.streaming) return;
+  state.messages = chat.messages.map(({ role, content }) => ({ role, content }));
+  state.chatRef = { id: chat.id, updated: chat.updated };
+  $("#chatTemporary").checked = false;
+  $("#messages").replaceChildren();
+  $("#chatEmpty").hidden = chat.messages.length > 0;
+  for (const message of chat.messages) {
+    const reply = message.role === "assistant";
+    const el = addMessage(message.role, reply ? "" : message.content);
+    if (!reply) continue;
+    paintReply(el, { thinking: message.thinking || "", answer: message.content });
+    addMeta(el, statsLine(message));
+  }
+  fillSettings(chat);
+  setText($("#chatSaveError"), "");
+  paintSaveState();
+  showChatPanel("");
+  setText($("#chatAnnounce"), `Opened chat: ${chat.title}`);
+  const input = $("#input");
+  (input.disabled ? $("#historyBtn") : input).focus();
+}
+
+function openRename(chat) {
+  state.renameId = chat.id;
+  $("#renameInput").value = chat.title;
+  setText($("#renameError"), "");
+  $("#renameForm").hidden = false;
+  $("#renameInput").focus();
+}
+
+function hideRename() {
+  state.renameId = "";
+  $("#renameForm").hidden = true;
+}
+
+function closeRename() {
+  const id = state.renameId;
+  hideRename();
+  (state.historyRows.get(id) || $("#historyQuery")).focus();
+}
+
+async function saveTitle() {
+  const id = state.renameId;
+  if (!id) return;
+  setText($("#renameError"), "");
+  try {
+    await api("/api/chats/rename", post({ id, title: $("#renameInput").value }));
+  } catch (err) {
+    return setText($("#renameError"), err.message);
+  }
+  await loadHistory();
+  if (state.renameId === id) closeRename();
+}
+
+async function deleteChat(id, name) {
+  if (!confirm(`Delete ${name}? This cannot be undone, and it is not a secure erase.`)) return;
+  try {
+    await api("/api/chats/delete", post({ id, confirm: true }));
+  } catch (err) {
+    return historyStatus(`Could not delete: ${err.message}`);
+  }
+  if (state.chatRef?.id === id) newChat();
+  if (state.renameId === id) hideRename();
+  await loadHistory();
+  $("#historyQuery").focus(); // the button that was pressed is gone
+}
+
+async function deleteAllChats() {
+  // A running reply would be saved again right after.
+  if (state.streaming) return historyStatus(`${REPLY_RUNS} before deleting all chats.`);
+  if (!confirm("Delete every saved chat? This cannot be undone, and it is not a secure erase.")) {
+    return;
+  }
+  let result;
+  try {
+    result = await api("/api/chats/delete-all", post({ confirm: true }));
+  } catch (err) {
+    return historyStatus(`Could not delete: ${err.message}`);
+  }
+  if (state.chatRef) newChat();
+  hideRename();
+  await loadHistory();
+  toast(result.failed
+    ? `${result.deleted} chat(s) deleted, ${result.failed} file(s) could not be deleted.`
+    : `${result.deleted} chat(s) deleted.`, !!result.failed);
+}
+
+function wireSavedChats() {
+  for (const [name, [button, panel]] of Object.entries(CHAT_PANELS)) {
+    $(button).addEventListener("click", () => {
+      if ($(panel).hidden) showChatPanel(name);
+      else closeChatPanel(name);
+    });
+    $(panel).addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (name === "history" && state.renameId) closeRename();
+      else closeChatPanel(name);
+    });
+  }
+  $("#historyClose").addEventListener("click", () => closeChatPanel("history"));
+  $("#chatSettingsClose").addEventListener("click", () => closeChatPanel("settings"));
+  // Switching starts a new chat, so no temporary message is ever saved afterwards.
+  $("#chatTemporary").addEventListener("change", () => {
+    if (state.messages.length || state.chatRef) newChat();
+    else paintSaveState();
+  });
+  $("#historySave").addEventListener("change",
+    () => chooseSaveHistory($("#historySave").checked ? "on" : "off"));
+  // The page's policy allows no forms: a button, and Enter in the field it belongs to.
+  const act = (button, run, ...fields) => {
+    $(button).addEventListener("click", run);
+    for (const field of fields) {
+      $(field).addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" || e.isComposing) return;
+        e.preventDefault();
+        run();
+      });
+    }
+  };
+  act("#historySearchBtn", loadHistory, "#historyQuery");
+  act("#renameSaveBtn", saveTitle, "#renameInput");
+  act("#chatSettingsSave", saveChatSettings, ...CHAT_SETTINGS.map(([field]) => field));
+  $("#historyClear").addEventListener("click", () => {
+    $("#historyQuery").value = "";
+    $("#historyQuery").focus();
+    loadHistory();
+  });
+  $("#renameCancel").addEventListener("click", closeRename);
+  $("#historyDeleteAll").addEventListener("click", deleteAllChats);
 }
 
 /* ───────────── logs ───────────── */
@@ -2702,13 +3086,8 @@ function wire() {
     $(".nav-item.active").focus();
   });
 
-  $("#newChatBtn").addEventListener("click", () => {
-    // The reply being generated belongs to the chat that is being thrown away.
-    if (state.streaming) api("/api/chat/stop", { method: "POST", body: "{}" }).catch(() => {});
-    state.messages = [];
-    $("#messages").innerHTML = "";
-    $("#chatEmpty").hidden = false;
-  });
+  $("#newChatBtn").addEventListener("click", newChat);
+  wireSavedChats();
 
   $("#sendBtn").addEventListener("click", sendMessage);
   $("#stopBtn").addEventListener("click", async (e) => {
