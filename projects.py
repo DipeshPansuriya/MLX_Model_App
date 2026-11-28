@@ -43,16 +43,42 @@ DEPTH_MAX = 12  # folders below the root
 PATH_MAX_CHARS = 1024
 
 # Never a project, nor anything inside them. Home and what holds it are refused too.
-PRIVATE_IN_HOME = ("Library", ".ssh", ".mlx_studio", ".dsh", ".claude")
+PRIVATE_IN_HOME = (
+    "Library",
+    ".ssh",
+    ".mlx_studio",
+    ".dsh",
+    ".claude",
+    ".gnupg",
+    ".kube",
+    ".docker",
+    ".config",
+    ".azure",
+)
 SYSTEM_FOLDER = Path("/System")
 SECRET_FOLDERS = frozenset({".ssh", ".aws", ".git"})
 # Matched against every part of a path, in any case.
 SECRET_NAMES = (
     *SECRET_FOLDERS,
     ".env*",
+    "*.env",
     "*.pem",
     "*.key",
     "*.p12",
+    "*.pfx",
+    "*.ppk",
+    "*.jks",
+    "*.keystore",
+    ".pgpass",
+    ".htpasswd",
+    "*.tfstate",
+    "*.tfstate.*",
+    "*.tfvars",
+    "*.tfvars.json",
+    "kubeconfig",
+    "kubeconfig.y*ml",
+    "*.kubeconfig",
+    ".vault-token",
     "id_*",
     ".npmrc",
     ".netrc",
@@ -90,7 +116,22 @@ KEY_RULES = tuple(
     (label, re.compile(pattern))
     for label, pattern in (
         ("a private key", r"-----BEGIN [A-Z ]{0,30}PRIVATE KEY"),
-        ("a cloud access key", r"AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{35}"),
+        ("a cloud access key", r"AKIA[0-9A-Z]{16}|\bASIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{35}"),
+        (
+            "a cloud secret key",
+            (
+                r"(?i)aws_secret_access_key[\"']?[ \t]{0,5}[:=][ \t]{0,5}[\"']?"
+                r"[A-Za-z0-9/+=]{20,}"
+            ),
+        ),
+        (
+            "a password inside a web address",
+            # Not "${NAME}" and the like, which only say where the password comes from.
+            (
+                r"\b[A-Za-z][A-Za-z0-9+.\-]{1,30}://[^\s/?#:@\"'<>]{0,100}:"
+                r"(?![$<{*])[^\s/?#@\"'<>]{1,200}@[^\s/\"']"
+            ),
+        ),
         (
             "a service token",
             r"\b(?:gh[pousr]_|github_pat_|hf_|xox[baprs]-|sk-|sk_live_)[A-Za-z0-9_\-]{20,}",
@@ -107,6 +148,15 @@ KEY_RULES = tuple(
             (
                 r"(?m)^[ \t]{0,20}(?:export )?[A-Z0-9_]{0,60}(?:PASSWORD|SECRET|TOKEN|API_KEY)"
                 r"[ \t]{0,5}=[ \t]{0,5}[^\s\"'$(]{8,}"
+            ),
+        ),
+        (
+            "a password or key setting",
+            # "name: value" with no quotes, alone on its line, as YAML writes it.
+            (
+                r"(?im)^[ \t]{0,40}(?:-[ \t]{1,5})?[a-z0-9_.\-]{0,60}"
+                r"(?:password|passwd|secret|token|api[_-]?key)[ \t]{0,5}:[ \t]{1,5}"
+                r"(?![$<{\[*&|>])[^\s\"'()\[\]{},;]{8,}[ \t\r]{0,20}(?:#.*)?$"
             ),
         ),
     )
@@ -289,7 +339,8 @@ def _list_files(top: int) -> dict:
 
 def key_warnings(text: str) -> list[str]:
     """What in ``text`` looks like a key. A warning only; the match is not repeated."""
-    return [f"looks like it holds {label}" for label, rule in KEY_RULES if rule.search(text)]
+    found = dict.fromkeys(label for label, rule in KEY_RULES if rule.search(text))
+    return [f"looks like it holds {label}" for label in found]
 
 
 # --------------------------------------------------------------------------- #

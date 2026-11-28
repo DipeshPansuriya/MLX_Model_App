@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -542,3 +543,39 @@ def test_a_cached_size_does_not_wait_for_a_free_slot():
     for _ in range(hc.SIZE_CALLS):
         checker._slots.release()
     assert answered
+
+
+# ---- row 1094, finding F4: anonymous and time limited ------------------------------
+@pytest.mark.parametrize("call", ["_list_models", "_repo_info"])
+def test_hub_calls_never_send_a_saved_token(monkeypatch, call):
+    made = []
+
+    class HfApi:
+        def __init__(self, **kwargs):
+            made.append(kwargs)
+
+        def list_models(self, **kwargs):
+            return []
+
+        def repo_info(self, **kwargs):
+            return None
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi=HfApi))
+    getattr(hc, call)()
+    assert made == [{"token": False}]
+
+
+def test_a_search_that_hangs_is_given_up_and_still_shows_the_picks(monkeypatch):
+    monkeypatch.setattr(hc, "SEARCH_TIMEOUT_SECONDS", 0.05, raising=False)
+    release = threading.Event()
+
+    def list_models(**kwargs):
+        release.wait(3)
+        return iter(())
+
+    try:
+        out = hc.search("", catalog=CATALOG, ram_bytes=32 * GB, fit=fit, list_models=list_models)
+    finally:
+        release.set()
+    assert out["error"] == hc.SEARCH_FAILED
+    assert len(out["results"]) == len(CATALOG)

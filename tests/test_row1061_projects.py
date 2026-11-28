@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import stat
+import time
 from pathlib import Path
 
 import pytest
@@ -205,6 +206,24 @@ class TestRefusedRoots:
             store.add(root / "README.md")
 
 
+PRIVATE_TOOL_FOLDERS = [".gnupg", ".kube", ".docker", ".config", ".azure"]
+
+
+class TestPrivateToolFolders:
+    @pytest.mark.parametrize("name", PRIVATE_TOOL_FOLDERS)
+    def test_it_and_what_is_inside_cannot_be_a_project(self, store, home, name):
+        inside = home / name / "deeper"
+        inside.mkdir(parents=True)
+        for folder in (home / name, inside):
+            with pytest.raises(projects.Refused):
+                store.add(folder)
+
+    def test_the_same_name_inside_an_ordinary_project_folder_is_fine(self, store, home):
+        folder = home / "work" / ".config"
+        folder.mkdir(parents=True)
+        assert store.add(folder)["name"] == ".config"
+
+
 class TestRootAfterwards:
     def check_refused(self, store, project):
         for call in (
@@ -268,6 +287,23 @@ SECRET_NAMES = [
     ".aws/config",
     ".Git/config",
     "vendor/.git/HEAD",
+    # Row 1094, finding F2.
+    "prod.env",
+    "deploy/Staging.ENV",
+    "client.pfx",
+    "putty.PPK",
+    "release.jks",
+    "debug.keystore",
+    ".pgpass",
+    ".htpasswd",
+    "terraform.tfstate",
+    "terraform.tfstate.backup",
+    "prod.tfvars",
+    "prod.tfvars.json",
+    "kubeconfig",
+    "KubeConfig.yaml",
+    "dev.kubeconfig",
+    ".vault-token",
 ]
 
 
@@ -299,7 +335,19 @@ class TestSecretFiles:
         assert projects.is_secret(name)
 
     @pytest.mark.parametrize(
-        "name", ["environment.md", "keys.py", "monkey", "src/pem.py", "gitignore", ".gitignore"]
+        "name",
+        [
+            "environment.md",
+            "keys.py",
+            "monkey",
+            "src/pem.py",
+            "gitignore",
+            ".gitignore",
+            "env.py",
+            "kubeconfig.go",
+            "docs/tfstate.md",
+            ".config/tools.json",
+        ],
     )
     def test_ordinary_names_pass(self, name):
         assert not projects.is_secret(name)
@@ -494,6 +542,16 @@ KEY_LIKE = {
     "assigned": "pass" + 'word = "hunter2hunter2"\n',
     "env style": "DB_PASS" + "WORD=hunter2hunter2\n",
     "json": '{"api_' + 'key": "hunter2hunter2"}\n',
+    # Row 1094, finding F3.
+    "aws secret": "AWS_SEC" + "RET_ACCESS_KEY=" + "Ab3/" * 10 + "\n",
+    "aws secret in a settings file": "aws_sec" + "ret_access_key = " + "Ab3+" * 10 + "\n",
+    "aws secret in yaml": "  AWS_SEC" + "RET_ACCESS_KEY: " + "Ab3x" * 10 + "\n",
+    "temporary cloud id": "id = ASIA" + "ABCDEFGHIJKLMNOP\n",
+    "address": "DATABASE_URL=postgres://admin:" + "hunter2@db.local:5432/app\n",
+    "address without a user": "redis:" + "//:hunter2@localhost:6379\n",
+    "yaml": "db:\n  pass" + "word: hunter2hunter2\n",
+    "yaml list": "- api_" + "key: hunter2hunter2  # live\r\n",
+    "yaml prefixed": "client_sec" + "ret: hunter2!hunter2\n",
 }
 
 
@@ -507,13 +565,35 @@ class TestKeyWarnings:
 
     @pytest.mark.parametrize(
         "text",
-        ["token = get_token()\n", "Set your password in the app.\n", "MAX_TOKENS=4096\n", ""],
+        [
+            "token = get_token()\n",
+            "Set your password in the app.\n",
+            "MAX_TOKENS=4096\n",
+            "",
+            "http://localhost:8080/path\n",
+            "git clone https://user@example.com/repo.git\n",
+            "postgres://user:${DB_PASS}@db/app\n",
+            "see http://host:80, or mail me@example.com\n",
+            "  password: string;\n",
+            "  password: password,\n",
+            "password: choose a long one\n",
+            "  token: ${API_TOKEN}\n",
+            "  token: this.getToken()\n",
+            "  password: Optional[str] = None\n",
+            "max_tokens: 100000000\n",
+        ],
     )
     def test_ordinary_text_is_not(self, text):
         assert projects.key_warnings(text) == []
 
     def test_a_hostile_file_is_scanned_quickly(self):
         assert projects.key_warnings("A_" * 130_000) == []
+
+    @pytest.mark.parametrize("piece", ["a://a:", "a.", "token: ", "password:" + " " * 5])
+    def test_other_hostile_files_too(self, piece):
+        started = time.monotonic()
+        projects.key_warnings(piece * (260_000 // len(piece)))
+        assert time.monotonic() - started < 5
 
 
 def ask(text="question", files=None):

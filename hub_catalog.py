@@ -8,6 +8,7 @@ type-checked, and a missing or odd one is None, never a guess.
 from __future__ import annotations
 
 import datetime
+import queue
 import re
 import threading
 
@@ -20,6 +21,7 @@ QUERY_MAX = 200
 TEXT_MAX = 100
 SEARCH_LIMIT = 80
 SIZE_CALLS = 4  # at most this many size requests at once
+SEARCH_TIMEOUT_SECONDS = 15
 SIZE_TIMEOUT_SECONDS = 15
 SEARCH_FIELDS = (
     "downloads",
@@ -258,10 +260,39 @@ def _matches(entry: dict, words: list[str]) -> bool:
     return all(word in text for word in words)
 
 
-def _list_models(**kwargs):
+def _anonymous_api():
+    """The Hub client for public data: ``token=False`` keeps a saved token at home."""
     from huggingface_hub import HfApi
 
-    return HfApi().list_models(**kwargs)
+    return HfApi(token=False)
+
+
+def _list_models(**kwargs):
+    return _anonymous_api().list_models(**kwargs)
+
+
+def _within(seconds: float, call):
+    """What ``call()`` returns or raises, or TimeoutError after ``seconds``.
+
+    The library's listing takes no time limit, so a call that hangs is left behind
+    on its own daemon thread.
+    """
+    outcome: queue.SimpleQueue = queue.SimpleQueue()
+
+    def run():
+        try:
+            outcome.put((call(), None))
+        except Exception as exc:
+            outcome.put((None, exc))
+
+    threading.Thread(target=run, daemon=True).start()
+    try:
+        result, error = outcome.get(timeout=seconds)
+    except queue.Empty:
+        raise TimeoutError from None
+    if error:
+        raise error
+    return result
 
 
 def search(
@@ -274,12 +305,15 @@ def search(
     list_models = list_models or _list_models
     wanted = {"author": HF_ORG, "search": query or None, "limit": SEARCH_LIMIT, "sort": "downloads"}
     hits, error = {}, None
-    try:
+
+    def listing() -> list:
         try:
-            found = list(list_models(**wanted, expand=list(SEARCH_FIELDS)))
+            return list(list_models(**wanted, expand=list(SEARCH_FIELDS)))
         except TypeError:  # an older huggingface_hub without "expand"
-            found = list(list_models(**wanted))
-        for model in found:
+            return list(list_models(**wanted))
+
+    try:
+        for model in _within(SEARCH_TIMEOUT_SECONDS, listing):
             repo = getattr(model, "id", None)
             if hub_url(repo):
                 hits.setdefault(repo, model)
@@ -301,9 +335,7 @@ def search(
 
 # ---- real sizes ------------------------------------------------------------------
 def _repo_info(**kwargs):
-    from huggingface_hub import HfApi
-
-    return HfApi().repo_info(**kwargs)
+    return _anonymous_api().repo_info(**kwargs)
 
 
 def _weight_bytes(info) -> int | None:
