@@ -3223,7 +3223,6 @@ def start_loadtest(
                 run["pids"] = {"repo": repo, "engine": engine.id, "snapshot": job["snapshot"]}
             record.update(
                 fingerprint=_loadtest_fingerprint(repo, engine.id),
-                limit_percent=job["limit_percent"] or 80,
                 flags=job["command"][
                     job["command"].index("--port") + 2
                     if engine.direct

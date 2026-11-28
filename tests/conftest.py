@@ -23,6 +23,7 @@ import portguard
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))  # app.py imports its sibling modules
 portguard.install()
 
 

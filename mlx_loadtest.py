@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
-# Safety figures, deliberately not settings. At the 80% limit: gate 75, kill 77.
+# Safety figures, deliberately not settings.
 SAMPLE_SECONDS = 0.1
 MAX_GAP_SECONDS = 1.0  # a longer gap between samples: the Mac slept or stalled
 SWAP_GROWTH_BYTES = 500_000_000

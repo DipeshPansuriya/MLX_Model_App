@@ -19,7 +19,6 @@ const state = {
   lastServerRunning: false,
   refreshing: null,
   refreshAgain: false,
-  lastServerUnguarded: false,
   serverMode: "",
   // The API Server card: the user's edits (null: follow the server), what ran last
   // (when just opened: the last set that started), and edits to keep over a start.
@@ -33,8 +32,6 @@ const state = {
   serverStartError: "",
   serverSending: false,
   lastApplyNotice: null,
-  estimate: null,
-  estimateError: "",
   view: "",
   // The Configuration page: whose values it shows, and each field as it was loaded.
   config: { repo: "", view: null, loaded: {}, seq: 0 },
@@ -231,28 +228,21 @@ function render(snap) {
 
   // server
   const held = document.activeElement;
-  const unguarded = !!(server.running && server.unguarded);
   const unloaded = !!(server.running && server.load_failed);
-  const runningDot = unloaded ? "dot-bad" : unguarded ? "dot-warn" : "dot-ok";
-  $("#serverUnguarded").hidden = !unguarded;
-  if (unguarded && !state.lastServerUnguarded) {
-    toast("Restart the API server to apply the 2.0.10 protection (API Server page)", true);
-  }
-  state.lastServerUnguarded = unguarded;
+  const runningDot = unloaded ? "dot-bad" : "dot-ok";
   setHTML($("#serverState"), server.running
     ? `<span class="dot ${runningDot}"></span>${esc(unloaded
       ? "Model not loaded: press Stop, then Start Server" : runningNames(server))}`
     : `<span class="dot dot-warn"></span>Stopped`);
   $("#navServerDot").className = "dot " + (server.running ? runningDot : "");
   setText($("#navServerText"),
-    unloaded ? "model not loaded" : unguarded ? "server unprotected"
-      : server.running ? "server running" : "server stopped");
+    unloaded ? "model not loaded" : server.running ? "server running" : "server stopped");
   setText($("#endpointText"), server.endpoint);
-  setText($("#serverModePill"), unguarded ? "unprotected" : server.running
+  setText($("#serverModePill"), server.running
     ? (server.background ? "background" : "foreground")
     : "stopped");
   $("#serverModePill").className = "pill " +
-    (server.running && !unguarded ? (server.background ? "ok" : "") : "warn");
+    (server.running ? (server.background ? "ok" : "") : "warn");
   const notice = $("#serverNotice");
   if (server.down_notice) {
     notice.hidden = false;
@@ -300,9 +290,7 @@ function render(snap) {
   const sLog = $("#serverLog");
   if (sLog) {
     const atBottom = sLog.scrollTop + sLog.clientHeight >= sLog.scrollHeight - 40;
-    const lines = (server.lines || []).concat((server.events || [])
-      .filter((e) => LOGGED_EVENTS.includes(e.event))
-      .map((e) => `[memory] ${e.event}${e.model ? ` ${e.model}` : ""}`));
+    const lines = server.lines || [];
     if (setText(sLog, lines.join("\n")) && atBottom) sLog.scrollTop = sLog.scrollHeight;
   }
 
@@ -368,13 +356,9 @@ function render(snap) {
   // model dropdowns
   const ready = models.filter((m) => m.complete !== false).map((m) => m.repo);
   state.readyModels = ready;
-  renderServerMemory(server);
-  refreshEstimate(snap);
   paintServerCard();
   // A Restart button goes away with its notice: leave the focus on something that stays.
-  const gone = [["#serverRestartBtn", "#serverNotice"],
-    ["#serverUnguardedRestart", "#serverUnguarded"]];
-  if (gone.some(([button, box]) => held === $(button) && $(box).hidden)) spareControl().focus();
+  if (held === $("#serverRestartBtn") && $("#serverNotice").hidden) spareControl().focus();
   renderToolsWarning(server);
   renderModelCards(models, server, downloads);
   renderDownloads(downloads);
@@ -402,11 +386,9 @@ function setPkg(valId, pillId, current, target, missing) {
   }
 }
 
-/* ───────────── two models on the API server ───────────── */
-const MAX_SERVER_MODELS = 2;
-const LOGGED_EVENTS = ["evict", "trim", "alone", "preload-skipped", "load-failed"];
+/* ───────────── the API Server card ───────────── */
+const MAX_SERVER_MODELS = 1;
 const shortName = (repo) => String(repo || "").split("/").pop();
-const gb = (bytes) => (bytes / 1e9).toFixed(1);
 const runningSet = (server) =>
   server?.repos?.length ? server.repos : server?.repo ? [server.repo] : [];
 // Order does not make a different choice.
@@ -416,11 +398,12 @@ const sameSet = (a, b) => a.length === b.length && a.every((repo) => b.includes(
 const usable = (set) =>
   set.filter((repo) => !state.readyModels || state.readyModels.includes(repo));
 
-// The models on the card: the user's edits, else what runs, else what ran last.
+// The model on the card: the user's edit, else what runs, else what ran last.
 function serverSet() {
   const server = state.server;
   if (server?.running) return state.serverDraft || runningSet(server);
-  return usable(state.serverDraft || state.serverLast);
+  // An older version may have remembered two models.
+  return usable(state.serverDraft || state.serverLast).slice(0, MAX_SERVER_MODELS);
 }
 
 // The card differs from the running server, so Apply has something to do.
@@ -432,10 +415,9 @@ function serverPending() {
 
 // The model fields of a start request.
 function serverChoice(set = serverSet(), engine = engineId(), anthropic = anthropicWanted()) {
-  const [repo = "", second] = set;
-  const models = second ? { repo, also: [second] } : { repo };
+  const [repo = ""] = set;
   // No engine named means MLX.
-  return engine === "mlx" ? models : { ...models, engine, anthropic };
+  return engine === "mlx" ? { repo } : { repo, engine, anthropic };
 }
 
 /* ───────────── engines ───────────── */
@@ -456,7 +438,7 @@ function engineChanged() {
   return !!engineInfo()?.anthropic && anthropicWanted() !== !!server.anthropic;
 }
 
-// Whether the chosen engine can serve the first model, as the app says.
+// Whether the chosen engine can serve the model, as the app says.
 async function loadEligibility(engine, repo) {
   const install = engineInfo(engine)?.state;
   const key = `${engine} ${repo} ${install}`;
@@ -476,7 +458,6 @@ async function loadEligibility(engine, repo) {
 function engineReason(set) {
   const engine = engineInfo();
   if (!engine?.direct) return "";
-  if (set.length > 1) return `${engine.name} serves one model. Remove the second one.`;
   if (!set.length) return "";
   loadEligibility(engine.id, set[0]);
   const found = state.eligibility;
@@ -500,21 +481,25 @@ function paintEngine(set) {
   setText($("#engineMissingTitle"), `Not available with this engine (${missing.length})`);
   setHTML($("#engineMissingList"), missing.map(([what, why]) =>
     `<li>${esc(what)}: ${esc(why)}</li>`).join(""));
-  paintClientSettings(set, engine);
+  paintClientSettings(engine);
 }
 
-function paintClientSettings(set, picked) {
+function paintClientSettings(picked) {
   const server = state.server;
   // A running server's own settings, not those of a choice that waits for Apply.
   const running = !!server.running;
   const engine = running ? engineInfo(runningEngine()) : picked;
-  const repos = running && server.repos?.length ? server.repos : set;
   const direct = !!engine?.direct;
   const base = `http://127.0.0.1:${(direct ? engine.port : 8080) || 8080}`;
-  const model = direct ? "default_model" : repos[0] || "(choose a model)";
+  // Both engines call the model they were started with default_model.
+  const model = "default_model";
   const keyed = direct && running && server.ready;
   $("#copyKey").hidden = !keyed;
   $("#curlExample").hidden = direct;
+  setText($("#curlExample"), `curl ${base}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"${model}","messages":[{"role":"user","content":"Hello!"}]}'`);
+  $("#mlxModelHint").hidden = direct;
   setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
     (direct ? "press Copy key (new at every start)" : "not needed"));
   const claude = direct && (running ? !!server.anthropic : anthropicWanted());
@@ -603,83 +588,12 @@ function wireEngines() {
 }
 
 function runningNames(server) {
-  const resident = server.resident || [];
-  const repos = server.repos || [];
-  if (Math.max(resident.length, repos.length) < 2) return `Running — ${shortName(server.repo)}`;
-  if (!resident.length) return `Running — ${repos.map(shortName).join(" and ")}`;
-  const [now, ...rest] = resident.map(shortName);
-  return `Running: ${[`${now} (current)`, ...rest].join(", ")}`;
-}
-
-const holdsTwo = (server) =>
-  !!server.running && (server.repos || []).length > 1 && !server.multi_off;
-
-// [title, text] of what differs from the pair that was asked for; empty if nothing.
-function multiNotice(server) {
-  const nothing = ["", ""];
-  if (!server.running) return nothing;
-  if (server.multi_off) {
-    return ["One model at a time",
-      `Only one model is kept loaded with this mlx-lm version (${server.multi_off}). ` +
-      "A request for the other model loads it from disk."];
-  }
-  const oversize = server.oversize || [];
-  if (oversize.length) {
-    const budget = server.memory?.budget_bytes;
-    const space = budget == null ? "the memory" : `the ${gb(budget)} GB`;
-    const tokens = server.context_tokens;
-    // Only an eviction shows that the other model was unloaded; a first load has none.
-    const events = server.events || [];
-    const evicted = new Set(
-      events.filter((e) => e.event === "evict").map((e) => e.model)
-    );
-    const otherModel = (server.repos || []).find((r) => !oversize.includes(r));
-    const wasEvicted = otherModel && evicted.has(otherModel);
-    const unloaded = wasEvicted ? "The other model was unloaded. " : "";
-    return ["Loaded without enough memory",
-      `${oversize.map(shortName).join(", ")} was loaded on its own: it does not fit in ` +
-      `${space} the API server may use now` +
-      (tokens ? `, with room for a ${tokens}-token reply` : "") +
-      `. ${unloaded}macOS may slow down or stop the API server. ` +
-      "Free some memory or choose a smaller model."];
-  }
-  if (server.memory_low) {
-    return ["Free memory is low",
-      "Other apps now use memory the API server was counting on " +
-      `(${gb(server.memory_low.short_by_bytes)} GB short). Replies may slow down. ` +
-      "Close apps, or restart the server for a smaller context."];
-  }
-  const asked = server.repos || [];
-  const resident = server.resident || [];
-  if (asked.length < 2 || !resident.length) return nothing;
-  const events = server.events || [];
-  const gone = asked.filter((repo) => !resident.includes(repo)).map(shortName);
-  const added = resident.filter((repo) => !asked.includes(repo)).map(shortName);
-  if (gone.length && added.length) {
-    return ["Loaded models changed",
-      `${gone.join(", ")} was replaced by ${added.join(", ")} on request.`];
-  }
-  const skipped = events.find(
-    (e) => e.event === "preload-skipped" && !resident.includes(e.model));
-  if (skipped) {
-    return ["Second model not preloaded",
-      `${shortName(skipped.model)} was not preloaded: it did not fit in memory or could not ` +
-      "be loaded. It loads when a client asks for it."];
-  }
-  // Without an evict event the second model may simply still be loading.
-  const evicted = asked.filter((repo) => !resident.includes(repo) &&
-    events.some((e) => e.event === "evict" && e.model === repo));
-  return evicted.length
-    ? ["Loaded models changed",
-      `${evicted.map(shortName).join(", ")} was unloaded to make room in memory. ` +
-      "It loads again when a client asks for it."]
-    : nothing;
+  return `Running — ${runningSet(server).map(shortName).join(" and ")}`;
 }
 
 /* ───────────── configuration page ───────────── */
 const CONFIG_KEYS = ["max_context_tokens", "server_max_reply_tokens", "chat_max_reply_tokens",
   "chat_temperature", "chat_top_p", "prompt_cache_size", "prompt_cache_bytes",
-  "mlx_cache_limit_mb", "two_model_context_tokens", "memory_limit_percent",
   "performance_mode", "kv_bits", "kv_group_size", "prefill_step_size"];
 const PERF_NAMES = { standard: "Standard", save_memory: "Save memory", advanced: "Advanced" };
 const KV_GROUPS = [32, 64, 128];
@@ -712,7 +626,7 @@ function clearConfig() {
     fieldError(key, "");
     setText($(`#cfg-${key}-now`), "");
   }
-  for (const id of ["#configError", "#configClamp", "#configTestWarn"]) setText($(id), "");
+  for (const id of ["#configError", "#configTestWarn"]) setText($(id), "");
   $("#configSaveBtn").disabled = $("#configResetBtn").disabled = true;
   setText($("#cfg-performance_mode-blocked"), "");
   paintPerformance();
@@ -780,18 +694,17 @@ function paintConfig(view) {
   }
   paintBlocked(view);
   paintPerformance();
-  setText($("#configClamp"), view.context_message || "");
   $("#configSaveBtn").disabled = $("#configResetBtn").disabled = false;
 }
 
-// A context above everything a load test has passed is only a hope: say so.
+// An OptiQ context above everything a load test has passed is only a hope: say so.
 function warnUntested(view, tests) {
   const passed = (tests?.results || []).filter((run) => !run.stale)
     .flatMap((run) => run.rows.filter((r) => r.status === "passed").map((r) => r.size));
   const largest = Math.max(0, ...passed);
-  const context = view.applied_context || view.settings.max_context_tokens.value;
+  const context = view.settings.max_context_tokens.value;
   setText($("#configTestWarn"), largest && context > largest
-    ? `The context here (${context} tokens) is above the largest size that passed a load ` +
+    ? `The OptiQ max context here (${context} tokens) is above the largest size that passed a load ` +
       `test (${largest} tokens).` : "");
 }
 
@@ -861,7 +774,6 @@ function renderConfigPage(server) {
 
 async function postSettings(body) {
   await api("/api/server/settings", { method: "POST", body: JSON.stringify(body) });
-  state.estimateKey = null; // the figures and any warning are asked for again
 }
 
 // Saves only the changed fields; an emptied one goes back to automatic or inherited.
@@ -924,7 +836,7 @@ async function resetConfig() {
 }
 
 /* ───────────── load test page ───────────── */
-const LT_NUMBERS = ["reply_tokens", "rounds", "margin_percent", "timeout_seconds"];
+const LT_NUMBERS = ["reply_tokens", "rounds", "timeout_seconds"];
 const LT_MAX_SIZES = 12;
 const LT_ENDED = { done: "finished", memory: "stopped for memory safety",
   cancelled: "cancelled", failed: "failed", interrupted: "interrupted" };
@@ -1074,11 +986,10 @@ function paintProgress(run) {
     bar.max = run.total;
     bar.value = run.done;
   }
-  const limit = state.lt.view?.results.find((r) => r.id === run.run_id)?.limit_percent;
   setText($("#ltDetail"), [
     reading ? `Reading the prompt: ${run.done} of ${run.total} tokens.` : "",
     run.memory_percent == null ? ""
-      : `Memory now: ${run.memory_percent}% of RAM${limit ? ` (limit ${limit}%)` : ""}.`,
+      : `Memory now: ${run.memory_percent}% of RAM.`,
   ].filter(Boolean).join(" "));
 }
 
@@ -1092,19 +1003,13 @@ function paintOutcome(last) {
   setText($("#ltOutcomeTitle"), memory ? "Stopped for memory safety"
     : `Test ${LT_ENDED[last.status] || last.status}`);
   setText($("#ltOutcomeText"), memory
-    ? `${last.reason}. Memory limit: ${last.limit_percent}%. Larger sizes were not run.`
+    ? `${last.reason}. Larger sizes were not run.`
     : last.reason);
 }
 
-function resultRow(run, row, testing) {
+function resultRow(run, row) {
   const used = run.values || {};
   const note = (text) => (text ? `<span class="lt-note">${esc(text)}</span>` : "");
-  // A saved size is MLX's own setting.
-  const apply = row.status === "passed" && !run.stale && run.status !== "running" && !run.engine
-    ? `<button type="button" class="btn btn-mini" data-apply="${esc(row.size)}" ` +
-      `data-run="${esc(run.id)}" aria-label="Apply this size to config: ${esc(row.size)} ` +
-      `tokens"${testing ? " disabled" : ""}>Apply this size to config</button>`
-    : "";
   return `<tr><th scope="row">${esc(row.size)}` +
     note(row.prompt_tokens ? `${row.prompt_tokens} in prompt` : "") +
     `</th><td><span class="pill ${LT_PILL[row.status] || ""}">${esc(row.status)}</span>` +
@@ -1114,14 +1019,13 @@ function resultRow(run, row, testing) {
       : `follow-up ${seconds(row.follow_up_first_token_s)}`) +
     `</td><td>${figure(row.write_tps)}</td><td>` +
     (row.peak_percent == null ? "n/a" : `${figure(row.peak_percent)}%`) +
-    note(row.server_peak_bytes ? `server ${gb(row.server_peak_bytes)} GB` : "") +
-    note(row.projected_percent == null ? "" : `projected ${figure(row.projected_percent)}%`) +
+    note(row.server_peak_bytes
+      ? `server ${(row.server_peak_bytes / 1e9).toFixed(1)} GB` : "") +
     `</td><td>${esc(`reply ${used.reply_tokens} tokens, ${used.rounds} rounds`)}` +
-    note(`margin ${used.margin_percent}%, limit ${run.limit_percent}%`) +
-    `</td><td>${apply}</td></tr>`;
+    "</td></tr>";
 }
 
-function resultRun(run, testing) {
+function resultRun(run) {
   const name = `Run of ${run.time}`;
   const ended = LT_ENDED[run.status] || run.status;
   const heads = ["Size", "Status", "Read tok/s", "First token", "Write tok/s",
@@ -1133,33 +1037,27 @@ function resultRun(run, testing) {
   return `<section class="panel lt-run"><h2>${esc(name)}${engine}: ${esc(ended)}` +
     `${run.stale ? ' <span class="pill warn">stale</span>' : ""}</h2>` +
     (run.stale ? '<p class="hint">Settings, software or the model changed since this run. ' +
-      "Run it again before applying a size.</p>" : "") +
+      "Run it again.</p>" : "") +
     `<div class="lt-table" role="region" tabindex="0" aria-label="${esc(name)}">` +
-    `<table class="table"><thead><tr>${heads}<th scope="col"><span class="sr-only">Config` +
-    "</span></th></tr></thead><tbody>" +
-    (run.rows.map((row) => resultRow(run, row, testing)).join("") ||
-      '<tr><td colspan="8">No size has finished.</td></tr>') +
+    `<table class="table"><thead><tr>${heads}</tr></thead><tbody>` +
+    (run.rows.map((row) => resultRow(run, row)).join("") ||
+      '<tr><td colspan="7">No size has finished.</td></tr>') +
     "</tbody></table></div>" +
     `<p class="hint">Server flags: <span class="mono">${esc((run.flags || []).join(" "))}` +
     "</span></p>" +
-    `<p class="hint">${run.engine ? "" : "Apply saves the size as this model's max context " +
-      "(one-model mode). "}A pass is a measurement, not a guarantee.</p></section>`;
+    '<p class="hint">A pass is a measurement, not a guarantee.</p></section>';
 }
 
 function paintResults() {
   const { view } = state.lt;
   if (!view) return;
-  const testing = !!state.snapshot?.loadtest?.active;
   const [last, ...older] = [...view.results].reverse();
   paintOutcome(last);
   const box = $("#ltResults");
-  const drawn = setHTML(box, !last ? '<p class="hint">No results for this model yet.</p>'
-    : resultRun(last, testing) + (older.length
+  setHTML(box, !last ? '<p class="hint">No results for this model yet.</p>'
+    : resultRun(last) + (older.length
       ? `<details class="lt-history"><summary>Earlier runs (${older.length})</summary>` +
-        `${older.map((run) => resultRun(run, testing)).join("")}</details>` : ""));
-  if (!drawn) return;
-  box.querySelectorAll("[data-apply]").forEach((button) => button.addEventListener(
-    "click", () => applyLoadTest(button.dataset.run, Number(button.dataset.apply))));
+        `${older.map(resultRun).join("")}</details>` : ""));
 }
 
 function renderLoadTest(snap) {
@@ -1273,194 +1171,12 @@ async function cancelLoadTest() {
   refreshState();
 }
 
-async function applyLoadTest(runId, size) {
-  const { repo } = state.lt;
-  if (state.config.repo === repo && configDirty()) {
-    if (!confirm("Discard your unsaved Configuration changes for this model?")) return;
-    clearConfig();
-  }
-  try {
-    await api("/api/loadtest/apply",
-      { method: "POST", body: JSON.stringify({ repo, run_id: runId, size }) });
-  } catch (err) {
-    ltError(err.message);
-    toast(err.message, true);
-    return;
-  }
-  state.estimateKey = null;
-  toast(`Saved ${size} tokens as max context. It applies at the next server start.`);
-  refreshState();
-  await loadLoadTest();
-}
-
-const acceptsNothing = (server, repo) =>
-  !!server?.running && server.prompt_limits?.[repo] === 0;
-
-// Said for a running server that refuses every prompt of a model, else empty.
-function noPromptWords(server) {
-  const names = Object.keys(server?.prompt_limits || {})
-    .filter((repo) => acceptsNothing(server, repo))
-    .map((repo) => `${shortName(repo)} accepts no prompt`);
-  if (!names.length) return "";
-  const used = server.memory_used_percent;
-  return `${names.join(", ")}. ` +
-    (used == null ? "" : `Memory in use now: ${used}%. `) +
-    "Close other apps (web browsers, code editors, virtual machines, other model apps), " +
-    "then press Stop, then Start Server.";
-}
-
-function renderServerMemory(server) {
-  const memory = server.running ? server.memory : null;
-  $("#serverMemory").hidden = !memory;
-  if (memory) {
-    const used = `Using ${gb(memory.active_bytes)} GB (peak ${gb(memory.peak_bytes)} GB)`;
-    // Only a two-model server is held to a budget.
-    setText($("#serverMemory"), holdsTwo(server)
-      ? `${used} of a ${gb(memory.budget_bytes)} GB budget. ` +
-        "Measured by the API server, refreshed about every 10 s."
-      : `${used}. Measured at the last model load.`);
-  }
-  const tokens = holdsTwo(server) ? server.context_tokens : null;
-  $("#serverPromptHint").hidden = !tokens;
-  setText($("#serverPromptHint"), tokens
-    ? `Keep prompts to ${tokens} tokens or fewer. The prompt cache holds about ` +
-      `${2 * tokens} tokens in total; above that, older prompts are dropped and read again.`
-    : "");
-  const limits = Object.entries((server.running && server.prompt_limits) || {})
-    .filter(([, most]) => most > 0)
-    .map(([repo, most]) => `${shortName(repo)} ${most} tokens`);
-  const words = [noPromptWords(server), limits.length
-    ? `Prompt limit: ${limits.join(", ")}. A longer prompt is refused at once.`
-    : ""].filter(Boolean).join(" ");
-  $("#serverPromptLimit").hidden = !words;
-  setText($("#serverPromptLimit"), words);
-  const [title, notice] = multiNotice(server);
-  $("#serverMulti").hidden = !notice;
-  setText($("#serverMultiTitle"), title);
-  setText($("#serverMultiText"), notice);
-}
-
-const ESTIMATE_RETRY_MS = 10000;
-
-// Asked again when the choice changes, and a while after the last answer, as the free
-// memory moves. An unchanged running server keeps its
-// answer; an edit waiting for Apply does not.
-async function refreshEstimate(snap) {
-  const choice = serverChoice();
-  const key = choice.repo ? JSON.stringify(choice) : "";
-  const same = key === (state.estimateKey || "");
-  const settled = !!snap?.server?.running && !serverPending();
-  if (same && (!(Date.now() >= state.estimateRetryAt) || (settled && state.estimated))) return;
-  state.estimateKey = key;
-  state.estimateRetryAt = Infinity;
-  if (!same) {
-    state.estimated = false;
-    showEstimate(null, "");
-  }
-  if (!key) return;
-  try {
-    const estimate = await api("/api/server/estimate", {
-      method: "POST",
-      body: JSON.stringify(choice),
-    });
-    if (state.estimateKey !== key) return;
-    state.estimateRetryAt = Date.now() + ESTIMATE_RETRY_MS;
-    state.estimated = true;
-    showEstimate(estimate);
-  } catch (err) {
-    if (state.estimateKey !== key) return;
-    state.estimated = false;
-    state.estimateRetryAt = Date.now() + ESTIMATE_RETRY_MS;
-    showEstimate(null, err.message);
-  }
-}
-
-const FULL_CONTEXT = 32768;
-
-// What the picked pair will get, or why it cannot be started.
-function estimateWords(estimate) {
-  const unread = estimate.free_bytes === null;
-  const fallback = unread ? " Free memory could not be read; using the fixed " +
-    `${estimate.budget_percent ?? 52}% rule.` : "";
-  if (estimate.fits === false) return `${estimate.refused}${fallback}`;
-
-  let uses;
-  if (!unread && estimate.held_bytes > 0) {
-    // A running server's memory is not in the free figure, and a new start frees it.
-    const available = estimate.free_bytes + estimate.held_bytes;
-    const need = estimate.total_bytes;
-    if (need > available) {
-      uses = `Needs about ${gb(need)} GB, ${gb(available)} GB would be available.`;
-    } else {
-      uses = `Uses about ${gb(need)} of ${gb(available)} GB available.`;
-    }
-  } else {
-    uses = `Uses about ${gb(estimate.total_bytes)}` +
-      (unread ? " GB." : ` of ${gb(estimate.free_bytes)} GB free.`);
-  }
-
-  if (estimate.context_tokens >= FULL_CONTEXT) {
-    return `Two models: 32K tokens each. ${uses}${fallback}`;
-  }
-  if (estimate.capped_by_setting) {
-    return `Two models: about ${Math.floor(estimate.context_tokens / 1000)}K tokens each ` +
-      `(your Settings cap). ${uses}${fallback}`;
-  }
-  const shrinkNote = estimate.free_is_limit ? " Close other apps for more." : "";
-  return `Two models: about ${Math.floor(estimate.context_tokens / 1000)}K tokens each ` +
-    `(one model alone can use more). ${uses}` +
-    (unread ? fallback : shrinkNote);
-}
-
-function showEstimate(estimate, error = "") {
-  state.estimate = estimate;
-  state.estimateError = error;
-  setText($("#serverContextWarn"), estimate?.context_warning || "");
-  paintServerCard();
-}
-
-const kilo = (tokens) => Math.floor(tokens / 1024);
-
-// What one row can promise about its context; empty when nothing is known.
-function contextWords(repo, view) {
-  // The running server's own figure beats an older estimate.
-  if (acceptsNothing(view.server, repo)) return "accepts no prompt";
-  const found = view.estimate?.models?.find((m) => m.repo === repo);
-  let tokens = view.estimate?.fits === false && view.two ? null : found?.safe_context;
-  if (view.live && view.two && holdsTwo(view.server) && view.server.context_tokens) {
-    tokens = Math.min(view.server.context_tokens, found?.context_limit || Infinity);
-  }
-  return tokens >= 1024 ? `about ${kilo(tokens)}K context` : "";
-}
-
-// The one thing to read without opening Details: why the button is off, or a warning.
-function serverReason(view) {
-  const { server, set, two, live, estimate, refused } = view;
+// Why the button is off, or what to do next.
+function serverReason(server, set) {
   if (server.starting) return "Starting the server…";
   if (state.serverStartError) return state.serverStartError;
-  const closed = noPromptWords(server);
-  if (closed) return closed;
-  if (!set.length) {
-    return server.running ? "Add a model, or press Stop." : "Add a model to start the server.";
-  }
-  if (state.estimateError) return `No memory estimate: ${state.estimateError}`;
-  if (refused) return estimateWords(estimate);
-  if (two) {
-    const running = live && holdsTwo(server);
-    const tokens = running ? server.context_tokens
-      : !live && estimate?.fits !== false ? estimate?.context_tokens : null;
-    if (!tokens || tokens >= FULL_CONTEXT) return "";
-    const more = !running && estimate.free_is_limit && estimate.free_bytes !== null;
-    return `Shorter context: about ${Math.floor(tokens / 1000)}K tokens per model.` +
-      (more ? " Close other apps for more." : "");
-  }
-  // One model is never refused: the server may still run it with less room.
-  if (live || estimate?.fits !== false) return "";
-  const safe = estimate.models?.[0]?.safe_context;
-  return safe >= 8192
-    ? `Shorter context: about ${kilo(safe)}K tokens.`
-    : `This model may not fit: it needs about ${gb(estimate.total_bytes)} GB and ` +
-      `the API server may use ${gb(estimate.budget_bytes)} GB.`;
+  if (set.length) return "";
+  return server.running ? "Add a model, or press Stop." : "Add a model to start the server.";
 }
 
 // A line inside the card, hidden while it has nothing to say.
@@ -1473,23 +1189,13 @@ function paintServerCard() {
   const server = state.server;
   if (!server) return;
   const set = serverSet();
-  const two = set.length > 1;
   const pending = serverPending();
-  // The card lists exactly what the running server holds.
-  const live = !!server.running && sameSet(set, runningSet(server));
-  const estimate = state.estimate;
-  // A running pair is not called refused: its own memory is what is in use.
-  const refused = two && estimate?.fits === false && (!server.running || pending);
-  const view = { server, set, two, live, estimate, refused };
 
   const list = $("#serverModelList");
-  const drawn = setHTML(list, set.map((repo) => {
-    const context = contextWords(repo, view);
-    return `<li><span class="model-name" title="${esc(repo)}">${esc(shortName(repo))}</span>` +
-      (context ? `<span class="model-context">${context}</span>` : "") +
-      `<button class="btn btn-mini btn-ghost" type="button" data-remove="${esc(repo)}" ` +
-      `aria-label="Remove ${esc(repo)}">×</button></li>`;
-  }).join(""));
+  const drawn = setHTML(list, set.map((repo) =>
+    `<li><span class="model-name" title="${esc(repo)}">${esc(shortName(repo))}</span>` +
+    `<button class="btn btn-mini btn-ghost" type="button" data-remove="${esc(repo)}" ` +
+    `aria-label="Remove ${esc(repo)}">×</button></li>`).join(""));
   if (drawn) {
     list.querySelectorAll("[data-remove]").forEach((btn) => {
       btn.addEventListener("click", () => removeServerModel(btn.dataset.remove));
@@ -1503,64 +1209,27 @@ function paintServerCard() {
   // Nothing is preselected: every pick in the list adds that model.
   $("#serverModelSelect").value = "";
   const noAdd = set.length >= MAX_SERVER_MODELS
-    ? "Two models is the maximum. Remove one to add another."
+    ? "The server serves one model. Remove it to choose another."
     : !ready.length ? "No models installed. Get one on the Download page."
       : !others.length ? "No other installed model to add." : "";
   $("#serverAddBtn").disabled = !!noAdd;
   setText($("#serverAddWhy"), noAdd);
   if (noAdd) showAddPicker(false);
 
-  const measured = live ? server.memory : null;
-  const used = measured ? measured.active_bytes : estimate?.total_bytes;
-  const allowed = measured ? measured.budget_bytes : estimate?.budget_bytes;
-  // A refusal gives its own figures; this line beside them reads as a contradiction.
-  const memory = !refused && set.length && used != null && allowed != null
-    ? `Memory: ${gb(used)} / ${gb(allowed)} GB` : "";
-  showLine("#serverMemoryLine", memory);
-  showLine("#serverMemoryHint", !memory ? "" : measured
-    ? "Memory: used now, of what the API server may use."
-    : "Memory: what this choice needs, of what the API server may use.");
-
-  const reason = serverReason(view);
+  // For another engine only a refused start is said here; engineWhy says the rest.
+  const direct = !!engineInfo()?.direct;
+  const reason = direct ? state.serverStartError : serverReason(server, set);
   showLine("#serverWhy", reason);
   // The status region is always in the page, so a screen reader hears its changes.
-  setText($("#serverStartWhy"), reason);
-
+  setText($("#serverStartWhy"), direct ? "" : reason);
   paintEngine(set);
-  // The built-in server's memory figures say nothing about another engine.
-  if (engineInfo()?.direct) {
-    showLine("#serverMemoryLine", set.length ? "Memory limit: not available with this engine." : "");
-    for (const id of ["#serverMemoryHint", "#serverWhy", "#serverEstimate", "#serverContextHint"]) {
-      showLine(id, "");
-    }
-    setText($("#serverStartWhy"), "");
-  }
-
-  // A refusal is already on screen; a running server is not described as refused.
-  const details = !set.length || !estimate || (two && estimate.fits === false) ? ""
-    : two ? estimateWords(estimate)
-      : `Needs about ${gb(estimate.total_bytes)} GB with a ` +
-        `${Math.floor(estimate.context_tokens / 1000)}K-token reply; the API server may use ` +
-        `${gb(estimate.budget_bytes)} GB.`;
-  showLine("#serverEstimate", engineInfo()?.direct ? "" : details);
-  showLine("#serverContextHint",
-    engineInfo()?.direct || !two || !estimate || estimate.fits === false ? "" :
-    "Safe context while both are loaded (estimate): " +
-    estimate.models.map((m) => {
-      if (m.safe_context == null) return `${shortName(m.repo)} unknown`;
-      const limit = m.safe_context === m.context_limit ? " (model limit)" : "";
-      return `${shortName(m.repo)} about ${kilo(m.safe_context)}K${limit}`;
-    }).join("; ") + ". Set your client's context window to this or lower.");
-  $("#serverPairHint").hidden = !two;
-  $("#serverDetails").hidden = !set.length && !server.running;
 
   const start = $("#serverStartBtn");
   const stop = $("#serverStopBtn");
   const focused = document.activeElement;
   setText(start, server.starting ? "Starting…" : server.running ? "Apply changes" : "Start Server");
-  const blocked = engineInfo()?.direct ? !!engineReason(set) : refused;
-  start.disabled = !!server.starting || !set.length || (server.running && !pending) || blocked;
-  if (engineInfo()?.direct && state.serverStartError) showLine("#serverWhy", state.serverStartError);
+  start.disabled = !!server.starting || !set.length || (server.running && !pending) ||
+    !!engineReason(set);
   stop.hidden = !server.running && !server.starting;
   // Focus must not stay on a button that can no longer be used, nor move from Start
   // to Stop, where a second Enter would stop the server.
@@ -1597,7 +1266,6 @@ function editServerSet(next) {
 
 function serverCardChanged() {
   state.serverStartError = "";
-  refreshEstimate(state.snapshot);
   paintServerCard();
   if (state.snapshot) renderToolsWarning(state.snapshot.server);
 }
@@ -1628,7 +1296,7 @@ function renderToolsWarning(server) {
   const choice = serverChoice();
   const repos = server.running
     ? (server.repos?.length ? server.repos : [server.repo])
-    : [choice.repo, ...(choice.also || [])];
+    : [choice.repo];
   const without = repos.filter((repo) => support[repo] === false);
   const warn = without.length > 0;
   $("#serverToolsWarn").hidden = !warn;
@@ -2460,7 +2128,7 @@ async function sendStart(body, message, keep = {}) {
   }
   // From stopped, this is now the set that Restart would try again.
   if (stopped) {
-    state.serverLast = [body.repo, ...(body.also || [])];
+    state.serverLast = [body.repo];
     state.serverLastBackground = body.background;
     state.serverRan = { engine: body.engine || "mlx", anthropic: body.anthropic };
   }
@@ -2481,8 +2149,7 @@ async function startFromCard() {
       applying ? "Restarting server…"
         : background ? "Starting in background…" : "Starting server…");
   } catch (err) {
-    // The reason stays on the card; the next poll asks for the figures again.
-    state.estimateRetryAt = 0;
+    // The reason stays on the card.
     state.serverStartError = err.message;
     paintServerCard();
     toast(err.message, true);
@@ -2617,16 +2284,6 @@ function wire() {
     spareControl().focus();
     return dismissNotice();
   });
-  $("#serverUnguardedRestart").addEventListener("click", async () => {
-    // The model and mode that are running now, whatever the card shows.
-    const { repo, repos, background } = state.snapshot?.server || {};
-    if (!repo) return;
-    try {
-      await sendStart({
-        repo, ...(repos?.[1] ? { also: [repos[1]] } : {}), background: !!background,
-      }, "Restarting server…");
-    } catch (err) { toast(err.message, true); }
-  });
   $("#serverRestartBtn").addEventListener("click", async () => {
     // What ran last, not an unapplied choice; the card only when nothing is known.
     let set = usable(state.serverLast);
@@ -2684,10 +2341,6 @@ function wire() {
 /* ───────────── boot ───────────── */
 (async function boot() {
   wire();
-  $("#curlExample").textContent =
-`curl http://127.0.0.1:8080/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"<model>","messages":[{"role":"user","content":"Hello!"}]}'`;
   showView(location.hash.slice(1) || VIEWS[0]);
   // Without a token every request is refused: say so once and ask for nothing.
   if (!API_TOKEN) return toast("This page has no session. Open MLX Studio from its app icon.", true);

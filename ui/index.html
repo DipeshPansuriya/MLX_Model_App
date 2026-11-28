@@ -192,15 +192,6 @@
         </div>
       </header>
       <div class="scroll">
-        <div class="notice" id="serverUnguarded" role="alert" hidden>
-          <div class="notice-body">
-            <div class="notice-title">Restart the API server to apply the 2.0.10 protection</div>
-            <div class="notice-text">This server was started without the request guard (for example by an older version of MLX Studio), so web pages open in your browser may be able to use it. Restarting loads the same model again.</div>
-          </div>
-          <div class="notice-actions">
-            <button class="btn btn-mini btn-primary" id="serverUnguardedRestart">Restart now</button>
-          </div>
-        </div>
         <div class="notice" id="serverNotice" role="alert" hidden>
           <div class="notice-body">
             <div class="notice-title">API server stopped</div>
@@ -222,7 +213,7 @@
         </div>
         <div class="panel server-card" id="serverCard" role="group" aria-labelledby="serverModelsTitle">
           <div class="panel-head">
-            <span id="serverModelsTitle">Models (max 2)</span>
+            <span id="serverModelsTitle">Model</span>
           </div>
           <div class="server-row">
             <label for="engineSelect">Engine</label>
@@ -250,26 +241,14 @@
             <div class="sr-only" id="serverModelSelectStatus" role="status"></div>
           </div>
           <div class="sr-only" id="serverSetStatus" role="status"></div>
-          <p class="server-memory" id="serverMemoryLine" hidden></p>
-          <p class="server-memory" id="serverPromptLimit" hidden></p>
-          <p class="server-memory" id="serverContextWarn" role="status"></p>
           <!-- The status region below says the same words to a screen reader. -->
           <p class="server-why" id="serverWhy" aria-hidden="true" hidden></p>
           <div class="sr-only" id="serverStartWhy" role="status"></div>
-          <details class="server-details" id="serverDetails" hidden>
-            <summary>Details</summary>
-            <p class="hint" id="serverPairHint" hidden>Both models answer on the same address. They take turns: a request for one waits until the other's replies finish.</p>
-            <p class="hint" id="serverMemoryHint" hidden></p>
-            <p class="hint" id="serverEstimate" hidden></p>
-            <p class="hint" id="serverContextHint" hidden></p>
-            <p class="hint" id="serverMemory" hidden></p>
-            <p class="hint" id="serverPromptHint" hidden></p>
-          </details>
           <details class="engine-details" id="engineMissing" hidden>
             <summary id="engineMissingTitle"></summary>
             <ul class="hint" id="engineMissingList"></ul>
           </details>
-          <p class="hint server-link"><a href="#config">Context, reply limits and memory: open Configuration</a></p>
+          <p class="hint server-link"><a href="#config">Reply, cache and context settings: open Configuration</a></p>
           <div class="server-row">
             <label class="check" title="Keep the server running after the window closes">
               <input type="checkbox" id="serverBackground" />
@@ -280,15 +259,6 @@
             <button class="btn btn-primary" id="serverStartBtn" aria-describedby="serverStartWhy serverApplyNote">Start Server</button>
             <button class="btn btn-ghost" id="serverStopBtn" hidden>Stop</button>
             <span class="hint" id="serverApplyNote"></span>
-          </div>
-        </div>
-        <!-- Always in the page, so a screen reader hears the warning appear in it. -->
-        <div role="status">
-          <div class="notice" id="serverMulti" hidden>
-            <div class="notice-body">
-              <div class="notice-title" id="serverMultiTitle">Loaded models changed</div>
-              <div class="notice-text" id="serverMultiText"></div>
-            </div>
           </div>
         </div>
         <div class="notice" id="serverToolsWarn" hidden>
@@ -304,6 +274,7 @@
           </div>
           <div class="endpoint" id="endpointText">http://127.0.0.1:8080/v1</div>
           <p class="hint">Point DeepSeek Harness or any OpenAI-compatible client here.</p>
+          <p class="hint" id="mlxModelHint">Send the model name default_model. Another name makes the MLX server load that model instead.</p>
           <pre class="code" id="curlExample"></pre>
         </div>
         <div class="panel">
@@ -352,14 +323,12 @@
             </div>
           </div>
           <p class="hint">An empty field is automatic. Under a model, an empty field uses the All models value. Server limits apply at the next server start or Apply changes.</p>
-          <p class="hint">With two models the lower value wins. The server reply cap and prompt cache come from the model or models the server starts with.</p>
+          <p class="hint">MLX has no memory limit: a large model or prompt can freeze or crash this Mac. The Memory limit, MLX buffer cache limit and Two-model context cap settings were removed in 2.0.13.</p>
           <div class="notice" id="configEngine" hidden>
             <div class="notice-body"><div class="notice-text">With the OptiQ engine these settings do not work as they do with MLX:</div>
               <ul class="hint">
-                <li>Ignored: MLX buffer cache limit and Two-model context cap (OptiQ serves one model).</li>
                 <li>Max context tokens: older text is dropped, not refused. Empty: MLX Studio sets no limit.</li>
                 <li>Server max reply tokens: only a default; a client may ask for more.</li>
-                <li>Memory limit: only sampled; a sudden jump can pass it.</li>
                 <li>Prompt cache limit: empty means one eighth of this Mac's memory.</li>
                 <li>Performance mode and compression: passed to OptiQ, which does not report them back. The figures on this page were measured with MLX only.</li>
               </ul>
@@ -369,7 +338,6 @@
             <div class="notice-body"><div class="notice-text">Saved settings are not in the running API server yet.</div></div>
             <div class="notice-actions"><button type="button" class="btn btn-mini btn-primary" id="configApplyBtn">Apply changes</button></div>
           </div>
-          <p class="server-why" id="configClamp" role="status"></p>
           <p class="server-why" id="configTestWarn" role="status"></p>
           <div id="configFields">
             <div class="setting perf-mode">
@@ -380,7 +348,7 @@
                   <option value="save_memory" id="cfg-mode-save_memory">Save memory</option>
                   <option value="advanced" id="cfg-mode-advanced">Advanced</option>
               </select>
-              <span class="hint" id="cfg-performance_mode-help">Save memory uses less memory but reads new prompts about half as fast (measured on one model and one Mac). Compression starts after 5,000 tokens, and requests are answered one at a time. The automatic prompt limit stays the same.</span>
+              <span class="hint" id="cfg-performance_mode-help">Save memory uses less memory but reads new prompts about half as fast (measured on one model and one Mac). Compression starts after 5,000 tokens, and requests are answered one at a time.</span>
               <span class="server-why" id="cfg-performance_mode-blocked" role="status"></span>
               <span class="hint" id="cfg-performance_mode-now"></span>
               <span class="field-error" id="cfg-performance_mode-error"></span>
@@ -422,14 +390,16 @@
             </div>
             <div class="settings-grid">
             <div class="setting">
-              <label for="cfg-max_context_tokens">Max context tokens (one model)</label>
-              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-max_context_tokens" placeholder="automatic" aria-describedby="cfg-max_context_tokens-now cfg-max_context_tokens-error" />
+              <label for="cfg-max_context_tokens">Max context tokens (OptiQ only)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-max_context_tokens" placeholder="automatic" aria-describedby="cfg-max_context_tokens-scope cfg-max_context_tokens-now cfg-max_context_tokens-error" />
+              <span class="hint" id="cfg-max_context_tokens-scope">MLX does not use this: it has no prompt limit.</span>
               <span class="hint" id="cfg-max_context_tokens-now"></span>
               <span class="field-error" id="cfg-max_context_tokens-error"></span>
             </div>
             <div class="setting">
               <label for="cfg-server_max_reply_tokens">Server max reply tokens</label>
-              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-server_max_reply_tokens" placeholder="automatic" aria-describedby="cfg-server_max_reply_tokens-now cfg-server_max_reply_tokens-error" />
+              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-server_max_reply_tokens" placeholder="automatic" aria-describedby="cfg-server_max_reply_tokens-scope cfg-server_max_reply_tokens-now cfg-server_max_reply_tokens-error" />
+              <span class="hint" id="cfg-server_max_reply_tokens-scope">A default only: a request may ask for more.</span>
               <span class="hint" id="cfg-server_max_reply_tokens-now"></span>
               <span class="field-error" id="cfg-server_max_reply_tokens-error"></span>
             </div>
@@ -466,24 +436,6 @@
               <span class="hint" id="cfg-prompt_cache_bytes-now"></span>
               <span class="field-error" id="cfg-prompt_cache_bytes-error"></span>
             </div>
-            <div class="setting">
-              <label for="cfg-mlx_cache_limit_mb">MLX buffer cache limit (MB)</label>
-              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-mlx_cache_limit_mb" placeholder="automatic" aria-describedby="cfg-mlx_cache_limit_mb-now cfg-mlx_cache_limit_mb-error" />
-              <span class="hint" id="cfg-mlx_cache_limit_mb-now"></span>
-              <span class="field-error" id="cfg-mlx_cache_limit_mb-error"></span>
-            </div>
-            <div class="setting">
-              <label for="cfg-two_model_context_tokens">Two-model context cap (tokens each)</label>
-              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-two_model_context_tokens" placeholder="automatic" aria-describedby="cfg-two_model_context_tokens-now cfg-two_model_context_tokens-error" />
-              <span class="hint" id="cfg-two_model_context_tokens-now"></span>
-              <span class="field-error" id="cfg-two_model_context_tokens-error"></span>
-            </div>
-            <div class="setting">
-              <label for="cfg-memory_limit_percent">Memory limit (% of RAM)</label>
-              <input type="number" step="1" inputmode="numeric" class="input" id="cfg-memory_limit_percent" placeholder="automatic" aria-describedby="cfg-memory_limit_percent-now cfg-memory_limit_percent-error" />
-              <span class="hint" id="cfg-memory_limit_percent-now"></span>
-              <span class="field-error" id="cfg-memory_limit_percent-error"></span>
-            </div>
             </div>
           </div>
             <div class="field-error" id="configError" role="alert"></div>
@@ -505,7 +457,7 @@
       <div class="scroll">
         <p class="hint" id="ltNoModel" hidden>No model is installed. <a href="#download">Get one on the Download page</a>.</p>
         <div class="panel">
-          <p class="hint">Measures one model on this Mac at the context sizes you choose, with made-up text. It starts its own server, so the API server must be stopped. A request is not sent when memory is projected to pass the gate, and the test server is ended when memory nears the limit. Memory is sampled, so a sudden jump cannot be ruled out: save your work in other apps first.</p>
+          <p class="hint">Measures one model on this Mac at the context sizes you choose, with made-up text. It starts its own server, so the API server must be stopped. Every size you pick is tried: there is no memory limit. The test server is still stopped when macOS reports critical memory pressure, swap grows by more than 0.5 GB, memory cannot be read, or memory is not sampled for more than 1 second (for example the Mac slept). Memory is sampled, so the Mac can still freeze: save your work in other apps first.</p>
           <div class="setting page-picker">
             <label for="ltModelSelectSearch">Model to test</label>
             <div class="picker">
@@ -547,11 +499,6 @@
                 <label for="lt-rounds">Rounds per size</label>
                 <input type="number" step="1" inputmode="numeric" class="input" id="lt-rounds" aria-describedby="lt-rounds-note" />
                 <span class="hint" id="lt-rounds-note">Each round is a new conversation and a follow-up.</span>
-              </div>
-              <div class="setting">
-                <label for="lt-margin_percent">Safety margin (%)</label>
-                <input type="number" step="1" inputmode="numeric" class="input" id="lt-margin_percent" aria-describedby="lt-margin_percent-note" />
-                <span class="hint" id="lt-margin_percent-note">A request is sent only if memory is projected to stay this far under the limit.</span>
               </div>
               <div class="setting">
                 <label for="lt-timeout_seconds">Time limit per size (seconds)</label>
