@@ -206,7 +206,7 @@ model of its own. Released builds load a second copy for Chat.
   [what is no longer protected](#protections-removed-in-2013).
 - One model per server. Live server output, copyable endpoint and `curl` example.
 - Warns when the chosen model is marked as unable to call tools.
-- **Background**: the server keeps running after the window closes. Its process
+- **Run in background** (on by default): the server keeps running, and holding memory, until **Stop**, after the window closes. Its process
   id is saved in `~/.mlx_studio/server.pid` and adopted on the next launch only if
   the command line and start time still match.
 - If the server dies, the view shows a banner with **Restart** and records the
@@ -341,7 +341,7 @@ python3 packaging/release_manifest.py --verify --release --dist dist
 
 ## Engines
 
-MLX is the default. OptiQ can be installed on Setup and chosen on the API Server card;
+OptiQ is the default on the API Server and Load Test screens (a saved choice is kept). It can be installed on Setup or from the Start area;
 it needs an API key. Both lack protections that earlier releases had; the card lists
 them. See [docs/ENGINES.md](docs/ENGINES.md).
 
