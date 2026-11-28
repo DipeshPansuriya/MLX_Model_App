@@ -22,6 +22,7 @@ import projects
 NO_PICKER = (
     "Browser mode has no folder picker. Open the MLX Studio window to choose a project folder."
 )
+ESTIMATE_FACTOR = 1.0  # one for preview, attach and send, so what is shown fits is sent
 ATTACHED_MAX = 200  # attachments held for open chats; the oldest goes first
 ATTACHED: collections.OrderedDict[str, list[dict]] = collections.OrderedDict()
 ATTACHED_LOCK = threading.Lock()
@@ -100,7 +101,7 @@ def _remove(app, body: dict) -> dict:
 
 
 def _preview(app, body: dict) -> dict:
-    return _store(app).preview(body.get("id"), body.get("paths"))
+    return _store(app).preview(body.get("id"), body.get("paths"), ESTIMATE_FACTOR)
 
 
 def _attach(app, body: dict) -> dict:
@@ -109,7 +110,7 @@ def _attach(app, body: dict) -> dict:
         raise chat_store.Invalid("choose at least one file and preview it")
     _ready(app)
     files = _store(app).snapshot(body.get("id"), picks)
-    tokens = projects.estimate_tokens(projects.file_block(files))
+    tokens = projects.estimate_tokens(projects.file_block(files), ESTIMATE_FACTOR)
     if tokens > projects.FILES_TOKENS:
         raise projects.OverBudget(
             f"the files are over their {projects.FILES_TOKENS} token limit: untick some"
@@ -171,7 +172,7 @@ def prepare(
     """``(to send, to save, settings)`` for one chat request.
 
     ``messages`` are the page's ``{role, content, attachment?}``. Without files all is
-    returned as it came. With files, the oldest turns may be left out of what is sent,
+    returned with only role and content. With files, the oldest turns may be left out of what is sent,
     the reply limit is capped, and ChatError says why nothing may be sent.
     """
     keep = []
@@ -189,9 +190,9 @@ def prepare(
                 item["files"] = _attached(key)  # never the page's own copy
         keep.append(item)
     if not any("files" in item for item in keep):
-        return messages, messages, own
+        return keep, keep, own  # nothing else the page put on a message goes on
     _ready(app)
     reply = own.get("max_tokens") or app.chat_settings(repo)["max_tokens"]
-    plan = projects.plan_request(keep, system, reply)
+    plan = projects.plan_request(keep, system, reply, ESTIMATE_FACTOR)
     send = [m for m in plan["messages"] if m["role"] != "system"]  # the chat route adds it
     return send, keep, {**own, "max_tokens": plan["max_tokens"]}

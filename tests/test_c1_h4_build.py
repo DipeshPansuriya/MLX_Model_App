@@ -47,10 +47,19 @@ def clone(target: Path) -> Path:
         "engine_plan.py",
         "update_check.py",
         "catalog_routes.py",
+        "project_routes.py",
         "packaging/optiq-lock.txt",
     ):
         shutil.copy(ROOT / name, target / name)
-    for name in ("index.html", "style.css", "app.js", "download.js", "download.css"):
+    for name in (
+        "index.html",
+        "style.css",
+        "app.js",
+        "download.js",
+        "download.css",
+        "projects.js",
+        "projects.css",
+    ):
         shutil.copy(ROOT / "ui" / name, target / "ui" / name)
     for name in ("build_app.sh", "launcher.c", "release_manifest.py", "AppIcon.icns"):
         shutil.copy(ROOT / "packaging" / name, target / "packaging" / name)

@@ -2291,6 +2291,9 @@ async function sendMessage() {
 
   const history = state.messages; // New chat replaces it while a reply is running
   const turn = { role: "user", content: text };
+  // typeof: this file also runs alone, without the project panel's script.
+  const attachment = typeof ProjectsUI === "object" && ProjectsUI.take();
+  if (attachment) turn.attachment = attachment;
   state.messages.push(turn);
   addMessage("user", text);
   let replied = false;
@@ -2399,6 +2402,8 @@ async function sendMessage() {
     // A turn without a reply would break role alternation on every later send.
     const at = state.messages.indexOf(turn);
     if (!replied && at !== -1) state.messages.splice(at, 1);
+    // Refused, unreachable or unanswered: the files wait for the next try.
+    if (!replied && typeof ProjectsUI === "object") ProjectsUI.restore();
     wait.hidden = true;
     body.classList.remove("cursor");
     setText($("#chatAnnounce"),
@@ -2527,6 +2532,7 @@ function newChat() {
   // The reply being generated belongs to that chat.
   if (state.streaming) api("/api/chat/stop", post({})).catch(() => {});
   state.messages = [];
+  if (typeof ProjectsUI === "object") ProjectsUI.detach();
   state.chatRef = null;
   state.openSeq += 1;
   $("#messages").replaceChildren();
@@ -2635,6 +2641,7 @@ async function openChat(id) {
   // A message, New chat or a later Open came first.
   if (seq !== state.openSeq || state.streaming) return;
   state.messages = chat.messages.map(({ role, content }) => ({ role, content }));
+  if (typeof ProjectsUI === "object") ProjectsUI.detach();
   state.chatRef = { id: chat.id, updated: chat.updated };
   $("#chatTemporary").checked = false;
   $("#messages").replaceChildren();

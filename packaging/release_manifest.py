@@ -85,6 +85,7 @@ SHIPPED = (
     "engine_plan.py",
     "update_check.py",
     "catalog_routes.py",
+    "project_routes.py",
     "ui",
     "packaging",
 )
@@ -105,10 +106,13 @@ BUNDLED = (
     "engine_plan.py",
     "update_check.py",
     "catalog_routes.py",
+    "project_routes.py",
     "packaging/optiq-lock.txt",
     "ui/index.html",
     "ui/style.css",
     "ui/app.js",
+    "ui/projects.js",
+    "ui/projects.css",
     "ui/download.js",
     "ui/download.css",
 )

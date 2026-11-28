@@ -50,6 +50,7 @@ import engine_runtime  # noqa: E402
 import engines  # noqa: E402
 import login_agent  # noqa: E402
 import model_info  # noqa: E402
+import project_routes  # noqa: E402
 
 APP_NAME = "MLX Studio"
 APP_VERSION = "2.0.13"
@@ -3826,7 +3827,7 @@ def _save_turn(repo: str, messages: list[dict], extras: tuple, reply: dict, done
     thinking, answer = _split_reply(reply["reasoning"], reply["token"])
     if save is None or not answer.strip():
         return {}
-    turns = [{"role": m["role"], "content": m["content"]} for m in messages]
+    turns = [{k: m[k] for k in ("role", "content", "files") if k in m} for m in messages]
     turns.append(
         {
             "role": "assistant",
@@ -4099,6 +4100,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/autostart":
             self._json(login_agent.status(sys.modules[__name__]))
             return
+        if path == "/api/projects" or path.startswith("/api/projects/"):
+            code, answer = project_routes.handle_get(sys.modules[__name__], path, query)
+            self._json(answer, code)
+            return
         if path in ("/api/chats", "/api/chats/get"):
             try:
                 if path == "/api/chats":
@@ -4216,10 +4221,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 extras = _chat_extras(body)
+                app = sys.modules[__name__]
+                saved = project_routes.saved_messages(app, body)
+                send, keep, own = project_routes.prepare(
+                    app, repo, messages, extras[0], extras[1], saved
+                )
             except chat_store.ChatError as exc:
                 self._json({"error": str(exc)}, exc.status)
                 return
-            self._stream_chat(repo, messages, extras)
+            self._stream_chat(repo, send, (extras[0], own, extras[2]), keep)
+            return
+
+        if path.startswith("/api/projects/"):
+            name = path.removeprefix("/api/projects/")
+            code, answer = project_routes.handle_post(sys.modules[__name__], name, body)
+            self._json(answer, code)
             return
 
         if path.startswith("/api/chats/"):
@@ -4486,7 +4502,9 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.deleting.discard(repo)
 
     # -- SSE chat -------------------------------------------------------- #
-    def _stream_chat(self, repo: str, messages: list[dict], extras: tuple) -> None:
+    def _stream_chat(
+        self, repo: str, messages: list[dict], extras: tuple, keep: list[dict]
+    ) -> None:
         stop = threading.Event()
         busy = _chat_problem(repo)
         with STATE.lock:
@@ -4523,7 +4541,7 @@ class Handler(BaseHTTPRequestHandler):
                         parts[kind] += payload
                     added = {}
                     if kind == "done":  # saved first: the event names the saved chat
-                        added = _save_turn(repo, messages, extras, parts, payload)
+                        added = _save_turn(repo, keep, extras, parts, payload)
                     emit(kind, {**payload, **added} if added else payload)
                     if kind == "done":
                         log_activity(

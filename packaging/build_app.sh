@@ -63,11 +63,12 @@ cp "$ROOT/loadtest_compare.py" "$APP/Contents/Resources/loadtest_compare.py"
 cp "$ROOT/engine_plan.py" "$APP/Contents/Resources/engine_plan.py"
 cp "$ROOT/update_check.py" "$APP/Contents/Resources/update_check.py"
 cp "$ROOT/catalog_routes.py" "$APP/Contents/Resources/catalog_routes.py"
+cp "$ROOT/project_routes.py" "$APP/Contents/Resources/project_routes.py"
 # The only packages Setup may install for OptiQ, by hash.
 mkdir -p "$APP/Contents/Resources/packaging"
 cp "$ROOT/packaging/optiq-lock.txt" "$APP/Contents/Resources/packaging/optiq-lock.txt"
 mkdir -p "$APP/Contents/Resources/ui"
-cp "$ROOT/ui/index.html" "$ROOT/ui/style.css" "$ROOT/ui/app.js" "$ROOT/ui/download.js" "$ROOT/ui/download.css" "$APP/Contents/Resources/ui/"
+cp "$ROOT/ui/index.html" "$ROOT/ui/style.css" "$ROOT/ui/app.js" "$ROOT/ui/download.js" "$ROOT/ui/download.css" "$ROOT/ui/projects.js" "$ROOT/ui/projects.css" "$APP/Contents/Resources/ui/"
 cp "$HERE/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # ── Info.plist ───────────────────────────────────────────────────────────────

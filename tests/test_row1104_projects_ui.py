@@ -42,7 +42,8 @@ const one = (host, kind) => $$$(host).querySelectorAll(`[data-${kind}]`)[0];
 
 def run(tmp_path, scenario):
     script = tmp_path / "both.js"
-    script.write_text((UI / "app.js").read_text() + "\n" + (UI / "projects.js").read_text())
+    names = ("download.js", "app.js", "projects.js")  # the page's load order
+    script.write_text("\n".join((UI / name).read_text() for name in names))
     (tmp_path / "s.js").write_text(SETUP.replace("respond =", "globalThis.respond =") + scenario)
     done = subprocess.run(
         [NODE, str(ROOT / "tests" / "ui_harness.js"), str(script), str(tmp_path / "s.js")],
@@ -141,7 +142,9 @@ class Page(HTMLParser):
 
 def test_the_fragment_has_every_element_and_nothing_the_page_policy_refuses():
     page = Page()
-    page.feed((UI / "projects.html").read_text())
+    html = (UI / "index.html").read_text()
+    start = html.index('<details class="project-panel"')
+    page.feed(html[start : html.index('<div class="composer">')])
     ids = {a.get("id") for _, a in page.tags}
     script = (UI / "projects.js").read_text()
     wanted = set(re.findall(r'"#(project[A-Za-z]+)"', script))
