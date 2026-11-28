@@ -6,7 +6,6 @@ No process is started and no model is loaded: Popen is a stand-in.
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 
 import pytest
@@ -51,8 +50,9 @@ def rig(app_module, monkeypatch, ram):
     made, watched, broken = [], [], set()
 
     def popen(cmd, **kwargs):
-        if cmd[3] in broken:
-            raise OSError(f"cannot start {cmd[3]}")
+        repo = cmd[cmd.index("--model") + 1]
+        if repo in broken:
+            raise OSError(f"cannot start {repo}")
         made.append(Proc(5000 + len(made), cmd))
         return made[-1]
 
@@ -62,6 +62,13 @@ def rig(app_module, monkeypatch, ram):
     monkeypatch.setattr(app, "_watch_server", lambda *args: watched.append(args))
     # A real foreground start reads output until the server exits.
     monkeypatch.setattr(app, "_pump_output", lambda proc: None)
+    # What the probe of the direct server sees: /health of each pid, None: no answer.
+    health = {}
+    probe = app.engine_runtime
+    monkeypatch.setattr(probe, "listeners", lambda port, **k: {app.STATE.server_pid})
+    monkeypatch.setattr(probe, "listener_is", lambda port, pid, **k: True)
+    monkeypatch.setattr(probe, "health", lambda port: health.get(app.STATE.server_pid))
+    monkeypatch.setattr(probe, "warm_up", lambda *args: True)
     app.worker_server_start(A, True)
     watched.clear()
 
@@ -70,28 +77,16 @@ def rig(app_module, monkeypatch, ram):
 
     r = Rig()
     r.app, r.made, r.watched, r.broken, r.watch = app, made, watched, broken, real_watch
+    r.health = health
     return r
 
 
 def models(proc):
-    cmd = proc.cmd
-    also = [cmd[cmd.index("--studio-also-model") + 1]] if "--studio-also-model" in cmd else []
-    return [cmd[cmd.index("--model") + 1], *also]
+    return [proc.cmd[proc.cmd.index("--model") + 1]]
 
 
 # refused or not spawned: the caller's own thread brings the old set back -------- #
 class TestFailsAtOnce:
-    def test_refused_after_the_stop_brings_the_old_set_back(self, rig, free_memory):
-        free_memory.bytes = 0
-        rig.app.worker_server_start(B, False, None, [C])
-        s = rig.app.STATE
-        assert [models(p) for p in rig.made] == [[A], [A]]
-        assert rig.made[0].returncode == -15, "the old server was stopped first"
-        assert (s.server_repos, s.server_background) == ([A], True)
-        assert s.server_down_notice is None
-        assert s.server_apply_notice.startswith("The new server did not start: Not enough")
-        assert s.server_apply_notice.endswith("a was started again.")
-
     def test_a_spawn_error_brings_the_old_set_back(self, rig):
         rig.broken.add(B)
         rig.app.worker_server_start(B, False)
@@ -107,15 +102,6 @@ class TestFailsAtOnce:
         notice = s.server_down_notice
         assert "cannot start org/b" in notice and "cannot start org/a" in notice
         assert "The API server is stopped." in notice
-
-    def test_a_pair_comes_back_as_a_pair(self, rig):
-        rig.app.worker_server_start(A, False, None, [B])
-        resident(rig, rig.made[-1], resident=[A, B], preload_done=True)
-        rig.broken.add(C)
-        rig.app.worker_server_start(C, True)
-        s = rig.app.STATE
-        assert models(rig.made[-1]) == [A, B] and s.server_background is False
-        assert s.server_apply_notice.endswith("a and b were started again.")
 
     def test_stop_pressed_meanwhile_keeps_it_stopped(self, rig, monkeypatch):
         def popen(cmd, **kwargs):
@@ -167,14 +153,16 @@ class TestFailsAtOnce:
 
 
 # it starts, then fails: the watcher brings the old set back ---------------------- #
-def replaced(rig, repo=B, also=()):
+def replaced(rig, repo=B):
     """Replace the running server; returns the new process and its watcher's arguments."""
-    rig.app.worker_server_start(repo, True, None, list(also))
+    rig.app.worker_server_start(repo, True)
     return rig.made[-1], rig.watched.pop()
 
 
-def resident(rig, proc, **data):
-    rig.app._resident_file().write_text(json.dumps({"pid": proc.pid, **data}), "utf-8")
+def ready(rig, proc):
+    """The server answers, and the probe has seen it."""
+    rig.health[proc.pid] = 200
+    rig.app._probe_direct(proc.pid)
 
 
 def run_watch(rig, monkeypatch, args, steps):
@@ -192,45 +180,27 @@ def run_watch(rig, monkeypatch, args, steps):
 class TestFailsAfterTheStart:
     def test_an_early_exit_brings_the_old_set_back(self, rig, monkeypatch):
         proc, args = replaced(rig)
-        rig.app.STATE.server_lines.append("mlx_guard: refusing to start")
+        rig.app.STATE.server_lines.append("mlx_lm: refusing to start")
         run_watch(rig, monkeypatch, args, [lambda: setattr(proc, "returncode", 1)])
         s = rig.app.STATE
         assert models(rig.made[-1]) == [A] and s.server_repos == [A]
         assert s.server_down_notice is None
         assert "exited with status 1" in s.server_apply_notice
-        assert "mlx_guard: refusing to start" in s.server_apply_notice
+        assert "mlx_lm: refusing to start" in s.server_apply_notice
         # The old set is watched as an ordinary start: one retry, never a loop.
         assert len(rig.watched[-1]) == 3
 
     def test_a_model_that_cannot_load_is_replaced_although_alive(self, rig, monkeypatch):
         proc, args = replaced(rig)
-        events = [{"event": "load-failed", "model": B}]
-        run_watch(rig, monkeypatch, args, [lambda: resident(rig, proc, resident=[], events=events)])
+        run_watch(rig, monkeypatch, args, [lambda: rig.health.update({proc.pid: 503})])
         assert proc.returncode == -15, "the useless process is stopped"
         assert rig.app.STATE.server_repos == [A]
         assert "could not be loaded" in rig.app.STATE.server_apply_notice
 
-    def test_a_pair_that_dies_during_the_second_load_failed(self, rig, monkeypatch):
-        proc, args = replaced(rig, B, [C])
+    def test_a_death_after_it_was_ready_is_reported_as_before(self, rig, monkeypatch):
+        proc, args = replaced(rig)
         steps = [
-            lambda: resident(rig, proc, resident=[B]),
-            lambda: setattr(proc, "returncode", -9),
-        ]
-        run_watch(rig, monkeypatch, args, steps)
-        assert rig.app.STATE.server_repos == [A]
-
-    @pytest.mark.parametrize(
-        ("also", "data"),
-        [
-            ((), {"resident": [B]}),
-            ((C,), {"resident": [B, C], "preload_done": True}),
-            ((C,), {"resident": [B], "multi": False, "reason": "moved"}),
-        ],
-    )
-    def test_a_death_after_it_was_ready_is_reported_as_before(self, rig, monkeypatch, also, data):
-        proc, args = replaced(rig, B, also)
-        steps = [
-            lambda: resident(rig, proc, **data),
+            lambda: rig.health.update({proc.pid: 200}),
             lambda: None,
             lambda: setattr(proc, "returncode", 1),
         ]
@@ -238,17 +208,14 @@ class TestFailsAfterTheStart:
         assert rig.app.STATE.server_pid is None and len(rig.made) == 2
         assert "stopped unexpectedly" in rig.app.STATE.server_down_notice
 
-    def test_without_a_ready_report_it_counts_as_started_after_a_while(self, rig, monkeypatch):
+    def test_one_that_never_answers_is_stopped_and_the_old_set_comes_back(self, rig, monkeypatch):
         proc, args = replaced(rig)
         now = [0.0]
         monkeypatch.setattr(rig.app.time, "monotonic", lambda: now[0])
-        steps = [
-            lambda: now.__setitem__(0, rig.app.START_WATCH_SECONDS + 100.0),
-            lambda: setattr(proc, "returncode", 1),
-        ]
-        run_watch(rig, monkeypatch, args, steps)
-        assert len(rig.made) == 2 and rig.app.STATE.server_pid is None
-        assert "stopped unexpectedly" in rig.app.STATE.server_down_notice
+        late = rig.app.START_WATCH_SECONDS + 100.0
+        run_watch(rig, monkeypatch, args, [lambda: now.__setitem__(0, late)])
+        assert proc.returncode == -15 and rig.app.STATE.server_repos == [A]
+        assert "did not answer in time" in rig.app.STATE.server_apply_notice
 
     def test_stop_meanwhile_keeps_it_stopped(self, rig, monkeypatch):
         proc, args = replaced(rig)
@@ -289,10 +256,10 @@ class TestLastGoodSet:
         assert models(rig.made[-1]) == [A] and rig.app.STATE.server_repos == [A]
         assert rig.app.STATE.server_apply_notice.endswith("a was started again.")
 
-    def test_a_refused_apply_while_loading_brings_the_old_set_back(self, rig, free_memory):
+    def test_a_failed_apply_while_loading_brings_the_old_set_back(self, rig):
         replaced(rig)
-        free_memory.bytes = 0
-        rig.app.worker_server_start(C, False, None, [B])
+        rig.broken.add(C)
+        rig.app.worker_server_start(C, False)
         s = rig.app.STATE
         assert models(rig.made[-1]) == [A] and s.server_background is True
         assert s.server_apply_notice.endswith("a was started again.")
@@ -300,7 +267,7 @@ class TestLastGoodSet:
     def test_a_server_that_reported_ready_is_the_next_fallback(self, rig, monkeypatch):
         proc, args = replaced(rig)
         steps = [
-            lambda: resident(rig, proc, resident=[B]),
+            lambda: rig.health.update({proc.pid: 200}),
             lambda: setattr(proc, "returncode", 1),
         ]
         run_watch(rig, monkeypatch, args, steps)
@@ -308,23 +275,10 @@ class TestLastGoodSet:
 
     def test_ready_counts_before_the_watcher_has_looked(self, rig):
         proc, _ = replaced(rig)
-        resident(rig, proc, resident=[B])
+        ready(rig, proc)
         rig.broken.add(C)
         rig.app.worker_server_start(C, True)
         assert rig.app.STATE.server_repos == [B]
-
-    def test_after_the_deadline_the_new_set_is_the_fallback(self, rig, monkeypatch):
-        proc, args = replaced(rig)
-        now = [0.0]
-        monkeypatch.setattr(rig.app.time, "monotonic", lambda: now[0])
-        seen = []
-        steps = [
-            lambda: now.__setitem__(0, rig.app.START_WATCH_SECONDS + 100.0),
-            lambda: seen.append(rig.app.STATE.server_fallback),
-            lambda: setattr(proc, "returncode", 1),
-        ]
-        run_watch(rig, monkeypatch, args, steps)
-        assert seen == [None]
 
     def test_an_old_watcher_does_not_drop_the_fallback_of_a_newer_start(self, rig, monkeypatch):
         _, old = replaced(rig)
@@ -426,13 +380,17 @@ def fail_pidfile(rig, monkeypatch, times):
 
 class TestUnexpectedError:
     def test_before_the_spawn_brings_the_old_set_back(self, rig, monkeypatch):
-        def broken(*args, **kwargs):
-            raise RuntimeError("no estimate")
+        real = rig.app._server_command
 
-        monkeypatch.setattr(rig.app, "server_memory_estimate", broken)
-        rig.app.worker_server_start(B, False, None, [C])
+        def broken(repo, *args):
+            if repo == B:
+                raise RuntimeError("no settings")
+            return real(repo, *args)
+
+        monkeypatch.setattr(rig.app, "_server_command", broken)
+        rig.app.worker_server_start(B, False)
         s = rig.app.STATE
-        assert s.server_repos == [A] and "no estimate" in s.server_apply_notice
+        assert s.server_repos == [A] and "no settings" in s.server_apply_notice
         assert s.server_pending == []
 
     def test_after_the_spawn_stops_the_half_started_one(self, rig, monkeypatch):
@@ -468,15 +426,15 @@ class TestUnexpectedError:
 
 # the request ------------------------------------------------------------------- #
 class TestRequest:
+    def test_a_second_model_is_refused_and_the_old_server_stays(self, rig, base_url):
+        status, body = post(base_url, "/api/server/start", {"repo": B, "also": [C]})
+        assert status == 400 and "one model" in body["error"]
+        assert rig.made[0].returncode is None and rig.app.STATE.server_pending == []
+
     def test_a_missing_model_is_refused_before_the_old_server_stops(self, rig, base_url):
         status, body = post(base_url, "/api/server/start", {"repo": "org/gone"})
         assert status == 400 and "not installed completely" in body["error"]
         assert rig.app.STATE.server_repos == [A] and rig.made[0].returncode is None
-
-    def test_a_refused_pair_leaves_the_old_server_alone(self, rig, base_url, free_memory):
-        free_memory.bytes = 0
-        status, _ = post(base_url, "/api/server/start", {"repo": B, "also": [C]})
-        assert status == 409 and rig.made[0].returncode is None
 
     def test_dismiss_clears_both_notices(self, rig, base_url):
         rig.app.STATE.server_apply_notice = "x"
