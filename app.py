@@ -1121,6 +1121,7 @@ class State:
                 "engines": [engine.view(APP_DIR) for engine in engines.REGISTRY],
                 "last_engine": _last_engine(),
                 "last_anthropic": _last_anthropic(),
+                "last_background": _last_background(),
                 "tool_support": tool_support(),
                 "lines": self.server_lines[-200:],
                 "background": self.server_background,
@@ -2319,13 +2320,22 @@ def _last_anthropic() -> bool:
         return True
 
 
+def _last_background() -> bool:
+    """The remembered "run in background" choice. On unless it was saved off."""
+    try:
+        raw = _read_small(_last_models_file(), LAST_MODELS_MAX_BYTES)
+        return json.loads(raw.decode("utf-8")).get("background") is not False
+    except Exception:  # parsing can fail in more ways than ValueError
+        return True
+
+
 def _remember_models(pid: int) -> None:
     with STATE.lock:
         repos = list(STATE.server_repos) if STATE.server_pid == pid else []
     if not repos:
         return
     with contextlib.suppress(OSError):
-        saved = {"repos": repos}
+        saved = {"repos": repos, "background": STATE.server_background}
         if _running_engine().direct:
             saved["engine"] = STATE.server_engine
             saved["anthropic"] = STATE.server_anthropic

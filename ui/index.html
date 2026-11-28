@@ -256,11 +256,12 @@
           </details>
           <p class="hint server-link"><a href="#config">Reply, cache and context settings: open Configuration</a></p>
           <div class="server-row">
-            <label class="check" title="Keep the server running after the window closes">
-              <input type="checkbox" id="serverBackground" />
-              <span>Background</span>
+            <label class="check">
+              <input type="checkbox" id="serverBackground" checked aria-describedby="serverBackgroundNote" />
+              <span>Run in background</span>
             </label>
           </div>
+          <p class="hint" id="serverBackgroundNote">Closing the window leaves the server on: it keeps running and holding memory until you press Stop.</p>
           <div class="server-row">
             <button class="btn btn-primary" id="serverStartBtn" aria-describedby="serverStartWhy serverApplyNote">Start Server</button>
             <button class="btn btn-ghost" id="serverStopBtn" hidden>Stop</button>

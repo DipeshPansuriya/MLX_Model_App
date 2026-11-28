@@ -269,6 +269,11 @@ function render(snap) {
     state.serverMode = mode;
     state.serverStartError = "";
   }
+  // The saved choice, once; on when nothing is saved. A later click stays.
+  if (!state.boxLoaded && !mode) {
+    $("#serverBackground").checked = server.last_background !== false;
+  }
+  state.boxLoaded = true;
   state.server = server;
   if (server.running) {
     state.serverLast = runningSet(server);
