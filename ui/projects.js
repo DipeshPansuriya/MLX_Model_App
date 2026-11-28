@@ -61,7 +61,11 @@ const ProjectsUI = (() => {
     const held = view.attached;
     setText($("#projectAttached"), held
       ? `Goes with your next message: ${held.files.map((f) => f.path).join(", ")}` : "");
-    $("#projectDetach").hidden = !held;
+    const button = $("#projectDetach");
+    const focused = !held && document.activeElement === button;
+    button.hidden = !held;
+    // A control that hides itself drops the focus to the page.
+    if (focused) ($("#input").disabled ? $("#historyBtn") : $("#input")).focus();
   }
 
   async function load() {
