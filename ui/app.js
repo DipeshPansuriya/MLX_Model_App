@@ -14,6 +14,9 @@ const state = {
   chatStatus: "",
   catalog: null,
   search: null,
+  aliases: {}, // repo to its saved alias
+  aliasRepo: "", // the model the alias editor is open for
+  aliasSaving: false,
   searchSeq: 0,
   downloadsOpen: false,
   lastServerRunning: false,
@@ -143,9 +146,10 @@ async function copyText(text) {
 
 const COPY_LABEL = "Copy model name";
 
-// The full repo id is what API clients send as "model".
+// What API clients send as "model": the alias if there is one, else the repo id.
 function copyButton(repo) {
-  return `<button class="btn btn-mini btn-ghost" type="button" data-copy="${esc(repo)}" aria-label="${COPY_LABEL} ${esc(repo)}">${COPY_LABEL}</button>`;
+  const name = aliasOf(repo) || repo;
+  return `<button class="btn btn-mini btn-ghost" type="button" data-copy="${esc(name)}" aria-label="${COPY_LABEL} ${esc(name)}">${COPY_LABEL}</button>`;
 }
 
 // One listener for every card, including cards drawn later.
@@ -249,6 +253,10 @@ async function chooseTheme(theme) {
 function render(snap) {
   state.snapshot = snap; // what the Start areas read about installs
   const { app, hardware, python, versions, models, server, downloads, install } = snap;
+  // Before anything is drawn: every screen names a model through these.
+  state.aliases = Object.fromEntries(
+    models.filter((m) => m.alias).map((m) => [m.repo, m.alias]));
+  if (state.aliasRepo && !models.some((m) => m.repo === state.aliasRepo)) hideAlias();
 
   if (!state.themeSaving) paintTheme(snap.ui?.theme);
 
@@ -432,6 +440,11 @@ function setPkg(valId, pillId, current, target, missing) {
 /* ───────────── the API Server card ───────────── */
 const MAX_SERVER_MODELS = 1;
 const shortName = (repo) => String(repo || "").split("/").pop();
+const aliasOf = (repo) =>
+  (Object.hasOwn(state.aliases, repo) ? state.aliases[repo] : "");
+// A short title, and a label for places with room for the actual name as well.
+const displayName = (repo) => aliasOf(repo) || shortName(repo);
+const modelLabel = (repo) => (aliasOf(repo) ? `${aliasOf(repo)} (${repo})` : repo);
 const runningSet = (server) =>
   server?.repos?.length ? server.repos : server?.repo ? [server.repo] : [];
 // Order does not make a different choice.
@@ -616,8 +629,11 @@ function paintClientSettings(picked) {
   const engine = running ? engineInfo(runningEngine()) : picked;
   const direct = !!engine?.direct;
   const base = `http://127.0.0.1:${(direct ? engine.port : 8080) || 8080}`;
-  // Both engines call the model they were started with default_model.
-  const model = "default_model";
+  // What a running server answers to; before a start, what the chosen model would get.
+  // Without an alias, default_model: both engines call their start model that.
+  const [chosen = ""] = running ? runningSet(server) : serverSet();
+  const alias = running ? server.alias || "" : aliasOf(chosen);
+  const model = alias || "default_model";
   const keyed = direct && running && server.ready;
   $("#copyKey").hidden = !keyed;
   $("#curlExample").hidden = direct;
@@ -625,12 +641,23 @@ function paintClientSettings(picked) {
   -H "Content-Type: application/json" \\
   -d '{"model":"${model}","messages":[{"role":"user","content":"Hello!"}]}'`);
   $("#mlxModelHint").hidden = direct;
+  setText($("#mlxModelHint"), (alias
+    ? `Send the model name ${alias} or default_model. While an alias is set the server ` +
+      "lists only this model, and other cached models are not found by name. A folder " +
+      "path can still make it load other files."
+    : "Send the model name default_model. Another name makes the MLX server load that " +
+      "model instead.") + " No password: any program on this Mac, and a website open in " +
+    "your browser, can send it requests while it runs.");
   $("#mlxOpenWarn").hidden = direct;
   setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
     (direct ? "press Copy key (new at every start)" : "not needed"));
   $("#connectPanel").hidden = !running;
-  setText($("#connectState"), running && !server.ready
-    ? "The server is still starting. Use these settings once it is ready." : "");
+  const waiting = running && aliasOf(chosen) !== (server.alias || "");
+  setText($("#connectState"), [
+    running && !server.ready
+      ? "The server is still starting. Use these settings once it is ready." : "",
+    waiting ? "The saved alias is not in use yet: press Apply changes." : "",
+  ].filter(Boolean).join(" "));
   const typed = Number($("#dshContext").value);
   const context = Number.isInteger(typed) && typed > 0 ? typed : null;
   setText($("#dshSettings"), `Type: OpenAI compatible\nBase URL: ${base}/v1\nModel: ${model}\n` +
@@ -740,7 +767,7 @@ function wireEngines() {
 }
 
 function runningNames(server) {
-  return `Running — ${runningSet(server).map(shortName).join(" and ")}`;
+  return `Running — ${runningSet(server).map(displayName).join(" and ")}`;
 }
 
 /* ───────────── configuration page ───────────── */
@@ -897,7 +924,7 @@ async function chooseConfigModel(value) {
   if (configDirty() && !confirm("Discard your unsaved changes?")) {
     paintConfigPick();
     await null; // the list says "Selected" when this first returns
-    setText($("#configModelSelectStatus"), `Kept ${state.config.repo || ALL_MODELS}.`);
+    setText($("#configModelSelectStatus"), `Kept ${modelLabel(state.config.repo) || ALL_MODELS}.`);
     return;
   }
   state.config.repo = repo;
@@ -975,7 +1002,7 @@ async function saveConfig() {
 
 async function resetConfig() {
   const { view, repo } = state.config;
-  if (!view || !confirm(`Clear every value saved for ${repo || ALL_MODELS}?`)) return;
+  if (!view || !confirm(`Clear every value saved for ${modelLabel(repo) || ALL_MODELS}?`)) return;
   try {
     await postSettings({ reset: true, ...(repo ? { repo } : {}) });
   } catch (err) {
@@ -1131,7 +1158,7 @@ function paintProgress(run) {
   const cancelling = run.status === "cancelling";
   const where = run.size ? `, size ${run.index} of ${run.of} (${run.size} tokens)` : "";
   const phase = cancelling ? "Stopping the test…"
-    : `Testing ${run.repo}${where}: ${run.step || "starting"}.`;
+    : `Testing ${modelLabel(run.repo)}${where}: ${run.step || "starting"}.`;
   setText($("#ltStep"), phase);
   setText($("#ltAnnounce"), phase);
   const reading = !cancelling && run.total > 0;
@@ -1352,7 +1379,8 @@ function paintServerCard() {
 
   const list = $("#serverModelList");
   const drawn = setHTML(list, set.map((repo) =>
-    `<li><span class="model-name" title="${esc(repo)}">${esc(shortName(repo))}</span>` +
+    `<li><span class="model-name" title="${esc(repo)}">${esc(displayName(repo))}</span>` +
+    (aliasOf(repo) ? `<span class="model-id">${esc(repo)}</span>` : "") +
     `<button class="btn btn-mini btn-ghost" type="button" data-remove="${esc(repo)}" ` +
     `aria-label="Remove ${esc(repo)}">×</button></li>`).join(""));
   if (drawn) {
@@ -1439,7 +1467,7 @@ function addServerModel() {
   if (!repo || set.includes(repo) || set.length >= MAX_SERVER_MODELS) return;
   showAddPicker(false);
   editServerSet([...set, repo]);
-  setText($("#serverSetStatus"), `Added ${shortName(repo)}.`);
+  setText($("#serverSetStatus"), `Added ${displayName(repo)}.`);
   const add = $("#serverAddBtn");
   const row = Array.from($("#serverModelList").querySelectorAll("[data-remove]"))
     .find((btn) => btn.dataset.remove === repo);
@@ -1448,7 +1476,7 @@ function addServerModel() {
 
 function removeServerModel(repo) {
   editServerSet(serverSet().filter((other) => other !== repo));
-  setText($("#serverSetStatus"), `Removed ${shortName(repo)}.`);
+  setText($("#serverSetStatus"), `Removed ${displayName(repo)}.`);
   const next = $("#serverModelList").querySelectorAll("[data-remove]")[0];
   (serverSet().length && next ? next : $("#serverAddBtn")).focus();
 }
@@ -1466,9 +1494,9 @@ function renderToolsWarning(server) {
   if (!warn) return;
   const verified = Object.keys(support).find((r) => support[r]);
   setText($("#serverToolsWarnText"),
-    (repos.length > 1 ? `${without.map(shortName).join(", ")}: ` : "") +
+    (repos.length > 1 ? `${without.map(displayName).join(", ")}: ` : "") +
     "Agent clients will not get tool calls from it; they may show them as plain text." +
-    (verified ? ` For tool use, choose ${verified}.` : ""));
+    (verified ? ` For tool use, choose ${modelLabel(verified)}.` : ""));
 }
 
 /* ───────────── test connection ───────────── */
@@ -1519,7 +1547,7 @@ function fillSelect(sel, values, current) {
   if (!el) return;
   const prev = el.value;
   const rebuilt = setHTML(el, values.length
-    ? values.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("")
+    ? values.map((v) => `<option value="${esc(v)}">${esc(modelLabel(v))}</option>`).join("")
     : `<option value="">No models installed</option>`);
   // Follow the app only when its model changes; otherwise keep the user's choice.
   const moved = el._current !== current;
@@ -1551,12 +1579,12 @@ function createPicker(sel, { onLeave } = {}) {
 
   function draw() {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    shown = values.filter((v) => words.every((w) => v.toLowerCase().includes(w)));
+    shown = values.filter((v) => words.every((w) => modelLabel(v).toLowerCase().includes(w)));
     if (!shown.includes(active)) {
       active = shown.includes(select.value) ? select.value : shown[0] || "";
     }
     setHTML(list, shown.length
-      ? shown.map((v, i) => `<li id="${id}-opt-${i}" role="option" aria-selected="${v === active}" class="${v === select.value ? "chosen" : ""}" data-value="${esc(v)}" title="${esc(v)}">${esc(v)}</li>`).join("")
+      ? shown.map((v, i) => `<li id="${id}-opt-${i}" role="option" aria-selected="${v === active}" class="${v === select.value ? "chosen" : ""}" data-value="${esc(v)}" title="${esc(modelLabel(v))}">${esc(modelLabel(v))}</li>`).join("")
       : `<li class="picker-empty" role="presentation">No models match</li>`);
     if (active) box.setAttribute("aria-activedescendant", `${id}-opt-${shown.indexOf(active)}`);
     else box.removeAttribute("aria-activedescendant");
@@ -1572,8 +1600,8 @@ function createPicker(sel, { onLeave } = {}) {
   function showState() {
     clear.hidden = !box.value;
     if (onLeave) return; // an "add" picker keeps no choice to show
-    setText(chosen, `Selected: ${select.value || "none"}`);
-    chosen.title = select.value;
+    setText(chosen, `Selected: ${modelLabel(select.value) || "none"}`);
+    chosen.title = modelLabel(select.value);
   }
 
   function open(text = "") {
@@ -1601,7 +1629,7 @@ function createPicker(sel, { onLeave } = {}) {
     select.value = value;
     select.dispatchEvent(new Event("change"));
     close();
-    setText(status, `Selected ${value}`);
+    setText(status, `Selected ${modelLabel(value)}`);
   }
 
   box.addEventListener("click", () => {
@@ -1681,7 +1709,7 @@ function modelCard(repo, badge, body, actions) {
     <div class="card">
       <div class="card-top">
         <div>
-          <div class="card-name">${esc(repo.split("/").pop())}</div>
+          <div class="card-name">${esc(displayName(repo))}</div>
           <div class="card-sub">${esc(repo)}</div>
         </div>
         ${badge}
@@ -1719,6 +1747,7 @@ function renderModelCards(models, server, downloads) {
        <div class="card-path" title="${esc(m.path)}">📁 ${esc(m.path)}</div>`,
       (partial ? button("download", "Resume download", "", MAIN) : "") +
         button("reveal", "Reveal") +
+        aliasButton(m.repo) +
         copyButton(m.repo) +
         button("delete", "Delete", "btn-danger"),
     );
@@ -1728,11 +1757,63 @@ function renderModelCards(models, server, downloads) {
     wrap.querySelectorAll("[data-act]").forEach((btn) => {
       btn.addEventListener("click", () => modelAction(btn.dataset.act, btn.dataset.repo));
     });
+    wrap.querySelectorAll("[data-alias]").forEach((btn) => {
+      btn.addEventListener("click", () => openAlias(btn.dataset.alias));
+    });
   }
 }
 
+/* ───────────── model alias ───────────── */
+function aliasButton(repo) {
+  const label = aliasOf(repo) ? "Change alias" : "Set alias";
+  return `<button class="btn btn-mini" type="button" data-alias="${esc(repo)}" ` +
+    `aria-label="${label} for ${esc(repo)}">${label}</button>`;
+}
+
+// The editor is outside the cards, so a poll never clears what is typed.
+function openAlias(repo) {
+  state.aliasRepo = repo;
+  setText($("#aliasRepo"), repo);
+  $("#aliasInput").value = aliasOf(repo);
+  $("#aliasRemoveBtn").hidden = !aliasOf(repo);
+  setText($("#aliasError"), "");
+  $("#aliasPanel").hidden = false;
+  $("#aliasInput").focus();
+}
+
+function hideAlias() {
+  state.aliasRepo = "";
+  $("#aliasPanel").hidden = true;
+}
+
+// Closed by the user: the focus goes back to the button that opened it.
+function closeAlias() {
+  const repo = state.aliasRepo;
+  hideAlias();
+  Array.from($("#modelCards").querySelectorAll("[data-alias]"))
+    .find((btn) => btn.dataset.alias === repo)?.focus();
+}
+
+async function saveAlias(alias = $("#aliasInput").value.trim()) {
+  const repo = state.aliasRepo;
+  if (!repo || state.aliasSaving) return;
+  state.aliasSaving = true;
+  setText($("#aliasError"), "");
+  try {
+    await api("/api/models/alias", { method: "POST", body: JSON.stringify({ repo, alias }) });
+  } catch (err) {
+    setText($("#aliasError"), err.message);
+    return;
+  } finally {
+    state.aliasSaving = false;
+  }
+  toast(alias ? "Alias saved" : "Alias removed");
+  if (state.aliasRepo === repo) closeAlias();
+  refreshState();
+}
+
 async function modelAction(act, repo) {
-  if (act === "delete" && !confirm(`Delete ${repo} from disk?`)) return;
+  if (act === "delete" && !confirm(`Delete ${modelLabel(repo)} from disk?`)) return;
   try {
     await api(`/api/${act}`, { method: "POST", body: JSON.stringify({ repo }) });
     if (act === "delete") toast("Model deleted");
@@ -1887,7 +1968,7 @@ function renderDownloads(downloads) {
     const changed = setHTML(card, `
       <div class="card-top">
         <div>
-          <div class="card-name">${esc(d.repo.split("/").pop())}</div>
+          <div class="card-name">${esc(displayName(d.repo))}</div>
           <div class="card-sub">${esc(d.repo)}</div>
         </div>
         <span class="card-tag ${tag}">${esc(d.status)}</span>
@@ -1970,7 +2051,7 @@ function renderChat(server) {
   if (status === "ready") state.chatModel = chosen;
   const select = $("#chatModelSelect");
   setHTML(select, served.length
-    ? served.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("")
+    ? served.map((v) => `<option value="${esc(v)}">${esc(modelLabel(v))}</option>`).join("")
     : '<option value="">No model served</option>');
   select.value = chosen;
   const ready = status === "ready";
@@ -1993,7 +2074,7 @@ function renderChat(server) {
   if (became && idle && $("#view-chat").classList.contains("active")) input.focus();
 
   $("#globalDot").className = `dot ${dot}`;
-  setText($("#globalStatus"), ready ? served.map(shortName).join(", ")
+  setText($("#globalStatus"), ready ? served.map(displayName).join(", ")
     : server.running || server.starting ? short : "No model served");
 }
 
@@ -2391,7 +2472,7 @@ async function openStartConfirm() {
   const mode = settings.performance_mode?.value;
   const loaded = {};
   setText($("#confirmEngine"), engineInfo(engine)?.name || (engine === "mlx" ? "MLX" : engine));
-  setText($("#confirmModel"), set[0]);
+  setText($("#confirmModel"), modelLabel(set[0]));
   for (const key of CONFIRM_KEYS) {
     const input = $(`#confirm-${key}`);
     const entry = settings[key] || {};
@@ -2532,6 +2613,14 @@ function wire() {
   $("#showAllBtn").addEventListener("click", () => { $("#searchInput").value = ""; doSearch(""); });
 
   $("#refreshModelsBtn").addEventListener("click", refreshModels);
+  $("#aliasSaveBtn").addEventListener("click", () => saveAlias());
+  $("#aliasRemoveBtn").addEventListener("click", () => saveAlias(""));
+  $("#aliasCancelBtn").addEventListener("click", closeAlias);
+  $("#aliasInput").addEventListener("keydown", (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Enter") { e.preventDefault(); return saveAlias(); }
+    if (e.key === "Escape") { e.preventDefault(); closeAlias(); }
+  });
   $("#catalogFilter").addEventListener("change", renderCatalog);
 
   $("#serverModelSelect").addEventListener("change", addServerModel);

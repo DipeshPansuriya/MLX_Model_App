@@ -110,6 +110,20 @@
         </div>
       </header>
       <div class="scroll">
+        <div class="panel" id="aliasPanel" role="group" aria-labelledby="aliasTitle" hidden>
+          <div class="panel-head"><span id="aliasTitle">Model alias</span></div>
+          <div class="setting">
+            <label for="aliasInput">Alias for <span class="mono" id="aliasRepo"></span></label>
+            <input type="text" class="input" id="aliasInput" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="aliasNote" />
+            <span class="hint" id="aliasNote">A short name you can pick by. Letters, digits, dot, hyphen and underscore. A running server takes it after Apply changes. With the MLX engine, clients must then send the alias or default_model, not the old model id.</span>
+          </div>
+          <p class="field-error" id="aliasError" role="alert"></p>
+          <div class="card-actions">
+            <button class="btn btn-mini btn-primary" type="button" id="aliasSaveBtn">Save alias</button>
+            <button class="btn btn-mini" type="button" id="aliasRemoveBtn">Remove alias</button>
+            <button class="btn btn-mini btn-ghost" type="button" id="aliasCancelBtn">Cancel</button>
+          </div>
+        </div>
         <div class="cards" id="modelCards"></div>
         <div class="empty" id="modelsEmpty" hidden>
           <div class="empty-mark">🗂</div>

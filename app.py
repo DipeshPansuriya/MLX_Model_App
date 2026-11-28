@@ -1015,6 +1015,9 @@ class State:
         self.server_engine = "mlx"
         self.server_port = SERVER_PORT  # of a direct engine's server; MLX: SERVER_PORT
         self.server_snapshot: str | None = None  # the folder a direct engine serves
+        # What --model was given, when not the repo id, and the alias if it is one.
+        self.server_name: str | None = None
+        self.server_alias: str | None = None
         self.server_verdict: str | None = None  # a direct engine: "ready" or "failed"
         self.server_anthropic = False  # a direct engine's /v1/messages route is on
         self.server_stopping = False
@@ -1082,7 +1085,8 @@ class State:
 
     def snapshot(self) -> dict:
         hw = hardware()
-        models = installed_models()
+        aliases = model_aliases()
+        models = [{**m, "alias": aliases.get(m["repo"])} for m in installed_models()]
         mlx_v = pkg_version("mlx")
         mlx_lm_v = pkg_version("mlx-lm")
         hf_v = pkg_version("huggingface-hub")
@@ -1132,6 +1136,8 @@ class State:
                 "endpoint": f"http://{HOST}:{_server_port()}/v1",
                 "engine": self.server_engine,
                 "anthropic": self.server_anthropic,
+                # The alias the running server answers to, which a later save leaves.
+                "alias": self.server_alias,
                 "engines": [engine.view(APP_DIR) for engine in engines.REGISTRY],
                 "last_engine": _last_engine(),
                 "last_anthropic": _last_anthropic(),
@@ -1720,7 +1726,12 @@ def _ps_field(pid: int, field: str) -> str:
 
 
 def _is_our_server(
-    pid: int | None, repo: str | None, started: str | None, port=None, direct: str | None = None
+    pid: int | None,
+    repo: str | None,
+    started: str | None,
+    port=None,
+    direct: str | None = None,
+    name: str | None = None,
 ) -> bool:
     """True only when ``pid`` is still the API server we launched.
 
@@ -1731,7 +1742,8 @@ def _is_our_server(
         return False
     command = f"{_ps_field(pid, 'command')} "
     launchers = (" -m mlx_lm server", OLD_WRAPPER)
-    marks = [f"{start} --model {repo} --host " for start in launchers]
+    # ``name``: what --model was given, when that was not the repo id.
+    marks = [f"{start} --model {name or repo} --host " for start in launchers]
     if direct:  # a direct engine's own command line, see Engine.identity
         marks = [direct]
     if not any(mark in command for mark in marks):
@@ -1758,14 +1770,16 @@ def _still_our_server(pid: int | None, repo: str | None) -> bool:
     """``_is_our_server`` for the engine that was started."""
     engine = _running_engine()
     if not engine.direct:
-        return _is_our_server(pid, repo, STATE.server_identity)
-    mark = engine.identity(STATE.server_snapshot)
+        return _is_our_server(pid, repo, STATE.server_identity, name=STATE.server_name)
+    # A server kept from 2.0.13 was given the snapshot folder itself.
+    mark = engine.identity(STATE.server_name or STATE.server_snapshot)
     return _is_our_server(pid, repo, STATE.server_identity, STATE.server_port, direct=mark)
 
 
 def _reset_engine() -> None:
     STATE.server_engine, STATE.server_port = "mlx", SERVER_PORT
     STATE.server_snapshot = STATE.server_verdict = None
+    STATE.server_name = STATE.server_alias = None
     STATE.server_anthropic = False
     with contextlib.suppress(OSError):
         _key_file().unlink(missing_ok=True)
@@ -1820,6 +1834,9 @@ def _write_server_pidfile(
         "started": _ps_field(pid, "lstart"),
     }
     payload["settings"] = STATE.server_started_with
+    for key, value in (("name", STATE.server_name), ("alias", STATE.server_alias)):
+        if value:
+            payload[key] = value
     if _running_engine().direct:
         payload.update(
             engine=STATE.server_engine,
@@ -1873,6 +1890,7 @@ def _chat_problem(repo: str) -> str | None:
         pending = bool(STATE.server_pending)
         proc, pid = STATE.server_proc, STATE.server_pid
         first, identity = STATE.server_repo, STATE.server_identity
+        name = STATE.server_name
     if pending:
         return "The API server is starting. Wait until it is ready."
     # A pid is reused after a crash: no prompt goes to whoever has the port then.
@@ -1881,7 +1899,7 @@ def _chat_problem(repo: str) -> str | None:
     elif _running_engine().direct:
         running = _still_our_server(pid, first)
     else:
-        running = _is_our_server(pid, first, identity)
+        running = _is_our_server(pid, first, identity, name=name)
     if not running:
         return "Start the API server first (API Server page)."
     # Chat is only for the model the server was started with.
@@ -2081,6 +2099,74 @@ def save_ui(changes: dict) -> None:
     with SETTINGS_LOCK:
         shared, models, load_test, ui = _read_all_settings()
         _store_settings(shared, models, load_test, {**ui, **changes})
+
+
+# --------------------------------------------------------------------------- #
+# Model aliases: ``ui.models.<repo>.alias`` in settings.json
+# --------------------------------------------------------------------------- #
+def model_aliases() -> dict[str, str]:
+    """``{repo: alias}`` for every saved alias that is safe to use."""
+    block = _read_all_settings()[3].get("models")
+    if not isinstance(block, dict):
+        return {}
+    return {
+        repo: entry["alias"]
+        for repo, entry in block.items()
+        if _valid_repo(repo)
+        and isinstance(entry, dict)
+        and model_info.alias_problem(entry.get("alias")) is None
+    }
+
+
+def _cached_repos() -> list[str]:
+    """Every model id with a folder in the cache, ids without an owner included."""
+    try:
+        names = [entry.name for entry in CACHE_DIR.iterdir()]
+    except OSError:
+        return []
+    prefix = "models--"
+    return sorted(n.removeprefix(prefix).replace("--", "/") for n in names if n.startswith(prefix))
+
+
+def save_alias(repo: str, alias: str | None) -> str | None:
+    """Give ``repo`` an alias; None or "" removes it. Returns why not, changing nothing."""
+    cached = _cached_repos()
+    if not _valid_repo(repo) or repo not in cached:
+        return "that model is not installed"
+    remove = alias is None or alias == ""
+    if not remove and (problem := model_info.alias_problem(alias)):
+        return f"alias: {problem}"
+    with SETTINGS_LOCK:
+        shared, models, load_test, ui = _read_all_settings()
+        saved = model_aliases()
+        block = ui.get("models")
+        entries = dict(block) if isinstance(block, dict) else {}
+        changed = {repo: None if remove else alias}
+        if not remove:
+            wanted = alias.casefold()  # the file system does not tell cases apart
+            for other in cached:
+                names = (other, other.rsplit("/", maxsplit=1)[-1], saved.get(other, ""))
+                if other != repo and wanted in (name.casefold() for name in names):
+                    return f"alias: {alias} is already a name of {other}"
+            # The alias of a model no longer in the cache goes to whoever takes it now.
+            changed |= {
+                r: None for r, name in saved.items() if r != repo and name.casefold() == wanted
+            }
+        for model, value in changed.items():
+            entry = entries.get(model)
+            entry = dict(entry) if isinstance(entry, dict) else {}
+            entry.pop("alias", None)
+            if value:
+                entry["alias"] = value
+            if entry:
+                entries[model] = entry
+            else:
+                entries.pop(model, None)
+        ui = {key: value for key, value in ui.items() if key != "models"}
+        if entries:
+            ui["models"] = entries
+        _store_settings(shared, models, load_test, ui)
+    return None
 
 
 def user_settings(repo: str | None = None) -> dict[str, int | None]:
@@ -2304,6 +2390,8 @@ def _launch_stamp(engine: engines.Engine, settings: dict, repo: str) -> str:
     used = {k: settings[k] for k in engine.setting_keys if settings.get(k) is not None}
     if flags := performance_flags(repo)[0]:
         used["performance"] = flags
+    if alias := model_aliases().get(repo):
+        used["alias"] = alias
     return json.dumps(used, sort_keys=True)
 
 
@@ -2672,15 +2760,18 @@ def _watch_server(
     log_app("error", "api server died", repo=repo, pid=pid, exit_code=code)
 
 
-def _server_command(repo: str, settings: dict, port: int, performance: dict | None = None):
-    """mlx_lm's own server for ``repo`` on ``port``. Only its own flags are passed."""
+def _server_command(model: str, settings: dict, port: int, performance: dict | None = None):
+    """mlx_lm's own server for ``model`` on ``port``. Only its own flags are passed.
+
+    ``model`` is a repo id, or the alias of the one model in an alias cache.
+    """
     cmd = [
         sys.executable,
         "-m",
         "mlx_lm",
         "server",
         "--model",
-        repo,
+        model,
         "--host",
         HOST,
         "--port",
@@ -2782,11 +2873,23 @@ def _launch_server(
     if engine != "mlx":
         return _launch_direct(engines.get(engine), repo, background, previous, anthropic)
     settings = server_settings([repo])
-    cmd = _server_command(repo, settings, SERVER_PORT, performance_flags(repo)[0])
-    STATE.server_started_with = _launch_stamp(engines.MLX, settings, repo)
-    STATE.server_verdict = None
+    # Before the alias is read: a save in between then asks for a restart.
+    stamp = _launch_stamp(engines.MLX, settings, repo)
+    alias = model_aliases().get(repo)
+    cmd = _server_command(alias or repo, settings, SERVER_PORT, performance_flags(repo)[0])
+    env = _server_env()
     # Its own folder as the working directory: ``-m`` looks for modules there first.
-    return _spawn_server(cmd, _server_env(), [repo], background, previous, cwd=str(APP_DIR))
+    cwd = APP_DIR
+    if alias:
+        root = APP_DIR / "engines" / engines.MLX.id
+        env["HF_HUB_CACHE"], cwd = map(str, engines.alias_cache(root, alias, _snapshot_dir(repo)))
+    STATE.server_started_with = stamp
+    STATE.server_verdict = None
+    STATE.server_name = STATE.server_alias = alias
+    proc = _spawn_server(cmd, env, [repo], background, previous, cwd=str(cwd))
+    if proc is None:
+        _reset_engine()
+    return proc
 
 
 def _direct_settings(settings: dict) -> dict:
@@ -2809,9 +2912,12 @@ def _launch_direct(
     snapshot = _snapshot_dir(repo)
     settings = server_settings([repo])
     stamp = _launch_stamp(engine, settings, repo)
+    alias = model_aliases().get(repo)
+    # Never the snapshot's path: the engine lists what --model was given.
+    name = alias or model_info.served_name(repo)
     command = engine.command(
         engine.program(APP_DIR),
-        snapshot,
+        name,
         engine.port,
         settings=_direct_settings(settings),
         performance=performance_flags(repo)[0],
@@ -2821,8 +2927,10 @@ def _launch_direct(
     root = APP_DIR / "engines" / engine.id / "run"
     key = engine.new_key()
     env = engine.environment(root, key)
+    engines.link_model(root, name, snapshot)
     engine_runtime.write_key(_key_file(), key)
     STATE.server_started_with = stamp
+    STATE.server_name, STATE.server_alias = name, alias
     STATE.server_engine, STATE.server_port = engine.id, engine.port
     STATE.server_snapshot, STATE.server_verdict = str(snapshot), None
     STATE.server_anthropic = engine.anthropic and anthropic
@@ -2985,6 +3093,13 @@ def _stop_server_locked() -> None:
         STATE.server_stopping = False
 
 
+def _saved_name(data: dict, key: str) -> str | None:
+    """A served name from the pidfile, only if the app could have written it."""
+    name = data.get(key)
+    bad = model_info.alias_problem(name, longest=model_info.SERVED_NAME_MAX)
+    return None if bad else name
+
+
 def restore_server_state() -> None:
     """Adopt a background server left running by a previous app session."""
     path = _server_pidfile()
@@ -2997,9 +3112,10 @@ def restore_server_state() -> None:
         return
     pid = data.get("pid")
     engine = engines.get(data.get("engine"))
-    extra = {}
+    name = _saved_name(data, "name")  # none in a pidfile written by 2.0.13
+    extra = {"name": name}
     if engine is not None and engine.direct:
-        extra = {"direct": engine.identity(data.get("snapshot"))}
+        extra = {"direct": engine.identity(name or data.get("snapshot"))}
     if (
         engine is None
         or not engine.selectable
@@ -3018,6 +3134,8 @@ def restore_server_state() -> None:
         STATE.server_anthropic = data.get("anthropic") is True
     STATE.server_pid = pid
     STATE.server_identity = data.get("started")
+    STATE.server_name = name
+    STATE.server_alias = _saved_name(data, "alias") if name else None
     STATE.server_repo = data.get("repo")
     repos = data.get("repos")
     known = isinstance(repos, list) and repos and all(isinstance(n, str) for n in repos)
@@ -3592,6 +3710,7 @@ REPO_ROUTES = frozenset(
         "/api/reveal",
         "/api/server/start",
         "/api/loadtest/start",
+        "/api/models/alias",
     }
 )
 
@@ -4022,6 +4141,24 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if "theme" in body:
                 retheme_window(body["theme"])
+            self._json({"ok": True})
+            return
+
+        if path == "/api/models/alias":
+            alias = body.get("alias", False)  # absent is not "remove"
+            if alias is not None and not isinstance(alias, str):
+                self._json({"error": "alias required: a name, or an empty one to remove"}, 400)
+                return
+            try:
+                problem = save_alias(repo, alias)
+            except ValueError as exc:
+                problem = str(exc)
+            except OSError as exc:
+                self._json({"error": f"could not save the alias: {exc.strerror}"}, 500)
+                return
+            if problem:
+                self._json({"error": problem}, 400)
+                return
             self._json({"ok": True})
             return
 

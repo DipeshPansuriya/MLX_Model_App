@@ -137,6 +137,7 @@ jobs:
           tests/test_prerelease_2013.py
           tests/test_app_robustness.py
           tests/test_row_perfmode.py
+          tests/test_row1058_alias.py
           tests/test_packaging.py
 
   release:

@@ -271,7 +271,7 @@ def check_model(repo: str, snapshot: Path) -> None:
 # --------------------------------------------------------------------------- #
 def command(
     python,
-    snapshot,
+    model,
     port: int,
     *,
     settings: dict,
@@ -282,7 +282,8 @@ def command(
     if port in RESERVED_PORTS:
         raise Refused(f"Port {port} is reserved; the OptiQ server may not use it.")
     cmd = [str(python), "-I", "-B", "-u", "-m", "optiq.cli", "serve"]
-    cmd += ["--model", str(snapshot), "--host", HOST, "--port", str(port)]
+    # A served name linked in the working folder, or a snapshot folder.
+    cmd += ["--model", str(model), "--host", HOST, "--port", str(port)]
     cmd += ["--single-model", "--no-responses"]
     if not anthropic:  # on: /v1/messages, behind the same key
         cmd.append("--no-anthropic")

@@ -28,6 +28,40 @@ def is_repo_id(text: str) -> bool:
     return len(parts) <= 2 and all(REPO_PART.fullmatch(part) for part in parts)
 
 
+ALIAS_MAX = 64
+SERVED_NAME_MAX = 96  # the Hub's own limit for a model name
+# mlx_lm's own name for its model, and the folders in OptiQ's run folder.
+RESERVED_NAMES = frozenset({"default_model", "home", "tmp", "hf"})
+# A file name, a Hub repo name and a command line argument, all at once. No ":", which
+# OptiQ reads as a variant of a model, and nothing that could name another folder.
+SAFE_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+
+
+def alias_problem(name, longest: int = ALIAS_MAX) -> str | None:
+    """Why a server cannot be given ``name`` for its model, or None."""
+    if not isinstance(name, str) or not name:
+        return "type a name"
+    if len(name) > longest:
+        return f"use at most {longest} characters"
+    if not SAFE_NAME.fullmatch(name):
+        return "use letters, digits, '.', '_' and '-', and start and end with a letter or a digit"
+    if "--" in name or ".." in name or name.lower().endswith(".git"):
+        return "'--', '..' and a name ending in '.git' are not allowed"
+    if name.lower() in RESERVED_NAMES:
+        return f"{name} is a reserved name"
+    return None
+
+
+def served_name(repo: str) -> str:
+    """A readable name for ``repo``, always one that ``alias_problem`` accepts."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", repo.rsplit("/", maxsplit=1)[-1])
+    name = re.sub(r"([.-])\1+", r"\1", name)[:SERVED_NAME_MAX].strip("._-")
+    name = re.sub(r"\.git$", "-git", name, flags=re.IGNORECASE)
+    if name.lower() in RESERVED_NAMES:
+        name = f"model-{name}"
+    return name or "local-model"
+
+
 def _text_config(config) -> dict:
     """Model settings, with a multimodal model's nested text settings first."""
     if not isinstance(config, dict):
