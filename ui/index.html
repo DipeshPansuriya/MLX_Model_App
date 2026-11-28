@@ -349,12 +349,14 @@
         <div class="panel">
           <div class="panel-head">
             <span>Test connection</span>
-            <button class="btn btn-mini" type="button" id="testBtn" aria-describedby="testNote" disabled>Test Connection</button>
+            <button class="btn btn-mini" type="button" id="testBtn" aria-describedby="testNote" aria-disabled="true">Test Connection</button>
           </div>
           <p class="hint" id="testNote">When the server is ready, this sends it two small requests: a short reply and one tool call. Nothing is run.</p>
-          <div class="kv" id="testResults" role="status" hidden>
-            <div class="kv-row"><span>Short reply</span><span id="testReply"></span></div>
-            <div class="kv-row"><span>Tool call</span><span id="testTool"></span></div>
+          <div id="testLive" role="status">
+            <div class="kv" id="testResults" hidden>
+              <div class="kv-row"><span>Short reply</span><span id="testReply"></span></div>
+              <div class="kv-row"><span>Tool call</span><span id="testTool"></span></div>
+            </div>
           </div>
           <p class="field-error" id="testError" role="alert"></p>
         </div>

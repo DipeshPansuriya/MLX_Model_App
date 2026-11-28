@@ -468,7 +468,8 @@ const live = (over = {}) => snap({ server: { running: true, ready: true, pid: 7,
 const q = (s) => document.querySelector(s);
 const press = () => q("#testBtn").listeners.click({ target: q("#testBtn") });
 const until = () => new Promise((done) => setTimeout(done, 20));
-const seen = () => ({ disabled: q("#testBtn").disabled, hidden: q("#testResults").hidden,
+const off = () => q("#testBtn").getAttribute("aria-disabled") === "true";
+const seen = () => ({ disabled: off(), hidden: q("#testResults").hidden,
   reply: html("#testReply"), tool: html("#testTool"), error: q("#testError").textContent });
 let finish;
 const waiting = () => { respond = (path) => path === "/api/server/test"
@@ -487,7 +488,7 @@ class TestScreen:
             SCREEN
             + """
             return [{ running: false }, { ready: false }, {}].map((over) => {
-              render(live(over)); return q("#testBtn").disabled;
+              render(live(over)); return off();
             });
             """,
         )

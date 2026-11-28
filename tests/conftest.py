@@ -40,6 +40,17 @@ def reserved_ports():
     assert portguard.VIOLATIONS[before:] == []
 
 
+def _nobody_on_the_server_port(runtime, monkeypatch):
+    """A start checks port 8080: tests see it free and never look at the real one."""
+    for name, free in (("listeners", set()), ("answers", False)):
+        real = getattr(runtime, name)
+
+        def fake(port, *args, _real=real, _free=free, **kwargs):
+            return type(_free)(_free) if port == 8080 else _real(port, *args, **kwargs)
+
+        monkeypatch.setattr(runtime, name, fake)
+
+
 @pytest.fixture
 def app_module(tmp_path, monkeypatch):
     """Import app.py with HOME pointed at a temporary directory."""
@@ -63,6 +74,7 @@ def app_module(tmp_path, monkeypatch):
     try:
         spec.loader.exec_module(module)
         assert cache == module.CACHE_DIR
+        _nobody_on_the_server_port(module.engine_runtime, monkeypatch)
         yield module
     finally:
         portguard.shut_down(module)

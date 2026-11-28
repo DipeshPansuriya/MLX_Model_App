@@ -94,6 +94,15 @@ LOG_MAX_BYTES = 2 * 1024 * 1024
 LOG_BACKUPS = 3
 LOG_LOCK = threading.Lock()
 
+
+class ConnectionRun:
+    """One Test Connection at work, then its answer."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.code, self.answer = 500, {"error": "The test failed. Press Test Connection again."}
+
+
 HOST = "127.0.0.1"
 PORT = 8765
 SERVER_PORT = 8080
@@ -106,6 +115,10 @@ CHAT_ERROR_BYTES = 64 * 1024
 CHAT_CUT_SHORT = "The API server stopped before the reply finished. Check the API Server page."
 CONNECTION_TEST_SECONDS = 90  # for each of the two requests of Test Connection
 CONNECTION_TEST_LOCK = threading.Lock()
+# One request is held no longer than this: the window's fetch gives up near 60 s.
+CONNECTION_TEST_HOLD_SECONDS = 20
+CONNECTION_TEST_RUNS: list[ConnectionRun] = []  # only the latest one
+CONNECTION_TEST_RUN_LOCK = threading.Lock()
 # mlx_lm cuts replies at 512 tokens when a client sends no max_tokens.
 SERVER_MAX_TOKENS = 8192
 # Limits for reading server.last.json: far above two real model ids.
@@ -1250,6 +1263,37 @@ def connection_test() -> tuple[int, dict]:
     return 200, {"ok": True, "pid": pid, "model": repo, "engine": engine.id, **results}
 
 
+def _run_connection_test(run: ConnectionRun) -> None:
+    try:
+        run.code, run.answer = connection_test()
+    except Exception as exc:  # the run must end, or no later test could start
+        log_app("error", "connection test failed", error=str(exc)[:300])
+    finally:
+        run.done.set()
+
+
+def connection_test_result() -> tuple[int, dict]:
+    """The latest test's answer, or 202 while it is still at work."""
+    run = next(iter(CONNECTION_TEST_RUNS), None)
+    if run is None:
+        return 404, {"error": "No connection test was run. Press Test Connection."}
+    if not run.done.is_set():
+        return 202, {"running": True}
+    return run.code, run.answer
+
+
+def start_connection_test() -> tuple[int, dict]:
+    """Run the test aside: a quick one answers at once, a slow one is asked about again."""
+    with CONNECTION_TEST_RUN_LOCK:
+        if CONNECTION_TEST_RUNS and not CONNECTION_TEST_RUNS[0].done.is_set():
+            return 409, {"error": "A connection test is already running."}
+        run = ConnectionRun()
+        CONNECTION_TEST_RUNS[:] = [run]
+        threading.Thread(target=_run_connection_test, args=(run,), daemon=True).start()
+    run.done.wait(CONNECTION_TEST_HOLD_SECONDS)
+    return connection_test_result()
+
+
 def _read_reply(conn: http.client.HTTPConnection, body: bytes, put, headers=None) -> None:
     """Send the request and ``put`` what comes back; runs in its own thread."""
     usage, finish = {}, None
@@ -1793,7 +1837,7 @@ def _engine_refusal(engine_id, repos: list[str], port_too: bool = True) -> str |
     if not engine.selectable:
         return f"{engine.name}: {engine.refusal}"
     if not engine.direct:
-        return None
+        return _port_refusal(SERVER_PORT) if port_too else None
     if len(repos) > 1:
         return f"{engine.name} serves one model. Remove the second one."
     if STATE.install["running"] and STATE.install["kind"].startswith(engine.id):
@@ -1803,12 +1847,13 @@ def _engine_refusal(engine_id, repos: list[str], port_too: bool = True) -> str |
         engine.check_model(repos[0], _snapshot_dir(repos[0]))
     except engine_runtime.Refused as exc:
         return str(exc)
-    if not port_too:
-        return None
-    # The server being replaced may hold the port; nothing else may.
+    return _port_refusal(engine.port) if port_too else None
+
+
+def _port_refusal(port: int) -> str | None:
+    """The server being replaced may hold the port; nothing else may."""
     running = STATE.server_proc is not None or _pid_alive(STATE.server_pid)
-    ours = STATE.server_pid if running else None
-    return engine_runtime.port_problem(engine.port, ours=ours)
+    return engine_runtime.port_problem(port, ours=STATE.server_pid if running else None)
 
 
 def _engines_view(repo: str) -> list[dict]:
@@ -3890,6 +3935,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/state":
             self._json(STATE.snapshot())
             return
+        if path == "/api/server/test":
+            code, answer = connection_test_result()
+            self._json(answer, code)
+            return
         if path == "/api/models":
             self._json({"models": installed_models()})
             return
@@ -4123,7 +4172,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/server/test":
-            code, answer = connection_test()
+            code, answer = start_connection_test()
             self._json(answer, code)
             return
 

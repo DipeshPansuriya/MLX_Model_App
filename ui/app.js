@@ -1500,6 +1500,7 @@ function renderToolsWarning(server) {
 }
 
 /* ───────────── test connection ───────────── */
+const TEST_POLL_MS = 1000;
 const TEST_WORDS = {
   pass: ["ok", "Passed"], warn: ["warn", "Check"],
   fail: ["bad", "Failed"], skipped: ["", "Not tried"],
@@ -1515,7 +1516,8 @@ function paintTest(server) {
   const test = state.test;
   const pid = server?.running && server.ready ? server.pid : null;
   if (test.pid !== pid) Object.assign(test, { pid, result: null, error: "" });
-  $("#testBtn").disabled = pid === null || test.running;
+  // Not disabled: that would drop the keyboard focus. testConnection ignores the press.
+  $("#testBtn").setAttribute("aria-disabled", String(pid === null || test.running));
   $("#testResults").hidden = !(test.result || (test.running && pid !== null));
   const rows = test.result || {};
   setHTML($("#testReply"), test.running ? "Testing…" : test.result ? testRow(rows.reply) : "");
@@ -1533,6 +1535,11 @@ async function testConnection() {
   let error = "";
   try {
     result = await api("/api/server/test", { method: "POST", body: "{}" });
+    // A slow model: the app keeps testing and is asked again, so no request times out.
+    while (result.running) {
+      await new Promise((done) => setTimeout(done, TEST_POLL_MS));
+      result = await api("/api/server/test");
+    }
   } catch (err) {
     error = err.message;
   }
