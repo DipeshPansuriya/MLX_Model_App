@@ -57,7 +57,7 @@ import model_info  # noqa: E402
 import project_routes  # noqa: E402
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.13"
+APP_VERSION = "2.0.14"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
