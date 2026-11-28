@@ -12,6 +12,8 @@ import os
 import plistlib
 import stat
 import subprocess
+import sys
+import time
 import types
 from pathlib import Path
 
@@ -347,7 +349,78 @@ def test_the_stored_key_is_for_the_default_model_while_switched_on(app_module, m
     assert login_agent.client_key(app_module, "mlx", REPO) is None
     login_agent.disable(app_module)
     assert login_agent.client_key(app_module, "optiq", REPO) is None
-    assert login_agent.key_file(app_module).is_file()  # switching on again keeps clients
+    assert not login_agent.key_file(app_module).exists()  # switching off revokes it
+
+
+@pytest.mark.parametrize("off", [login_agent.disable, login_agent.clear_default])
+def test_off_revokes_the_key_and_on_makes_a_new_one(app_module, mac, bundle, off):
+    switch_on(app_module, bundle)
+    stored = login_agent.key_file(app_module)
+    first = stored.read_text()
+    login_agent.enable(app_module, resources=bundle[0])
+    assert stored.read_text() == first  # already on: clients stay set up
+    off(app_module)
+    assert not os.path.lexists(stored)
+    switch_on(app_module, bundle)
+    assert stored.read_text() != first and mode(stored) == 0o600
+
+
+def test_a_key_left_from_before_is_not_used_again(app_module, mac, bundle):
+    login_agent.set_default(app_module, REPO, "optiq")
+    stored = login_agent.key_file(app_module)
+    old = app_module.engines.OPTIQ.new_key()
+    app_module.engine_runtime.write_key(stored, old)
+    login_agent.enable(app_module, resources=bundle[0])
+    assert app_module.engines.OPTIQ.read_key(stored) not in (None, old)
+
+
+def test_an_engine_without_a_password_revokes_the_key(app_module, mac, bundle):
+    switch_on(app_module, bundle)
+    login_agent.set_default(app_module, REPO, "mlx")
+    assert not login_agent.key_file(app_module).exists()
+
+
+def test_a_key_that_cannot_be_removed_is_said(app_module, mac, bundle):
+    switch_on(app_module, bundle)
+    stored = login_agent.key_file(app_module)
+    stored.unlink()
+    stored.mkdir()  # unlink fails on a folder
+    with pytest.raises(app_module.engine_runtime.Refused, match="could not be removed"):
+        login_agent.disable(app_module)
+    assert login_agent.read_default(app_module)["autostart"] is False
+
+
+def test_the_screen_says_clients_need_the_new_key(app_module, mac, bundle):
+    switch_on(app_module, bundle)
+    note = login_agent.status(app_module, resources=bundle[0])["password_note"]
+    assert "removes this key" in note and "update your tools" in note
+
+
+def test_switching_off_while_the_login_start_waits_lets_it_finish(app_module, mac, bundle):
+    switch_on(app_module, bundle)
+
+    def off_then_ready():
+        login_agent.disable(app_module)
+        app_module.STATE.server_verdict = "ready"
+
+    assert login_agent.login_start(app_module, sleep=after_first_look(off_then_ready)) == 0
+    # bootout would end the job, its key check and its last report.
+    assert mac.launchctl_calls() == []
+    assert result(app_module)["result"] == "started"
+    assert not login_agent.plist_path().exists()
+    login_agent.disable(app_module)  # no job at work now: launchd is told
+    assert [c[1] for c in mac.launchctl_calls()] == ["bootout"]
+
+
+@pytest.mark.parametrize("off", [login_agent.disable, login_agent.clear_default])
+def test_switching_off_during_the_checks_starts_nothing(app_module, mac, bundle, monkeypatch, off):
+    switch_on(app_module, bundle)
+    monkeypatch.setattr(app_module.engine_runtime, "port_problem", lambda *a, **k: off(app_module))
+    assert login_agent.login_start(app_module, wait_seconds=0) == 0
+    assert mac.started == []
+    assert result(app_module)["result"] == "skipped"
+    assert "switched off" in result(app_module)["reason"]
+    assert not login_agent.key_file(app_module).exists()
 
 
 @pytest.mark.parametrize("damage", ["open", "link", "junk"])
@@ -505,6 +578,19 @@ def test_stop_from_the_app_while_starting_is_respected(app_module, mac, bundle):
     app_module.STATE.server_stopping = False
 
 
+def test_a_login_start_opens_no_window_and_gives_the_server_its_own_session(
+    app_module, mac, bundle, monkeypatch
+):
+    switch_on(app_module, bundle)
+    monkeypatch.setitem(sys.modules, "webview", None)  # any import of it now fails
+    assert login_agent.login_start(app_module, sleep=ready(app_module)) == 0
+    [proc] = mac.started
+    assert result(app_module)["result"] == "started"
+    assert proc.kwargs["start_new_session"] is True  # it outlives the login job
+    assert proc.returncode is None  # left running
+    assert json.loads((app_module.APP_DIR / "server.pid").read_text())["background"] is True
+
+
 def test_a_server_that_never_answers_is_stopped(app_module, mac, bundle):
     switch_on(app_module, bundle)
     assert login_agent.login_start(app_module, wait_seconds=0) == 0
@@ -541,5 +627,50 @@ def test_an_optiq_server_that_answers_without_the_key_is_stopped(
     assert login_agent.login_start(app_module, wait_seconds=20) == 0
     [proc] = mac.started
     assert proc.returncode is not None
+    assert result(app_module)["result"] == "failed"
+    assert "without the key" in result(app_module)["reason"]
+
+
+def open_server(app, mac, monkeypatch):
+    """The app's own watcher, looking at a server that answers without the key."""
+    monkeypatch.setattr(app, "_watch_server", mac.real_watcher)
+    monkeypatch.setattr(app.engine_runtime, "listeners", lambda port: {FAKE_PID})
+    monkeypatch.setattr(app.engine_runtime, "auth_state", lambda port, key, anthropic=False: "open")
+
+
+def test_the_reason_is_read_only_when_the_watcher_has_written_it(
+    app_module, mac, bundle, monkeypatch
+):
+    """The watcher forgets the pid a moment before it records why."""
+    open_server(app_module, mac, monkeypatch)
+    reset = app_module._reset_engine
+
+    def slow_reset():
+        reset()
+        time.sleep(login_agent.POLL_SECONDS * 3)  # hold that moment open
+
+    switch_on(app_module, bundle)
+    monkeypatch.setattr(app_module, "_reset_engine", slow_reset)
+    assert login_agent.login_start(app_module, wait_seconds=20) == 0
+    assert "without the key" in result(app_module)["reason"]
+
+
+def test_a_watcher_quicker_than_the_record_check_gives_its_own_reason(
+    app_module, mac, bundle, monkeypatch
+):
+    """The watcher may stop the server and drop the pidfile before the launch returns here."""
+    open_server(app_module, mac, monkeypatch)
+    launch = app_module._launch_server
+
+    def launch_then_wait(*args):
+        proc = launch(*args)
+        deadline = time.monotonic() + 10
+        while app_module._server_pidfile().exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return proc
+
+    switch_on(app_module, bundle)
+    monkeypatch.setattr(app_module, "_launch_server", launch_then_wait)
+    assert login_agent.login_start(app_module, wait_seconds=20) == 0
     assert result(app_module)["result"] == "failed"
     assert "without the key" in result(app_module)["reason"]

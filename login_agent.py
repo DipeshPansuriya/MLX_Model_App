@@ -10,6 +10,7 @@ once: nothing here, and nothing in launchd, starts a server again.
 Keys: a login start needs a password, so only an engine with its own key support
 may be started this way (the built-in MLX server has none). The key is kept in a
 0600 file under the app's folder and reaches the server through the environment.
+Switching off removes that file, so switching on again makes a new key.
 """
 
 from __future__ import annotations
@@ -140,6 +141,17 @@ def _stored_key(app, engine) -> str:
     return key
 
 
+def _revoke_key(app) -> None:
+    """Forget the stored key: the next one made is new. A link goes, not its target."""
+    path = key_file(app)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise app.engine_runtime.Refused(
+            f"The auto-start key file {path} could not be removed: {exc.strerror}. Delete it."
+        ) from exc
+
+
 def _prepare_key(app, engine_id: str) -> str:
     """The key for login starts, made once. For engines with key support only."""
     engine = app.engines.get(engine_id)
@@ -239,6 +251,8 @@ def enable(app, resources: Path | None = None) -> None:
     launcher = bundle_executable(app, resources)
     if why := _engine_problem(app, record["engine"], record["repo"]):
         raise refused(why)
+    if not record["autostart"]:
+        _revoke_key(app)  # one left from before is never brought back
     _prepare_key(app, record["engine"])
     try:
         _write_plist(launcher)
@@ -247,18 +261,39 @@ def enable(app, resources: Path | None = None) -> None:
     _save(app, {**record, "autostart": True})
 
 
+@contextlib.contextmanager
+def _job_lock(app):
+    """True while the caller holds the login start's lock; False when one is at work."""
+    with open(app.APP_DIR / "login-start.lock", "a", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = True
+        except OSError:
+            held = False
+        yield held
+
+
 def disable(app) -> None:
-    """Switch auto-start off and remove the login item. A running server stays."""
+    """Switch auto-start off, revoke its key and remove the login item.
+
+    A running server stays, with the key it was started with, until it is stopped.
+    """
     if record := read_default(app):
         _save(app, {**record, "autostart": False})
+    # After the save: a login start that makes a key now will see the switch is off.
+    _revoke_key(app)
     try:
         plist_path().unlink(missing_ok=True)
     except OSError as exc:
         raise app.engine_runtime.Refused(
             f"The login item could not be removed: {exc.strerror}."
         ) from exc
-    # Fails when launchd has not loaded it, which is as good.
-    app.run_cmd([LAUNCHCTL, "bootout", f"gui/{os.getuid()}/{LABEL}"], timeout=10)
+    # bootout would end a login start at work, with its key check of the new server and
+    # its report: that one finishes by itself, and its removed item is not loaded again.
+    with _job_lock(app) as idle:
+        if idle:
+            # Fails when launchd has not loaded it, which is as good.
+            app.run_cmd([LAUNCHCTL, "bootout", f"gui/{os.getuid()}/{LABEL}"], timeout=10)
 
 
 def refresh(app, resources: Path | None = None) -> None:
@@ -299,7 +334,9 @@ def status(app, resources: Path | None = None) -> dict:
             key_path = str(key_file(app))
             note = (
                 "The server asks for the key in the key file. "
-                "Its /health and /v1/optiq/context pages answer without it."
+                "Its /health and /v1/optiq/context pages answer without it. "
+                "Switching start at login off removes this key and switching it on makes a "
+                "new one: then update your tools. A running server keeps its key until Stop."
             )
         else:
             note = (
@@ -383,8 +420,11 @@ def _wait(app, pid: int, seconds: float, sleep) -> tuple[str, str | None]:
     while True:
         # The pidfile first: the watcher forgets the pid before it removes the file.
         owner = _pidfile_owner(app)
-        if app.STATE.server_pid != pid:
-            return "failed", app.STATE.server_last_error or "The server stopped while starting."
+        # The watcher forgets the pid and writes why under this lock: read both under it.
+        with app.STATE.lock:
+            current, why = app.STATE.server_pid, app.STATE.server_last_error
+        if current != pid:
+            return "failed", why or "The server stopped while starting."
         if owner != pid:
             # Another process, the app, stopped or replaced it: leave that alone.
             app.STATE.server_stopping = True
@@ -418,6 +458,9 @@ def _start(app, record: dict, seconds: float, sleep) -> tuple[str, str | None]:
         _prepare_key(app, engine.id)
     except app.engine_runtime.Refused as exc:
         return "skipped", str(exc)
+    if not (read_default(app) or {}).get("autostart"):
+        _revoke_key(app)  # the key just made must not stay
+        return "skipped", "Start at login was switched off while it was starting."
     if app.instance_is_running():  # opened during the checks: the window decides
         return window
     _report(app, record, "starting", None)
@@ -426,7 +469,8 @@ def _start(app, record: dict, seconds: float, sleep) -> tuple[str, str | None]:
     if proc is None:
         why = app.STATE.server_last_error or app.STATE.server_down_notice
         return "failed", why or "The server could not be started."
-    if _pidfile_owner(app) != proc.pid:
+    # The pidfile first, as in ``_wait``: a server the watcher already ended is its to report.
+    if _pidfile_owner(app) != proc.pid and app.STATE.server_pid == proc.pid:
         app.stop_server()  # the app could neither find nor stop it later
         return "failed", "The server could not be recorded, so it was stopped."
     return _wait(app, proc.pid, seconds, sleep)
@@ -436,11 +480,9 @@ def login_start(app, wait_seconds: float | None = None, sleep=time.sleep) -> int
     """What the LaunchAgent runs. One try, recorded; always exit status 0."""
     # Longer than the watcher's own limit, so its reason is the one reported.
     seconds = app.START_WATCH_SECONDS + 30 if wait_seconds is None else wait_seconds
-    with open(app.APP_DIR / "login-start.lock", "a", encoding="utf-8") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return 0  # another login start is at work
+    with _job_lock(app) as idle:
+        if not idle:
+            return 0  # another login start, or a switch off, is at work
         record = read_default(app)
         if record is None and os.path.lexists(record_file(app)):
             _report(app, None, "skipped", "The default model record cannot be read.")
