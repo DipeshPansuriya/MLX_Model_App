@@ -37,10 +37,32 @@ def clone(target: Path) -> Path:
         "optiq_engine.py",
         "engine_runtime.py",
         "engines.py",
+        "login_agent.py",
+        "chat_store.py",
+        "projects.py",
+        "hub_catalog.py",
+        "live_stats.py",
+        "tool_null_text.py",
+        "loadtest_compare.py",
+        "engine_plan.py",
+        "update_check.py",
+        "catalog_routes.py",
+        "project_routes.py",
+        "feature_routes.py",
         "packaging/optiq-lock.txt",
     ):
         shutil.copy(ROOT / name, target / name)
-    for name in ("index.html", "style.css", "app.js"):
+    for name in (
+        "index.html",
+        "style.css",
+        "app.js",
+        "download.js",
+        "download.css",
+        "projects.js",
+        "projects.css",
+        "features.js",
+        "features.css",
+    ):
         shutil.copy(ROOT / "ui" / name, target / "ui" / name)
     for name in ("build_app.sh", "launcher.c", "release_manifest.py", "AppIcon.icns"):
         shutil.copy(ROOT / "packaging" / name, target / "packaging" / name)

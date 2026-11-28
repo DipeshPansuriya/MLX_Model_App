@@ -72,7 +72,7 @@ class TestCopyButtons:
         out = run(
             tmp_path,
             " respond = () => reply({ results: [{ repo: 'org/found' }] });"
-            " await doSearch('x'); return html(\"#searchResults\");",
+            " await doSearch('x'); return html(\"#catalogCards\");",
         )
         assert COPY.format("org/found") in out
 

@@ -187,7 +187,6 @@ static const char *find_python(void) {
 }
 
 int main(int argc, char *argv[]) {
-    (void)argc;
     redirect_to_log();
     note("start");
 
@@ -236,8 +235,10 @@ int main(int argc, char *argv[]) {
 
     /* exec python3 to run app.py. This replaces the current process image,
      * keeping the same PID so LaunchServices continues to associate this
-     * process with the MLX Studio bundle (single Dock tile). */
-    char *args[] = {(char *)python, "app.py", NULL};
+     * process with the MLX Studio bundle (single Dock tile).
+     * The login item's one argument is passed on; any other argument is dropped. */
+    char *login = argc == 2 && strcmp(argv[1], "--start-server-at-login") == 0 ? argv[1] : NULL;
+    char *args[] = {(char *)python, "app.py", login, NULL};
     execv(python, args);
 
     perror("execv");

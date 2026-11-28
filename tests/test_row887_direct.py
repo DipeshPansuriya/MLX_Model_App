@@ -95,10 +95,66 @@ class TestProbe:
         assert "another program listens on port 8080" in app_module._probe_direct(4242)
         assert probe["asked"] == []
 
-    def test_an_adopted_server_is_not_asked(self, app_module, probe):
+    def test_an_adopted_server_is_asked_for_health_and_not_warmed(self, app_module, probe):
         assert app_module._probe_direct(4242, adopted=True) is None
         assert app_module.STATE.server_verdict == "ready"
+        assert probe["asked"] == ["health"]
+
+    def test_an_adopted_server_whose_model_failed_is_not_ready(self, app_module, probe):
+        probe["health"] = 503
+        assert "could not be loaded" in app_module._probe_direct(4242, adopted=True)
+        assert app_module.STATE.server_verdict != "ready"
+
+    def test_an_adopted_server_that_does_not_answer_is_not_ready_yet(self, app_module, probe):
+        probe["health"] = None
+        assert app_module._probe_direct(4242, adopted=True) is None
+        assert app_module.STATE.server_verdict is None
+
+    @pytest.mark.parametrize(("health", "stopped"), [(503, True), (200, False), (None, False)])
+    def test_an_adopted_server_is_still_watched_once_ready(
+        self, app_module, probe, health, stopped
+    ):
+        """/health answers 200 while the model loads, so a failure can come later."""
+        app_module.STATE.server_verdict = "ready"
+        probe["health"] = health
+        why = app_module._probe_direct(4242, adopted=True)
+        assert ("could not be loaded" in (why or "")) is stopped
+        assert probe["asked"] == ["health"]
+
+    def test_a_ready_adopted_server_gets_nothing_when_another_holds_the_port(
+        self, app_module, probe
+    ):
+        app_module.STATE.server_verdict = "ready"
+        probe["holders"] = {7}
+        assert app_module._probe_direct(4242, adopted=True) is None
         assert probe["asked"] == []
+
+    def test_a_ready_server_this_app_started_is_not_asked_again(self, app_module, probe):
+        app_module.STATE.server_verdict = "ready"
+        assert app_module._probe_direct(4242) is None
+        assert probe["asked"] == []
+
+    def test_the_watcher_stops_an_adopted_server_that_fails_after_it_was_ready(
+        self, app_module, probe, monkeypatch
+    ):
+        app, ended = app_module, []
+
+        def sleep(_seconds):
+            probe["health"] = 503  # the load fails after the first look
+            assert len(slept) < 40, "the failed load was never noticed"
+            slept.append(1)
+
+        slept = []
+        monkeypatch.setattr(app.time, "sleep", sleep)
+        monkeypatch.setattr(app, "_pid_alive", lambda pid: True)
+        monkeypatch.setattr(app, "_still_our_server", lambda pid, repo: True)
+        monkeypatch.setattr(app, "_remember_models", lambda pid: None)
+        monkeypatch.setattr(app, "_end_direct", lambda pid, proc, repo: ended.append(pid))
+        app._watch_server(4242, "org/model", None)
+        assert ended == [4242]
+        assert app.STATE.server_pid is None
+        assert app.STATE.server_last_error == "its model could not be loaded"
+        assert "could not be loaded" in app.STATE.server_down_notice
 
 
 @pytest.mark.parametrize(

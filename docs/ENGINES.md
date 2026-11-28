@@ -42,9 +42,11 @@ Harness, the native window, **Apply changes** and **Restart**.
   matches the shipped lock, and no package (pip aside) that the lock does not name at that
   version. Files inside a package are not checked.
 - Memory: no limit. The app does not stop the server for memory (removed in 2.0.13).
-- `/v1/models` (key needed) lists the served model by its full folder path, which includes
-  your user name, plus `:think` and `:no-think` forms. OptiQ 0.8.6 `serve` takes the name
-  from `--model` and has no option to change it. Send `default_model`.
+- `/v1/models` (key needed): up to 2.0.13 it lists the served model by its full folder
+  path, which includes your user name, plus `:think` and `:no-think` forms. In 2.0.14 it
+  lists the alias, or the model's short name, plus suffix forms
+  ([Model alias](#model-alias-2014)). In 2.0.14 **Connect your tool** uses the
+  alias the running server was started with, else `default_model` (also in the table below).
 - Keys are replaced by `[key hidden]` in the server output, also in the background
   `server.log`.
 - Only the max reply tokens, max context, prompt cache and performance settings are passed
@@ -73,6 +75,41 @@ too when its port owner cannot be read for 600 seconds.
 - **Connect your tool** appears while a server runs: Claude Code (OptiQ with the Anthropic
   route), DeepSeek Harness (you choose the context window) and other OpenAI clients. The
   app writes no other app's settings file and shows no key.
+
+## Model alias (2.0.14)
+
+Set it on the model's card on the Models page. It applies at the next start or **Apply changes**.
+
+| Topic | Rule |
+|---|---|
+| Characters | ASCII letters, digits, `.` `_` `-`; starts and ends with a letter or digit; at most 64 |
+| Not allowed | `--`, `..`, ending in `.git`; `default_model`, `home`, `tmp`, `hf` |
+| Unique | Against other aliases and cached model ids and short names, ignoring case. A model downloaded later is not checked again |
+| OptiQ | `--model <alias, or the short name>` through a link in `~/.mlx_studio/engines/optiq/run` |
+| MLX | Only with an alias: the server gets an app-owned model cache holding that one model, under `~/.mlx_studio/engines/mlx/`. Other cached models are not found by name; a folder path in a request can still load other files. Without an alias, nothing changes |
+
+OptiQ with one model answers **any** model name and echoes it, so a successful reply
+does not prove the name; `/v1/models` does. Seen with OptiQ 0.8.6 and `mlx_lm` 0.32.2
+on one Mac. How a client shows the alias was not tried.
+
+## Start at login (2.0.14)
+
+- OptiQ only. The built-in MLX server has no password support, so it cannot be started
+  at login. Off by default.
+- API Server page: choose the model and OptiQ, press "Set as default model", then turn
+  the switch on. The server starts at the next login, without a window, once.
+- Files: `~/.mlx_studio/default-model.json`, `autostart.key` and `login-start.json`
+  (all private), and `~/Library/LaunchAgents/com.mlxstudio.app.login-server.plist`.
+- One key is kept for the default model while the switch is on, also for starts from
+  the app. It goes to the server by environment, never in arguments, the plist or logs.
+  Other processes of your own user account can read a process's environment.
+- Switching off removes the key file. A running server keeps that key until **Stop**.
+- Available in the installed app only. A login item turned off in System Settings is not
+  detected. A real logout and login was not tried.
+  `/health` and `/v1/optiq/context` answer without it.
+- Clients send `Authorization: Bearer <key>` or `x-api-key`: Claude Code through
+  `ANTHROPIC_AUTH_TOKEN`, DeepSeek Harness in the provider's API key field.
+- Turn the switch off before deleting the app or going back to an older version.
 
 ## Client settings
 

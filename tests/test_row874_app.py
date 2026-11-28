@@ -128,7 +128,10 @@ def test_optiq_starts_its_own_command_on_the_same_port_setting(rig):
     proc = rig.start()
     app = rig.app
     assert proc.args[0] == str(optiq_engine.python_path(app.APP_DIR))
-    assert proc.args[proc.args.index("--model") + 1] == str(rig.snapshot)
+    # 2.0.14 (row 1058): a readable name, linked to the snapshot in the run folder.
+    name = proc.args[proc.args.index("--model") + 1]
+    assert name == "Tiny-4bit"
+    assert (app.APP_DIR / "engines" / "optiq" / "run" / name).resolve() == rig.snapshot.resolve()
     assert proc.args[proc.args.index("--port") + 1] == str(PORT)
     assert "--no-anthropic" not in proc.args
     assert "--prompt-cache-bytes" in proc.args

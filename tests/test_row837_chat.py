@@ -104,6 +104,8 @@ def upstream(app_module, monkeypatch):
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     monkeypatch.setattr(app_module, "SERVER_PORT", httpd.server_address[1])
+    # The stand-in listens in this process; the owner check has its own tests (row 892).
+    monkeypatch.setattr(app_module.engine_runtime, "listener_is", lambda port, pid, **k: True)
     monkeypatch.setattr(app_module, "CHAT_BEAT_SECONDS", 0.05)
     try:
         yield fake
@@ -247,6 +249,7 @@ class TestProxy:
         runtime = app_module.engine_runtime
         monkeypatch.setattr(runtime, "listeners", lambda port, **k: {PID})
         monkeypatch.setattr(runtime, "listener_is", lambda port, pid, **k: True)
+        monkeypatch.setattr(runtime, "health", lambda port: 200)
         assert app_module._probe_direct(PID, adopted=True) is None
         assert not upstream.requests, "an adopted server is not warmed again"
         with ask(base_url) as resp:

@@ -6,6 +6,9 @@
 <title>MLX Studio</title>
 <link rel="icon" href="data:," />
 <link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/projects.css" />
+<link rel="stylesheet" href="/download.css" />
+<link rel="stylesheet" href="/features.css" />
 </head>
 <body>
 <div id="app">
@@ -68,7 +71,13 @@
           <span class="state" id="chatState" role="status"><span class="dot dot-warn"></span>Checking…</span>
         </div>
         <div class="topbar-right">
-          <button class="btn btn-ghost" id="newChatBtn">＋ New chat</button>
+          <label class="check" title="A temporary chat is never saved. Switching starts a new chat.">
+            <input type="checkbox" role="switch" id="chatTemporary" aria-describedby="chatSaveState" />
+            <span>Temporary</span>
+          </label>
+          <button class="btn btn-ghost" type="button" id="historyBtn" aria-expanded="false" aria-controls="historyPanel">History</button>
+          <button class="btn btn-ghost" type="button" id="chatSettingsBtn" aria-expanded="false" aria-controls="chatSettingsPanel"><span aria-hidden="true">⚙</span> Chat settings</button>
+          <button class="btn btn-ghost" type="button" id="newChatBtn">＋ New chat</button>
         </div>
       </header>
 
@@ -77,6 +86,77 @@
       <div class="chat-gate" id="chatGate" hidden>
         <p id="chatGateText" role="status"></p>
         <button class="btn btn-primary" id="chatGoServer" type="button" hidden>Go to API Server</button>
+      </div>
+
+      <p class="hint chat-save" id="chatSaveState" role="status">This chat will be saved on this Mac.</p>
+      <p class="field-error chat-save" id="chatSaveError" role="alert"></p>
+
+      <div class="panel chat-panel" id="historyPanel" role="region" aria-labelledby="historyTitle" hidden>
+        <div class="panel-head">
+          <span id="historyTitle">Saved chats</span>
+          <button class="btn btn-mini btn-ghost" type="button" id="historyClose">Close</button>
+        </div>
+        <label class="check">
+          <input type="checkbox" role="switch" id="historySave" aria-describedby="historyNote" checked />
+          <span>Save history</span>
+        </label>
+        <p class="hint" id="historyNote">Saved chats are kept as plain text on this Mac, so anyone who can read your files can read them. Delete removes the file; it is not a secure erase.</p>
+        <div class="history-search" role="search">
+          <input type="search" class="input" id="historyQuery" maxlength="200" aria-label="Search saved chats" placeholder="Search titles and messages" autocomplete="off" />
+          <button class="btn btn-mini" type="button" id="historySearchBtn">Search</button>
+          <button class="btn btn-mini btn-ghost" type="button" id="historyClear">Show all</button>
+        </div>
+        <p class="hint" id="historyStatus" role="status"></p>
+        <div class="setting" id="renameForm" role="group" aria-label="Rename chat" hidden>
+          <label for="renameInput">New title</label>
+          <input type="text" class="input" id="renameInput" maxlength="120" autocomplete="off" />
+          <p class="field-error" id="renameError" role="alert"></p>
+          <div class="card-actions">
+            <button class="btn btn-mini btn-primary" type="button" id="renameSaveBtn">Save title</button>
+            <button class="btn btn-mini btn-ghost" type="button" id="renameCancel">Cancel</button>
+          </div>
+        </div>
+        <ul class="history-list" id="historyList" aria-label="Saved chats"></ul>
+        <ul class="history-list" id="historyBroken" aria-label="Chat files that cannot be read"></ul>
+        <div class="card-actions">
+          <button class="btn btn-mini btn-danger" type="button" id="historyDeleteAll">Delete all chats</button>
+        </div>
+      </div>
+
+      <div class="panel chat-panel" id="chatSettingsPanel" role="region" aria-labelledby="chatSettingsTitle" hidden>
+        <div class="panel-head">
+          <span id="chatSettingsTitle">Chat settings</span>
+          <button class="btn btn-mini btn-ghost" type="button" id="chatSettingsClose">Close</button>
+        </div>
+        <div id="chatSettingsFields">
+          <div class="setting chat-system">
+            <label for="chatSystem">System prompt</label>
+            <textarea class="input" id="chatSystem" maxlength="8000" rows="3" aria-describedby="chatSettingsNote"></textarea>
+          </div>
+          <div class="settings-grid">
+            <div class="setting">
+              <label for="chatMaxTokens">Max reply tokens</label>
+              <input type="number" class="input" id="chatMaxTokens" min="64" max="131072" step="1" inputmode="numeric" placeholder="Configuration value" aria-describedby="chatMaxTokens-range chatSettingsError" />
+              <span class="hint" id="chatMaxTokens-range">64 to 131072</span>
+            </div>
+            <div class="setting">
+              <label for="chatTemp">Temperature</label>
+              <input type="number" class="input" id="chatTemp" min="0" max="2" step="any" inputmode="decimal" placeholder="Configuration value" aria-describedby="chatTemp-range chatSettingsError" />
+              <span class="hint" id="chatTemp-range">0 to 2</span>
+            </div>
+            <div class="setting">
+              <label for="chatTopP">Top p</label>
+              <input type="number" class="input" id="chatTopP" min="0.05" max="1" step="any" inputmode="decimal" placeholder="Configuration value" aria-describedby="chatTopP-range chatSettingsError" />
+              <span class="hint" id="chatTopP-range">0.05 to 1</span>
+            </div>
+          </div>
+          <p class="hint" id="chatSettingsNote">For this chat only. An empty number uses the Configuration value.</p>
+          <p class="field-error" id="chatSettingsError" role="alert"></p>
+          <div class="card-actions">
+            <button class="btn btn-mini btn-primary" type="button" id="chatSettingsSave">Save</button>
+            <span class="hint" id="chatSettingsState" role="status"></span>
+          </div>
+        </div>
       </div>
 
       <div class="chat-scroll" id="chatScroll">
@@ -89,6 +169,23 @@
       </div>
       <div class="sr-only" id="chatAnnounce" role="status" aria-live="polite"></div>
 
+      <details class="project-panel" id="projectPanel">
+        <summary>Project files (read only)</summary>
+        <div class="project-body">
+          <button type="button" class="btn btn-ghost" id="projectChoose">Choose folder…</button>
+          <p class="muted" id="projectNote" role="status"></p>
+          <ul class="project-list" id="projectList" aria-label="Projects"></ul>
+          <p class="muted" id="projectCount" role="status"></p>
+          <ul class="project-list project-files" id="projectFiles" aria-label="Files you can choose"></ul>
+          <button type="button" class="btn btn-ghost" id="projectPreviewBtn" disabled>Preview chosen files</button>
+          <p class="project-warn" id="projectWarning" role="status"></p>
+          <div class="project-preview" id="projectPreview" aria-label="Exact text that will be sent"></div>
+          <button type="button" class="btn btn-primary" id="projectAttach" disabled>Attach to next message</button>
+          <p class="project-warn" id="projectError" role="alert"></p>
+        </div>
+      </details>
+      <p class="muted" id="projectAttached" role="status"></p>
+      <button type="button" class="btn btn-ghost" id="projectDetach" hidden>Remove attached files</button>
       <div class="composer">
         <textarea id="input" aria-label="Message" rows="1" placeholder="Start the API server first…" disabled></textarea>
         <div class="composer-side">
@@ -110,6 +207,20 @@
         </div>
       </header>
       <div class="scroll">
+        <div class="panel" id="aliasPanel" role="group" aria-labelledby="aliasTitle" hidden>
+          <div class="panel-head"><span id="aliasTitle">Model alias</span></div>
+          <div class="setting">
+            <label for="aliasInput">Alias for <span class="mono" id="aliasRepo"></span></label>
+            <input type="text" class="input" id="aliasInput" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="aliasNote" />
+            <span class="hint" id="aliasNote">A short name you can pick by. Letters, digits, dot, hyphen and underscore. A running server takes it after Apply changes. With the MLX engine, clients must then send the alias or default_model, not the old model id.</span>
+          </div>
+          <p class="field-error" id="aliasError" role="alert"></p>
+          <div class="card-actions">
+            <button class="btn btn-mini btn-primary" type="button" id="aliasSaveBtn">Save alias</button>
+            <button class="btn btn-mini" type="button" id="aliasRemoveBtn">Remove alias</button>
+            <button class="btn btn-mini btn-ghost" type="button" id="aliasCancelBtn">Cancel</button>
+          </div>
+        </div>
         <div class="cards" id="modelCards"></div>
         <div class="empty" id="modelsEmpty" hidden>
           <div class="empty-mark">🗂</div>
@@ -127,8 +238,7 @@
         </div>
         <div class="topbar-right">
           <input class="input" id="searchInput" aria-label="Search mlx-community" placeholder="Search mlx-community…" />
-          <button class="btn btn-primary" id="searchBtn">Search</button>
-          <button class="btn btn-ghost" id="showAllBtn">Show all</button>
+          <button class="btn btn-primary" type="button" id="searchBtn">Search</button>
         </div>
       </header>
       <div class="scroll">
@@ -148,40 +258,47 @@
 
         <div class="catalog-head">
           <div>
-            <h2>Best for your Mac</h2>
+            <h2>Models</h2>
             <span class="muted" id="catalogHardware">—</span>
           </div>
-          <select id="catalogFilter" class="select" aria-label="Filter models">
-            <option value="all">All models</option>
-            <option value="great">Great fit</option>
-            <option value="good">Good fit</option>
-            <option value="tight">Tight fit</option>
-            <option value="Code">Code</option>
-            <option value="Reasoning">Reasoning</option>
-            <option value="Fast">Fast</option>
-          </select>
+          <div class="dl-controls">
+            <button class="btn btn-mini btn-ghost" type="button" id="picksBtn" hidden>Recommended only</button>
+            <select id="catalogFilter" class="select" aria-label="Filter models">
+              <option value="all">All models</option>
+              <optgroup label="This Mac">
+                <option value="best">Best for Mac</option>
+                <option value="great">Great fit</option>
+                <option value="good">Good fit</option>
+                <option value="tight">Tight fit</option>
+              </optgroup>
+              <optgroup label="Use">
+                <option value="Code">Code</option>
+                <option value="Reasoning">Reasoning</option>
+                <option value="Fast">Fast</option>
+              </optgroup>
+              <optgroup label="Task">
+                <option value="Text">Text</option>
+                <option value="Vision">Vision</option>
+                <option value="Speech to text">Speech to text</option>
+                <option value="Speech and audio">Speech and audio</option>
+                <option value="Embedding">Embedding</option>
+              </optgroup>
+            </select>
+          </div>
         </div>
+        <div class="dl-notice" id="catalogNotice" role="status"></div>
         <div class="cards" id="catalogCards"></div>
         <div class="empty" id="catalogEmpty" hidden>
           <div class="empty-mark">🎯</div>
           <h2>Nothing matches that filter</h2>
           <p>Pick another fit or category.</p>
         </div>
-
-        <div class="catalog-head">
-          <div>
-            <h2>Search Hugging Face</h2>
-            <span class="muted">Anything else in <code>mlx-community</code></span>
-          </div>
-        </div>
-        <div class="cards" id="searchResults"></div>
-        <div class="empty" id="searchEmpty">
-          <div class="empty-mark">⬇</div>
-          <h2>Find a model</h2>
-          <p>Search the <code>mlx-community</code> organisation on Hugging Face.</p>
+        <div class="dl-more">
+          <button class="btn" type="button" id="showAllBtn">More from Hugging Face</button>
         </div>
       </div>
     </section>
+
 
     <!-- ══════════ Server ══════════ -->
     <section class="view active" id="view-server">
@@ -332,6 +449,34 @@
           <p class="hint" id="mlxModelHint">Send the model name default_model. Another name makes the MLX server load that model instead. No password: any program on this Mac, and a website open in your browser, can send it requests while it runs.</p>
           <pre class="code" id="curlExample"></pre>
         </div>
+<div class="panel" id="livePanel" hidden>
+  <div class="panel-head">
+    <span>Memory and speed</span>
+    <span class="pill" id="livePressure"></span>
+  </div>
+  <div class="kv">
+    <div class="kv-row"><span>This Mac's memory</span><span class="mono" id="liveMacMem">unknown</span></div>
+    <div class="kv-row"><span>Server process memory</span><span class="mono" id="liveServerMem">unknown</span></div>
+    <div class="kv-row"><span>Last chat reply in this app</span><span class="mono" id="liveChat">unknown</span></div>
+    <div class="kv-row"><span>Saved load test</span><span class="mono ft-lines" id="liveTest">unknown</span></div>
+  </div>
+  <p class="hint">Measured only. Requests from other apps are not measured.</p>
+</div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span>Test connection</span>
+            <button class="btn btn-mini" type="button" id="testBtn" aria-describedby="testNote" aria-disabled="true">Test Connection</button>
+          </div>
+          <p class="hint" id="testNote">When the server is ready, this sends it two small requests: a short reply and one tool call. Nothing is run.</p>
+          <div id="testLive" role="status">
+            <div class="kv" id="testResults" hidden>
+              <div class="kv-row"><span>Short reply</span><span id="testReply"></span></div>
+              <div class="kv-row"><span>Tool call</span><span id="testTool"></span></div>
+            </div>
+          </div>
+          <p class="field-error" id="testError" role="alert"></p>
+        </div>
         <div class="panel" id="connectPanel" hidden>
           <div class="panel-head">
             <span>Connect your tool</span>
@@ -340,6 +485,7 @@
           <p class="hint" id="connectState" role="status"></p>
           <p class="field-error" id="mlxOpenWarn" hidden>Open server: no password. Any program on this Mac, and a website open in your browser, can send it requests. Press Stop when you are not using it.</p>
           <p class="hint">Copy these into your tool yourself: MLX Studio does not change any other app's settings files. The key is never shown here; use Copy key.</p>
+          <p class="hint" id="keyUse"></p>
           <p class="hint">Claude Code</p>
           <pre class="code" id="claudeSettings"></pre>
           <button class="btn btn-mini" type="button" id="copyClaude">Copy Claude Code settings</button>
@@ -354,6 +500,22 @@
           <p class="hint">Other OpenAI-compatible clients</p>
           <pre class="code" id="openaiSettings"></pre>
           <button class="btn btn-mini" type="button" id="copyOpenai">Copy OpenAI settings</button>
+        </div>
+        <div class="panel" id="autostartPanel">
+          <div class="panel-head">
+            <span>Start at login</span>
+            <button class="btn btn-mini" type="button" id="setDefault" aria-describedby="defaultState">Set as default model</button>
+          </div>
+          <p class="hint" id="defaultState" role="status"></p>
+          <label class="check">
+            <input type="checkbox" role="switch" id="autostartSwitch" aria-describedby="autostartWhy autostartRule" aria-disabled="true" />
+            <span>Start the default model's server when I log in</span>
+          </label>
+          <p class="hint" id="autostartWhy" role="status"></p>
+          <p class="hint" id="autostartRule">Start at login needs a password, so it works with OptiQ only: the built-in MLX server has no password support.</p>
+          <p class="hint" id="autostartNote"></p>
+          <p class="hint" id="autostartLast"></p>
+          <p class="field-error" id="autostartProblem" role="alert"></p>
         </div>
         <div class="panel">
           <div class="panel-head">
@@ -618,6 +780,15 @@
           </div>
         </div>
         <div id="ltResults"></div>
+<div class="panel" id="ltComparePanel" hidden>
+  <div class="panel-head">
+    <span>MLX and OptiQ side by side</span>
+    <span class="pill" id="ltCompareBadge" role="status"></span>
+  </div>
+  <p class="hint" id="ltCompareReasons"></p>
+  <p class="hint" id="ltCompareRuns"></p>
+  <div id="ltCompareTables"></div>
+</div>
       </div>
     </section>
 
@@ -724,6 +895,16 @@
       <div class="scroll">
 
         <div class="panel">
+          <div class="panel-head"><span id="themeTitle">Appearance</span></div>
+          <div class="server-row" role="radiogroup" aria-labelledby="themeTitle">
+            <label class="check" for="theme-system"><input type="radio" name="theme" id="theme-system" value="system" /><span>System</span></label>
+            <label class="check" for="theme-light"><input type="radio" name="theme" id="theme-light" value="light" /><span>Light</span></label>
+            <label class="check" for="theme-dark"><input type="radio" name="theme" id="theme-dark" value="dark" /><span>Dark</span></label>
+          </div>
+          <p class="hint">System follows the macOS appearance.</p>
+        </div>
+
+        <div class="panel">
           <div class="panel-head">
             <span>Application</span>
             <span class="pill" id="setAppPill"></span>
@@ -753,6 +934,25 @@
             <button class="btn btn-ghost" id="appUpdateCopy">Copy link</button>
           </div>
         </div>
+
+<div class="panel">
+  <div class="panel-head">
+    <span>New MLX Studio release</span>
+    <button class="btn btn-mini" type="button" id="ftUpdateBtn">Check GitHub for a new release</button>
+  </div>
+  <p class="hint">Asks GitHub only when you press the button. Nothing is downloaded.</p>
+  <p class="hint" id="ftUpdateMsg" role="status"></p>
+  <button class="btn btn-mini btn-ghost" type="button" id="ftUpdateOpen" hidden>Open release page</button>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <span>Install or update everything</span>
+    <button class="btn btn-mini btn-primary" type="button" id="planBtn" disabled>Install or update all</button>
+  </div>
+  <ul class="ft-list" id="planItems"></ul>
+  <p class="hint" id="planWhy" role="status"></p>
+</div>
 
         <div class="panel">
           <div class="panel-head">
@@ -792,6 +992,9 @@
   </main>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
+<script src="/download.js"></script>
+<script src="/features.js"></script>
 <script src="/app.js"></script>
+<script src="/projects.js"></script>
 </body>
 </html>

@@ -1,0 +1,54 @@
+<!-- Row 1105 markup for ui/index.html. Paste each block at the place named above it. -->
+
+<!-- <head>: after <link rel="stylesheet" href="/style.css" /> -->
+<link rel="stylesheet" href="/features.css" />
+
+<!-- end of <body>: before <script src="/app.js"></script> -->
+<script src="/features.js"></script>
+
+<!-- API Server page (#view-server): after the panel that holds #endpointText -->
+<div class="panel" id="livePanel" hidden>
+  <div class="panel-head">
+    <span>Memory and speed</span>
+    <span class="pill" id="livePressure"></span>
+  </div>
+  <div class="kv">
+    <div class="kv-row"><span>This Mac's memory</span><span class="mono" id="liveMacMem">unknown</span></div>
+    <div class="kv-row"><span>Server process memory</span><span class="mono" id="liveServerMem">unknown</span></div>
+    <div class="kv-row"><span>Last chat reply in this app</span><span class="mono" id="liveChat">unknown</span></div>
+    <div class="kv-row"><span>Saved load test</span><span class="mono ft-lines" id="liveTest">unknown</span></div>
+  </div>
+  <p class="hint">Measured only. Requests from other apps are not measured.</p>
+</div>
+
+<!-- Load Test page (#view-loadtest): last panel inside its .scroll -->
+<div class="panel" id="ltComparePanel" hidden>
+  <div class="panel-head">
+    <span>MLX and OptiQ side by side</span>
+    <span class="pill" id="ltCompareBadge" role="status"></span>
+  </div>
+  <p class="hint" id="ltCompareReasons"></p>
+  <p class="hint" id="ltCompareRuns"></p>
+  <div id="ltCompareTables"></div>
+</div>
+
+<!-- Setup page (#view-settings): after the "Application" panel -->
+<div class="panel">
+  <div class="panel-head">
+    <span>New MLX Studio release</span>
+    <button class="btn btn-mini" type="button" id="ftUpdateBtn">Check GitHub for a new release</button>
+  </div>
+  <p class="hint">Asks GitHub only when you press the button. Nothing is downloaded.</p>
+  <p class="hint" id="ftUpdateMsg" role="status"></p>
+  <button class="btn btn-mini btn-ghost" type="button" id="ftUpdateOpen" hidden>Open release page</button>
+</div>
+
+<!-- Setup page (#view-settings): before the "Runtime packages" panel -->
+<div class="panel">
+  <div class="panel-head">
+    <span>Install or update everything</span>
+    <button class="btn btn-mini btn-primary" type="button" id="planBtn" disabled>Install or update all</button>
+  </div>
+  <ul class="ft-list" id="planItems"></ul>
+  <p class="hint" id="planWhy" role="status"></p>
+</div>

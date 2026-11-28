@@ -37,6 +37,9 @@ class FakeHfApi:
 
     calls: ClassVar[list] = []
 
+    def __init__(self, token=None):
+        pass
+
     def repo_info(self, repo_id, repo_type=None, **kwargs):
         FakeHfApi.calls.append(("repo_info", repo_id, repo_type))
         return FakeRepoInfo(["config.json", "model.safetensors", "tokenizer.json"])
@@ -180,6 +183,9 @@ class TestFailureHandling:
         module = types.ModuleType("huggingface_hub")
 
         class EmptyApi:
+            def __init__(self, token=None):
+                pass
+
             def repo_info(self, repo_id, repo_type=None, **kwargs):
                 return FakeRepoInfo([])
 

@@ -1,0 +1,14 @@
+/* Loaded after style.css: only what its panels, pills and rows do not cover. */
+.ft-lines { white-space: pre-line; }
+.ft-list { margin: 0 0 8px; padding-left: 18px; overflow-wrap: anywhere; }
+.ft-compare { width: 100%; margin-top: 12px; border-collapse: collapse; table-layout: fixed; }
+.ft-compare caption { text-align: left; font-weight: 600; padding-bottom: 4px; }
+.ft-compare th,
+.ft-compare td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.ft-compare thead th { color: var(--text); font-weight: 600; }

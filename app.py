@@ -13,6 +13,7 @@ No Flask/FastAPI dependency: only stdlib + mlx + huggingface_hub.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import fnmatch
 import functools
@@ -33,6 +34,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import urllib.parse
 import urllib.request
 import zipfile
@@ -44,12 +46,18 @@ from pathlib import Path
 # bundle, breaks its signature.
 sys.dont_write_bytecode = True
 
+import catalog_routes  # noqa: E402
+import chat_store  # noqa: E402
 import engine_runtime  # noqa: E402
 import engines  # noqa: E402
+import feature_routes  # noqa: E402
+import loadtest_compare  # noqa: E402
+import login_agent  # noqa: E402
 import model_info  # noqa: E402
+import project_routes  # noqa: E402
 
 APP_NAME = "MLX Studio"
-APP_VERSION = "2.0.13"
+APP_VERSION = "2.0.14"
 APP_UPDATE_URL = os.environ.get("MLX_STUDIO_UPDATE_URL", "").strip()
 
 HF_ORG = "mlx-community"
@@ -94,6 +102,15 @@ LOG_MAX_BYTES = 2 * 1024 * 1024
 LOG_BACKUPS = 3
 LOG_LOCK = threading.Lock()
 
+
+class ConnectionRun:
+    """One Test Connection at work, then its answer."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.code, self.answer = 500, {"error": "The test failed. Press Test Connection again."}
+
+
 HOST = "127.0.0.1"
 PORT = 8765
 SERVER_PORT = 8080
@@ -104,6 +121,14 @@ CHAT_BEAT_SECONDS = 1.0  # how often a silent wait is reported to the browser
 CHAT_LINE_BYTES = 1024 * 1024
 CHAT_ERROR_BYTES = 64 * 1024
 CHAT_CUT_SHORT = "The API server stopped before the reply finished. Check the API Server page."
+CONNECTION_TEST_SECONDS = 90  # for each of the two requests of Test Connection
+CONNECTION_TEST_LOCK = threading.Lock()
+# One request is held no longer than this: the window's fetch gives up near 60 s.
+CONNECTION_TEST_HOLD_SECONDS = 20
+CONNECTION_TEST_RUNS: list[ConnectionRun] = []  # only the latest one
+CONNECTION_TEST_RUN_LOCK = threading.Lock()
+AUTOSTART_LOCK = threading.Lock()  # one change of the start-at-login files at a time
+AUTOSTART_PATHS = ("/api/autostart", "/api/autostart/default", "/api/autostart/clear")
 # mlx_lm cuts replies at 512 tokens when a client sends no max_tokens.
 SERVER_MAX_TOKENS = 8192
 # Limits for reading server.last.json: far above two real model ids.
@@ -164,6 +189,11 @@ LOADTEST_WAIT_SECONDS = 40  # longer than the runner waits for its server
 # The keys a model may override under "models".
 MODEL_SETTINGS = tuple(SETTINGS)
 SETTINGS_MAX_BYTES = 64 * 1024
+# The ``ui`` block of settings.json: what the screens remember.
+UI_CHOICES = {"theme": ("system", "light", "dark"), "save_history": ("on", "off")}
+UI_DEFAULTS = {"theme": "system", "save_history": "on"}
+# The native window behind the page: the same as --bg in ui/style.css.
+WINDOW_BACKGROUNDS = {"light": "#f6f7f9", "dark": "#0f1115"}
 SETTINGS_LOCK = threading.Lock()
 # How long a server may take to report ready. After it the app stops the server, and
 # a server that this one replaced is started again.
@@ -223,6 +253,7 @@ def _build_static_allowlist(root: Path) -> dict[str, Path]:
 
 
 STATIC_FILES = _build_static_allowlist(UI_DIR)
+DOWNLOAD_ROUTES = catalog_routes.Routes(catalog_routes.Names(globals()))
 # Error messages and server output in the logs can quote chat text, so keep the
 # whole tree owner-only.
 for _private in (APP_DIR, LOG_DIR):
@@ -728,7 +759,7 @@ def search_hf(query: str) -> list[dict]:
     try:
         from huggingface_hub import HfApi
 
-        api = HfApi()
+        api = HfApi(token=False)  # a public search: the saved token stays here
         wanted = {"author": HF_ORG, "search": query or None, "limit": 80}
         try:
             found = list(
@@ -1008,6 +1039,9 @@ class State:
         self.server_engine = "mlx"
         self.server_port = SERVER_PORT  # of a direct engine's server; MLX: SERVER_PORT
         self.server_snapshot: str | None = None  # the folder a direct engine serves
+        # What --model was given, when not the repo id, and the alias if it is one.
+        self.server_name: str | None = None
+        self.server_alias: str | None = None
         self.server_verdict: str | None = None  # a direct engine: "ready" or "failed"
         self.server_anthropic = False  # a direct engine's /v1/messages route is on
         self.server_stopping = False
@@ -1075,7 +1109,8 @@ class State:
 
     def snapshot(self) -> dict:
         hw = hardware()
-        models = installed_models()
+        aliases = model_aliases()
+        models = [{**m, "alias": aliases.get(m["repo"])} for m in installed_models()]
         mlx_v = pkg_version("mlx")
         mlx_lm_v = pkg_version("mlx-lm")
         hf_v = pkg_version("huggingface-hub")
@@ -1125,6 +1160,8 @@ class State:
                 "endpoint": f"http://{HOST}:{_server_port()}/v1",
                 "engine": self.server_engine,
                 "anthropic": self.server_anthropic,
+                # The alias the running server answers to, which a later save leaves.
+                "alias": self.server_alias,
                 "engines": [engine.view(APP_DIR) for engine in engines.REGISTRY],
                 "last_engine": _last_engine(),
                 "last_anthropic": _last_anthropic(),
@@ -1140,6 +1177,8 @@ class State:
                 "starting": bool(self.server_pending),
                 **_server_readiness(),
                 "pid": self.server_pid,
+                # globals(), not sys.modules: the module may be loaded unregistered.
+                **feature_routes.server_stats(types.SimpleNamespace(**globals())),
             },
             "downloads": downloads,
             "loadtest": loadtest_summary(),
@@ -1149,6 +1188,7 @@ class State:
                 "lines": self.install["lines"][-400:],
             },
             "generating": self.generating,
+            "ui": ui_settings(),
         }
 
 
@@ -1184,17 +1224,87 @@ def _chat_target(repo: str, messages: list[dict], settings: dict) -> tuple[dict,
 
 
 def _chat_headers() -> dict:
-    """The key of a direct engine, only while every listener on its port is our server."""
+    """The headers for the running server, only while every listener on its port is it.
+
+    Asked just before anything is sent, for both engines. A direct engine's key is
+    one of them; MLX has none, but its prompts are no one else's either.
+    """
     engine = _running_engine()
-    if not engine.direct:
-        return {}
-    key = engine.read_key(_key_file())
-    if not key or not engine_runtime.listener_is(_server_port(), STATE.server_pid):
+    key = engine.read_key(_key_file()) if engine.direct else None
+    if (engine.direct and not key) or not engine_runtime.listener_is(
+        _server_port(), STATE.server_pid
+    ):
+        unsent = "The key was not sent" if engine.direct else "Nothing was sent"
         raise engine_runtime.Refused(
-            "The key was not sent: another program may listen on the server's port. "
+            f"{unsent}: another program may listen on the server's port. "
             "Press Stop, then Start Server."
         )
-    return {"Authorization": f"Bearer {key}"}
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def connection_test() -> tuple[int, dict]:
+    """``(status, answer)``: a short reply and a tool call from the running server."""
+    if STATE.testing():
+        return 409, {"error": LOADTEST_BUSY}
+    with STATE.lock:
+        repo = next(iter(STATE.server_repos), "")
+        pid = STATE.server_pid
+    if problem := _chat_problem(repo):
+        return 409, {"error": problem}
+    if not CONNECTION_TEST_LOCK.acquire(blocking=False):
+        return 409, {"error": "A connection test is already running."}
+    try:
+        engine, port = _running_engine(), _server_port()
+
+        def headers() -> dict:
+            # The owner check and the key are of this server, not of one that took over.
+            if (STATE.server_pid, _server_port()) != (pid, port):
+                raise engine_runtime.Refused(
+                    "The server changed during the test. Nothing more was sent. Test again."
+                )
+            return _chat_headers()
+
+        results = engine_runtime.check_connection(
+            port, engine.request_model, headers, CONNECTION_TEST_SECONDS
+        )
+    except engine_runtime.Refused as exc:
+        return 409, {"error": str(exc)}
+    finally:
+        CONNECTION_TEST_LOCK.release()
+    statuses = {name: result["status"] for name, result in results.items()}
+    log_app("info", "connection test", engine=engine.id, **statuses)
+    return 200, {"ok": True, "pid": pid, "model": repo, "engine": engine.id, **results}
+
+
+def _run_connection_test(run: ConnectionRun) -> None:
+    try:
+        run.code, run.answer = connection_test()
+    except Exception as exc:  # the run must end, or no later test could start
+        log_app("error", "connection test failed", error=str(exc)[:300])
+    finally:
+        run.done.set()
+
+
+def connection_test_result() -> tuple[int, dict]:
+    """The latest test's answer, or 202 while it is still at work."""
+    run = next(iter(CONNECTION_TEST_RUNS), None)
+    if run is None:
+        return 404, {"error": "No connection test was run. Press Test Connection."}
+    if not run.done.is_set():
+        return 202, {"running": True}
+    return run.code, run.answer
+
+
+def start_connection_test() -> tuple[int, dict]:
+    """Run the test aside: a quick one answers at once, a slow one is asked about again."""
+    with CONNECTION_TEST_RUN_LOCK:
+        if CONNECTION_TEST_RUNS and not CONNECTION_TEST_RUNS[0].done.is_set():
+            return 409, {"error": "A connection test is already running."}
+        run = ConnectionRun()
+        CONNECTION_TEST_RUNS[:] = [run]
+        threading.Thread(target=_run_connection_test, args=(run,), daemon=True).start()
+    run.done.wait(CONNECTION_TEST_HOLD_SECONDS)
+    return connection_test_result()
 
 
 def _read_reply(conn: http.client.HTTPConnection, body: bytes, put, headers=None) -> None:
@@ -1255,14 +1365,24 @@ def _reply_stats(usage: dict, asked: float, first, ended: float, mode: str | Non
     }
 
 
-def stream_chat(repo: str, messages: list[dict], stop: threading.Event):
+def stream_chat(
+    repo: str,
+    messages: list[dict],
+    stop: threading.Event,
+    system: str = "",
+    own: dict | None = None,
+):
     """Ask the running API server, yielding ``(event, data)`` for the browser.
 
     ``status`` is repeated while nothing arrives, so the screen can say it is waiting
     and a browser that has gone away is noticed. Closing this generator closes the
     request to the server.
     """
-    asked_body, port = _chat_target(repo, messages, chat_settings(repo))
+    # The only system message is the one added here; ``own`` are this chat's settings.
+    if system.strip():
+        messages = [{"role": "system", "content": system}, *messages]
+    asked_body, port = _chat_target(repo, messages, {**chat_settings(repo), **(own or {})})
+    served = (STATE.server_engine, STATE.server_pid)  # whose speed the reply measures
     body = json.dumps(asked_body).encode("utf-8")
     conn = http.client.HTTPConnection(HOST, port, timeout=CHAT_CONNECT_SECONDS)
     try:
@@ -1311,18 +1431,17 @@ def stream_chat(repo: str, messages: list[dict], stop: threading.Event):
             ended = time.monotonic()
             elapsed = max(ended - first, 1e-6) if first else 0
             mode = performance_in_force(repo)
-            yield (
-                "done",
-                {
-                    "tokens": tokens,
-                    "tps": round(tokens / elapsed, 1) if elapsed else 0.0,
-                    "elapsed": round(elapsed, 2),
-                    "stopped": stop.is_set(),
-                    "truncated": data["finish"] == "length",
-                    "repo": repo,
-                    "stats": _reply_stats(data["usage"], asked, first, ended, mode),
-                },
-            )
+            done = {
+                "tokens": tokens,
+                "tps": round(tokens / elapsed, 1) if elapsed else 0.0,
+                "elapsed": round(elapsed, 2),
+                "stopped": stop.is_set(),
+                "truncated": data["finish"] == "length",
+                "repo": repo,
+                "stats": _reply_stats(data["usage"], asked, first, ended, mode),
+            }
+            feature_routes.record_chat_speed(sys.modules[__name__], done, *served)
+            yield ("done", done)
             return
     finally:
         # Shutting the socket down wakes the reader and tells the server to stop.
@@ -1389,6 +1508,25 @@ def cancel_download(repo: str) -> bool:
     return True
 
 
+def _download_info(repo: str):
+    """``(repo info, token)`` for a download. The Hub is asked without the saved
+    token first: it goes out (``None``) only for a gated or private model.
+    """
+    from huggingface_hub import HfApi
+
+    wanted = {"repo_id": repo, "repo_type": "model", "files_metadata": True}
+    try:
+        info = HfApi(token=False).repo_info(**wanted)
+    except Exception as exc:
+        # A private model looks absent to a stranger.
+        if getattr(getattr(exc, "response", None), "status_code", None) not in (401, 403, 404):
+            raise
+    else:
+        if not (getattr(info, "gated", False) or getattr(info, "private", False)):
+            return info, False
+    return HfApi().repo_info(**wanted), None
+
+
 def worker_download(repo: str) -> None:
     with STATE.lock:
         running = STATE.downloads.get(repo, {}).get("status") == "running"
@@ -1401,10 +1539,9 @@ def worker_download(repo: str) -> None:
     marker = CACHE_DIR / f"models--{repo.replace('/', '--')}" / DOWNLOAD_MARKER
     pct = 0
     try:
-        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub import hf_hub_download
 
-        api = HfApi()
-        repo_info = api.repo_info(repo_id=repo, repo_type="model", files_metadata=True)
+        repo_info, token = _download_info(repo)
         files = [
             (s.rfilename, getattr(s, "size", None) or 0) for s in repo_info.siblings if s.rfilename
         ]
@@ -1444,6 +1581,7 @@ def worker_download(repo: str) -> None:
                 filename=filename,
                 cache_dir=str(CACHE_DIR),
                 tqdm_class=_byte_progress(cancel, report),
+                token=token,
             )
             done += size
 
@@ -1473,63 +1611,19 @@ def install_specs() -> list[str]:
 
 def worker_install(kind: str) -> None:
     STATE.install = {"running": True, "kind": kind, "lines": []}
-    log_activity("install", "mlx + mlx-lm", "running", f"{kind} started")
-
-    cmd = [sys.executable, "-m", "pip", "install"]
-    if kind == "reinstall":
-        cmd += ["--force-reinstall"]
-    else:
-        cmd += ["--upgrade"]
-    cmd += install_specs()
-
-    STATE.install["lines"].append("$ " + " ".join(cmd))
-    ok = False
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-        )
-        if proc.stdout is None:  # pragma: no cover - PIPE guarantees a stream
-            STATE.install["lines"].append("error: no stdout stream")
-            proc.kill()
-            return
-        for line in proc.stdout:
-            STATE.install["lines"].append(line.rstrip())
-        ok = proc.wait() == 0
-        if not ok and any("externally-managed-environment" in x for x in STATE.install["lines"]):
-            STATE.install["lines"].append(
-                "This Python is managed by the system and refuses pip. Create a virtual "
-                "environment (python3 -m venv ~/mlx-venv) and run MLX Studio with it."
-            )
-    except Exception as exc:
-        STATE.install["lines"].append(f"error: {exc}")
-
-    log_activity("install", "mlx + mlx-lm", "success" if ok else "failed", f"{kind} finished")
-    log_app(
-        "info" if ok else "error",
-        f"package {kind} {'succeeded' if ok else 'failed'}",
-        tail=STATE.install["lines"][-5:],
-    )
-    STATE.install["running"] = False
+        feature_routes.pip_install(sys.modules[__name__], kind, STATE.install["lines"])
+    finally:
+        STATE.install["running"] = False
     worker_check_versions()
 
 
 def worker_engine_install(engine: engines.Engine) -> None:
     """Install an engine from the lock the app ships; Setup shows the lines."""
-    lines = STATE.install["lines"]
-    log_activity("install", engine.name, "running", f"{engine.version} started")
-    ok = False
     try:
-        engine.install(APP_DIR, lines.append)
-        lines.append(f"{engine.name} {engine.version} is installed.")
-        ok = True
-    except engine_runtime.Refused as exc:
-        lines.append(str(exc))
-    except Exception as exc:
-        lines.append(f"error: {exc}")
+        feature_routes.engine_install(sys.modules[__name__], engine, STATE.install["lines"])
     finally:
         STATE.install["running"] = False
-    log_activity("install", engine.name, "success" if ok else "failed", "install finished")
-    log_app("info" if ok else "error", "engine install finished", engine=engine.id, ok=ok)
 
 
 def _engine_change(action: str, body: dict) -> tuple[int, dict]:
@@ -1656,8 +1750,18 @@ def _snapshot_dir(repo: str) -> Path:
     return whole or max(reversed(found), key=weights, default=entry)
 
 
+class _Unanswered(str):
+    """The empty text of a ``ps`` that never answered, told apart by identity."""
+
+
+PS_UNANSWERED = _Unanswered()
+
+
 def _ps_field(pid: int, field: str) -> str:
-    """One ``ps`` column for a pid, in a fixed locale and zone. Empty if unknown."""
+    """One ``ps`` column for a pid, in a fixed locale and zone. Empty if unknown.
+
+    ``PS_UNANSWERED`` (also empty) when ``ps`` itself timed out or could not run.
+    """
     try:
         proc = subprocess.run(
             ["ps", "-ww", "-p", str(pid), "-o", f"{field}="],
@@ -1668,30 +1772,44 @@ def _ps_field(pid: int, field: str) -> str:
             env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
         )
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return PS_UNANSWERED
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def _is_our_server(
-    pid: int | None, repo: str | None, started: str | None, port=None, direct: str | None = None
-) -> bool:
+    pid: int | None,
+    repo: str | None,
+    started: str | None,
+    port=None,
+    direct: str | None = None,
+    name: str | None = None,
+) -> bool | None:
     """True only when ``pid`` is still the API server we launched.
+
+    None, which is also not true, when ``ps`` did not answer: nothing is proved.
 
     A pid is reused after a crash or reboot, so both the command line and, when
     recorded, the process start time must match before it is adopted or signalled.
     """
     if not repo or not _pid_alive(pid):
         return False
-    command = f"{_ps_field(pid, 'command')} "
+    shown = _ps_field(pid, "command")
+    if shown is PS_UNANSWERED:
+        return None
+    command = f"{shown} "
     launchers = (" -m mlx_lm server", OLD_WRAPPER)
-    marks = [f"{start} --model {repo} --host " for start in launchers]
+    # ``name``: what --model was given, when that was not the repo id.
+    marks = [f"{start} --model {name or repo} --host " for start in launchers]
     if direct:  # a direct engine's own command line, see Engine.identity
         marks = [direct]
     if not any(mark in command for mark in marks):
         return False
     if f" --port {port or SERVER_PORT} " not in command:
         return False
-    return not started or _ps_field(pid, "lstart") == started
+    if not started:
+        return True
+    born = _ps_field(pid, "lstart")
+    return None if born is PS_UNANSWERED else born == started
 
 
 def _running_engine() -> engines.Engine:
@@ -1707,18 +1825,20 @@ def _key_file() -> Path:
     return APP_DIR / "server.key"
 
 
-def _still_our_server(pid: int | None, repo: str | None) -> bool:
+def _still_our_server(pid: int | None, repo: str | None) -> bool | None:
     """``_is_our_server`` for the engine that was started."""
     engine = _running_engine()
     if not engine.direct:
-        return _is_our_server(pid, repo, STATE.server_identity)
-    mark = engine.identity(STATE.server_snapshot)
+        return _is_our_server(pid, repo, STATE.server_identity, name=STATE.server_name)
+    # A server kept from 2.0.13 was given the snapshot folder itself.
+    mark = engine.identity(STATE.server_name or STATE.server_snapshot)
     return _is_our_server(pid, repo, STATE.server_identity, STATE.server_port, direct=mark)
 
 
 def _reset_engine() -> None:
     STATE.server_engine, STATE.server_port = "mlx", SERVER_PORT
     STATE.server_snapshot = STATE.server_verdict = None
+    STATE.server_name = STATE.server_alias = None
     STATE.server_anthropic = False
     with contextlib.suppress(OSError):
         _key_file().unlink(missing_ok=True)
@@ -1731,23 +1851,38 @@ def _engine_refusal(engine_id, repos: list[str], port_too: bool = True) -> str |
         return "Unknown engine."
     if not engine.selectable:
         return f"{engine.name}: {engine.refusal}"
+    if why := _install_refusal(engine):
+        return why
     if not engine.direct:
-        return None
+        return _port_refusal(SERVER_PORT) if port_too else None
     if len(repos) > 1:
         return f"{engine.name} serves one model. Remove the second one."
-    if STATE.install["running"] and STATE.install["kind"].startswith(engine.id):
-        return f"{engine.name}: an install is running."
     try:
         engine.program(APP_DIR)
         engine.check_model(repos[0], _snapshot_dir(repos[0]))
     except engine_runtime.Refused as exc:
         return str(exc)
-    if not port_too:
+    return _port_refusal(engine.port) if port_too else None
+
+
+def _install_refusal(engine: engines.Engine) -> str | None:
+    """Why a running install rules this engine out: its files are half replaced."""
+    if not STATE.install["running"]:
         return None
-    # The server being replaced may hold the port; nothing else may.
+    kind = STATE.install.get("kind") or ""
+    if engine.direct:
+        touched = kind == feature_routes.INSTALL_KIND or kind.startswith(engine.id)
+    else:  # MLX runs on the app's own packages: only an engine's own install spares them
+        touched = not any(
+            kind.startswith(f"{other.id} ") for other in engines.REGISTRY if other.installable
+        )
+    return f"{engine.name}: an install is running." if touched else None
+
+
+def _port_refusal(port: int) -> str | None:
+    """The server being replaced may hold the port; nothing else may."""
     running = STATE.server_proc is not None or _pid_alive(STATE.server_pid)
-    ours = STATE.server_pid if running else None
-    return engine_runtime.port_problem(engine.port, ours=ours)
+    return engine_runtime.port_problem(port, ours=STATE.server_pid if running else None)
 
 
 def _engines_view(repo: str) -> list[dict]:
@@ -1773,6 +1908,9 @@ def _write_server_pidfile(
         "started": _ps_field(pid, "lstart"),
     }
     payload["settings"] = STATE.server_started_with
+    for key, value in (("name", STATE.server_name), ("alias", STATE.server_alias)):
+        if value:
+            payload[key] = value
     if _running_engine().direct:
         payload.update(
             engine=STATE.server_engine,
@@ -1826,6 +1964,7 @@ def _chat_problem(repo: str) -> str | None:
         pending = bool(STATE.server_pending)
         proc, pid = STATE.server_proc, STATE.server_pid
         first, identity = STATE.server_repo, STATE.server_identity
+        name = STATE.server_name
     if pending:
         return "The API server is starting. Wait until it is ready."
     # A pid is reused after a crash: no prompt goes to whoever has the port then.
@@ -1834,7 +1973,7 @@ def _chat_problem(repo: str) -> str | None:
     elif _running_engine().direct:
         running = _still_our_server(pid, first)
     else:
-        running = _is_our_server(pid, first, identity)
+        running = _is_our_server(pid, first, identity, name=name)
     if not running:
         return "Start the API server first (API Server page)."
     # Chat is only for the model the server was started with.
@@ -1960,9 +2099,13 @@ def _read_settings() -> tuple[dict, dict]:
     return _read_all_settings()[:2]
 
 
-def _read_all_settings() -> tuple[dict, dict, dict]:
-    """The global values, each model's own and the load test block. Never raises."""
-    shared, models, load_test, bad, problem = {}, {}, {}, [], ""
+def _read_all_settings() -> tuple[dict, dict, dict, dict]:
+    """The global values, each model's own, the load test and ui blocks. Never raises.
+
+    The ui block is returned as it is in the file, so that a write keeps all of it,
+    entries this version does not know included; read it through ``ui_settings``.
+    """
+    shared, models, load_test, ui, bad, problem = {}, {}, {}, {}, [], ""
     try:
         data = json.loads(_read_small(_settings_file(), SETTINGS_MAX_BYTES).decode("utf-8"))
         if not isinstance(data, dict):
@@ -1986,6 +2129,10 @@ def _read_all_settings() -> tuple[dict, dict, dict]:
                     load_test[key] = value
                 else:
                     bad.append(f"load_test: {key}")
+        ui = data.get("ui", {})
+        if not isinstance(ui, dict):
+            ui, bad = {}, [*bad, "ui"]
+        bad += [f"ui: {key}" for key in UI_DEFAULTS if key in ui and not _valid_ui(key, ui[key])]
         if bad:
             names = ", ".join(sorted(set(bad)))
             problem = f"settings.json: unusable value for {names}; using the default"
@@ -1996,7 +2143,104 @@ def _read_all_settings() -> tuple[dict, dict, dict]:
     if problem and problem != STATE.settings_complaint:
         log_app("warning", problem)
     STATE.settings_complaint = problem  # each problem is said once
-    return shared, models, load_test
+    return shared, models, load_test, ui
+
+
+def _valid_ui(key: str, value) -> bool:
+    return isinstance(value, str) and value in UI_CHOICES.get(key, ())
+
+
+def ui_settings() -> dict:
+    """Every key of UI_DEFAULTS: the saved value, else the default."""
+    saved = _read_all_settings()[3]
+    return {
+        key: saved[key] if key in saved and _valid_ui(key, saved[key]) else default
+        for key, default in UI_DEFAULTS.items()
+    }
+
+
+def _ui_change_problem(body: dict) -> str | None:
+    if not body:
+        return "nothing to change"
+    for key, value in body.items():
+        if not _valid_ui(key, value):
+            return f"unknown setting or value: {str(key)[:40]}"
+    return None
+
+
+def save_ui(changes: dict) -> None:
+    """Merge checked ``changes`` into the ui block."""
+    with SETTINGS_LOCK:
+        shared, models, load_test, ui = _read_all_settings()
+        _store_settings(shared, models, load_test, {**ui, **changes})
+
+
+# --------------------------------------------------------------------------- #
+# Model aliases: ``ui.models.<repo>.alias`` in settings.json
+# --------------------------------------------------------------------------- #
+def model_aliases() -> dict[str, str]:
+    """``{repo: alias}`` for every saved alias that is safe to use."""
+    block = _read_all_settings()[3].get("models")
+    if not isinstance(block, dict):
+        return {}
+    return {
+        repo: entry["alias"]
+        for repo, entry in block.items()
+        if _valid_repo(repo)
+        and isinstance(entry, dict)
+        and model_info.alias_problem(entry.get("alias")) is None
+    }
+
+
+def _cached_repos() -> list[str]:
+    """Every model id with a folder in the cache, ids without an owner included."""
+    try:
+        names = [entry.name for entry in CACHE_DIR.iterdir()]
+    except OSError:
+        return []
+    prefix = "models--"
+    return sorted(n.removeprefix(prefix).replace("--", "/") for n in names if n.startswith(prefix))
+
+
+def save_alias(repo: str, alias: str | None) -> str | None:
+    """Give ``repo`` an alias; None or "" removes it. Returns why not, changing nothing."""
+    cached = _cached_repos()
+    if not _valid_repo(repo) or repo not in cached:
+        return "that model is not installed"
+    remove = alias is None or alias == ""
+    if not remove and (problem := model_info.alias_problem(alias)):
+        return f"alias: {problem}"
+    with SETTINGS_LOCK:
+        shared, models, load_test, ui = _read_all_settings()
+        saved = model_aliases()
+        block = ui.get("models")
+        entries = dict(block) if isinstance(block, dict) else {}
+        changed = {repo: None if remove else alias}
+        if not remove:
+            wanted = alias.casefold()  # the file system does not tell cases apart
+            for other in cached:
+                names = (other, other.rsplit("/", maxsplit=1)[-1], saved.get(other, ""))
+                if other != repo and wanted in (name.casefold() for name in names):
+                    return f"alias: {alias} is already a name of {other}"
+            # The alias of a model no longer in the cache goes to whoever takes it now.
+            changed |= {
+                r: None for r, name in saved.items() if r != repo and name.casefold() == wanted
+            }
+        for model, value in changed.items():
+            entry = entries.get(model)
+            entry = dict(entry) if isinstance(entry, dict) else {}
+            entry.pop("alias", None)
+            if value:
+                entry["alias"] = value
+            if entry:
+                entries[model] = entry
+            else:
+                entries.pop(model, None)
+        ui = {key: value for key, value in ui.items() if key != "models"}
+        if entries:
+            ui["models"] = entries
+        _store_settings(shared, models, load_test, ui)
+    return None
 
 
 def user_settings(repo: str | None = None) -> dict[str, int | None]:
@@ -2017,44 +2261,46 @@ def server_settings(repos: list[str]) -> dict[str, int | None]:
 def save_settings(changes: dict, repo: str | None = None) -> None:
     """Merge checked ``changes`` into the global or one model's values; None removes."""
     with SETTINGS_LOCK:
-        shared, models, load_test = _read_all_settings()
+        shared, models, load_test, ui = _read_all_settings()
         target = shared if repo is None else models.setdefault(repo, {})
         for key, value in changes.items():
             if value is None:
                 target.pop(key, None)
             else:
                 target[key] = value
-        _store_settings(shared, models, load_test)
+        _store_settings(shared, models, load_test, ui)
 
 
 def save_load_test(changes: dict | None) -> None:
     """Merge checked ``changes`` into the load test block; None removes."""
     with SETTINGS_LOCK:
-        shared, models, load_test = _read_all_settings()
+        shared, models, load_test, ui = _read_all_settings()
         merged = {} if changes is None else {**load_test, **changes}
         kept = {key: value for key, value in merged.items() if value is not None}
-        _store_settings(shared, models, kept)
+        _store_settings(shared, models, kept, ui)
 
 
 def reset_settings(repo: str | None = None) -> None:
     """Drop the global values, or one model's own; the rest is kept."""
     with SETTINGS_LOCK:
-        shared, models, load_test = _read_all_settings()
+        shared, models, load_test, ui = _read_all_settings()
         if repo is None:
             shared = {}
         else:
             models.pop(repo, None)
-        if shared or any(models.values()) or load_test:
-            _store_settings(shared, models, load_test)
+        if shared or any(models.values()) or load_test or ui:
+            _store_settings(shared, models, load_test, ui)
         else:
             _settings_file().unlink(missing_ok=True)
 
 
-def _store_settings(shared: dict, models: dict, load_test: dict) -> None:
+def _store_settings(shared: dict, models: dict, load_test: dict, ui: dict) -> None:
     models = {repo: own for repo, own in models.items() if own}
     data = {**shared, **({"models": models} if models else {})}
     if load_test:
         data["load_test"] = load_test
+    if ui:
+        data["ui"] = ui
     text = json.dumps(data)
     if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
         raise ValueError("too many model settings: reset some models first")
@@ -2218,6 +2464,8 @@ def _launch_stamp(engine: engines.Engine, settings: dict, repo: str) -> str:
     used = {k: settings[k] for k in engine.setting_keys if settings.get(k) is not None}
     if flags := performance_flags(repo)[0]:
         used["performance"] = flags
+    if alias := model_aliases().get(repo):
+        used["alias"] = alias
     return json.dumps(used, sort_keys=True)
 
 
@@ -2413,15 +2661,21 @@ def _probe_direct(pid: int, adopted: bool = False) -> str | None:
 
     Nothing is sent until every listener on the port is seen to be this process. A
     keyed engine is checked again while it runs. Sets ``server_verdict`` when it
-    answers. ``adopted``: an MLX server left by an earlier session, not warmed again.
+    answers. ``adopted``: an MLX server left by an earlier session. It is not warmed
+    again, so only /health tells whether its model failed, also after it was ready.
     """
     engine, port = _running_engine(), _server_port()
     ready = STATE.server_verdict == "ready"
-    if STATE.server_pid != pid or (ready and not engine.direct):
+    if STATE.server_pid != pid or (ready and not (engine.direct or adopted)):
         return None
     holders = engine_runtime.listeners(port)
     if holders is None:
         return None  # unknown: nothing is sent, and the next look tries again
+    if ready and not engine.direct:  # adopted MLX: its load can still fail
+        failed = holders == {pid} and engine_runtime.listener_is(port, pid)
+        if failed and engine_runtime.health(port) == 503:
+            return "its model could not be loaded"
+        return None
     if holders - {pid}:
         unsent = "; the key was not sent to it" if engine.direct else ""
         return f"another program listens on port {port}{unsent}"
@@ -2437,7 +2691,7 @@ def _probe_direct(pid: int, adopted: bool = False) -> str | None:
             return "it answered without the key"
         if answer != "ready":
             return None
-    elif not adopted:
+    else:
         health = engine_runtime.health(port)
         if health == 503:
             return "its model could not be loaded"
@@ -2490,10 +2744,11 @@ def _watch_server(
     direct = _running_engine().direct
     stopped_why = None  # the app stopped the server, and why
     while True:
-        # Until it answers at every look, then every half minute.
+        # Until it answers at every look, then every half minute (not for an MLX
+        # server this app started: its first reply already proved the model).
         if STATE.server_pid == pid and not STATE.server_stopping:
             came_up = STATE.server_verdict == "ready"
-            if not came_up or (direct and checks % 15 == 14):
+            if not came_up or ((direct or proc is None) and checks % 15 == 14):
                 stopped_why = _probe_direct(pid, adopted=proc is None)
                 late = STATE.server_verdict != "ready" and time.monotonic() > deadline
                 if late and not stopped_why:
@@ -2526,7 +2781,7 @@ def _watch_server(
                 break
         elif not _pid_alive(pid):
             break
-        elif checks % 15 == 14 and not _still_our_server(pid, repo):
+        elif checks % 15 == 14 and _still_our_server(pid, repo) is False:
             break  # the pid now belongs to another process
         checks += 1
         time.sleep(2)
@@ -2586,15 +2841,18 @@ def _watch_server(
     log_app("error", "api server died", repo=repo, pid=pid, exit_code=code)
 
 
-def _server_command(repo: str, settings: dict, port: int, performance: dict | None = None):
-    """mlx_lm's own server for ``repo`` on ``port``. Only its own flags are passed."""
+def _server_command(model: str, settings: dict, port: int, performance: dict | None = None):
+    """mlx_lm's own server for ``model`` on ``port``. Only its own flags are passed.
+
+    ``model`` is a repo id, or the alias of the one model in an alias cache.
+    """
     cmd = [
         sys.executable,
         "-m",
         "mlx_lm",
         "server",
         "--model",
-        repo,
+        model,
         "--host",
         HOST,
         "--port",
@@ -2696,11 +2954,23 @@ def _launch_server(
     if engine != "mlx":
         return _launch_direct(engines.get(engine), repo, background, previous, anthropic)
     settings = server_settings([repo])
-    cmd = _server_command(repo, settings, SERVER_PORT, performance_flags(repo)[0])
-    STATE.server_started_with = _launch_stamp(engines.MLX, settings, repo)
-    STATE.server_verdict = None
+    # Before the alias is read: a save in between then asks for a restart.
+    stamp = _launch_stamp(engines.MLX, settings, repo)
+    alias = model_aliases().get(repo)
+    cmd = _server_command(alias or repo, settings, SERVER_PORT, performance_flags(repo)[0])
+    env = _server_env()
     # Its own folder as the working directory: ``-m`` looks for modules there first.
-    return _spawn_server(cmd, _server_env(), [repo], background, previous, cwd=str(APP_DIR))
+    cwd = APP_DIR
+    if alias:
+        root = APP_DIR / "engines" / engines.MLX.id
+        env["HF_HUB_CACHE"], cwd = map(str, engines.alias_cache(root, alias, _snapshot_dir(repo)))
+    STATE.server_started_with = stamp
+    STATE.server_verdict = None
+    STATE.server_name = STATE.server_alias = alias
+    proc = _spawn_server(cmd, env, [repo], background, previous, cwd=str(cwd))
+    if proc is None:
+        _reset_engine()
+    return proc
 
 
 def _direct_settings(settings: dict) -> dict:
@@ -2723,9 +2993,12 @@ def _launch_direct(
     snapshot = _snapshot_dir(repo)
     settings = server_settings([repo])
     stamp = _launch_stamp(engine, settings, repo)
+    alias = model_aliases().get(repo)
+    # Never the snapshot's path: the engine lists what --model was given.
+    name = alias or model_info.served_name(repo)
     command = engine.command(
         engine.program(APP_DIR),
-        snapshot,
+        name,
         engine.port,
         settings=_direct_settings(settings),
         performance=performance_flags(repo)[0],
@@ -2733,10 +3006,13 @@ def _launch_direct(
         anthropic=anthropic,
     )
     root = APP_DIR / "engines" / engine.id / "run"
-    key = engine.new_key()
+    # The default model keeps one key while it starts at login, so clients stay set up.
+    key = login_agent.client_key(sys.modules[__name__], engine.id, repo) or engine.new_key()
     env = engine.environment(root, key)
+    engines.link_model(root, name, snapshot)
     engine_runtime.write_key(_key_file(), key)
     STATE.server_started_with = stamp
+    STATE.server_name, STATE.server_alias = name, alias
     STATE.server_engine, STATE.server_port = engine.id, engine.port
     STATE.server_snapshot, STATE.server_verdict = str(snapshot), None
     STATE.server_anthropic = engine.anthropic and anthropic
@@ -2899,6 +3175,13 @@ def _stop_server_locked() -> None:
         STATE.server_stopping = False
 
 
+def _saved_name(data: dict, key: str) -> str | None:
+    """A served name from the pidfile, only if the app could have written it."""
+    name = data.get(key)
+    bad = model_info.alias_problem(name, longest=model_info.SERVED_NAME_MAX)
+    return None if bad else name
+
+
 def restore_server_state() -> None:
     """Adopt a background server left running by a previous app session."""
     path = _server_pidfile()
@@ -2911,15 +3194,16 @@ def restore_server_state() -> None:
         return
     pid = data.get("pid")
     engine = engines.get(data.get("engine"))
-    extra = {}
+    name = _saved_name(data, "name")  # none in a pidfile written by 2.0.13
+    extra = {"name": name}
     if engine is not None and engine.direct:
-        extra = {"direct": engine.identity(data.get("snapshot"))}
-    if (
-        engine is None
-        or not engine.selectable
-        or not isinstance(pid, int)
-        or not _is_our_server(pid, data.get("repo"), data.get("started"), data.get("port"), **extra)
-    ):
+        extra = {"direct": engine.identity(name or data.get("snapshot"))}
+    ours = False
+    if engine is not None and engine.selectable and isinstance(pid, int):
+        ours = _is_our_server(pid, data.get("repo"), data.get("started"), data.get("port"), **extra)
+    if ours is None:
+        return  # ps did not answer: the file stays, and a later state poll asks again
+    if not ours:
         log_app("info", "dropped a stale api server pidfile", pid=pid)
         _clear_server_pidfile()
         _reset_engine()
@@ -2932,6 +3216,8 @@ def restore_server_state() -> None:
         STATE.server_anthropic = data.get("anthropic") is True
     STATE.server_pid = pid
     STATE.server_identity = data.get("started")
+    STATE.server_name = name
+    STATE.server_alias = _saved_name(data, "alias") if name else None
     STATE.server_repo = data.get("repo")
     repos = data.get("repos")
     known = isinstance(repos, list) and repos and all(isinstance(n, str) for n in repos)
@@ -2950,6 +3236,28 @@ def restore_server_state() -> None:
     threading.Thread(
         target=_watch_server, args=(pid, STATE.server_repo or "?", None), daemon=True
     ).start()
+
+
+def adopt_late_server() -> None:
+    """Adopt a server the login start recorded after this app's launch check.
+
+    Asked with each state poll, so it never waits and never judges a pidfile
+    while a start or stop is at work, or one that is still being written.
+    """
+    if STATE.server_pid or STATE.server_pending or not _server_pidfile().is_file():
+        return
+    if not STATE.server_lock.acquire(blocking=False):
+        return
+    try:
+        if STATE.server_pid or STATE.server_pending:
+            return
+        try:
+            json.loads(_server_pidfile().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        restore_server_state()
+    finally:
+        STATE.server_lock.release()
 
 
 # --------------------------------------------------------------------------- #
@@ -2998,7 +3306,7 @@ def _read_loadtest() -> list[dict]:
 
 
 def _save_loadtest(record: dict) -> None:
-    """Store one run, keeping the last few of each model."""
+    """Store one run, keeping the last few of each model and engine."""
     runs = _read_loadtest()
     for at, run in enumerate(runs):
         if run["id"] == record["id"]:
@@ -3006,11 +3314,7 @@ def _save_loadtest(record: dict) -> None:
             break
     else:
         runs.append(record)
-    kept, seen = [], {}
-    for run in reversed(runs):
-        seen[run["repo"]] = seen.get(run["repo"], 0) + 1
-        if seen[run["repo"]] <= LOADTEST_RUNS_KEPT:
-            kept.insert(0, run)
+    kept = loadtest_compare.trim_history(runs, LOADTEST_RUNS_KEPT)
     text = json.dumps({"runs": kept})
     while kept and len(text.encode("utf-8")) > LOADTEST_RESULT_BYTES:
         del kept[0]
@@ -3236,7 +3540,9 @@ def start_loadtest(
             APP_DIR.mkdir(parents=True, exist_ok=True)
             workdir = Path(tempfile.mkdtemp(prefix="loadtest-run-", dir=APP_DIR))
             job, env = _loadtest_job(repo, sizes, run_id, workdir, engine.id, thinking)
-            where, after = {}, "--max-tokens"
+            # ``python -m`` imports from the working directory, which the MLX server
+            # inherits: a fresh private one, never wherever the app was started.
+            where, after = {"cwd": str(workdir)}, "--max-tokens"
             if engine.direct:
                 where = {"cwd": job["server_dir"]}
                 run["pids"] = {"repo": repo, "engine": engine.id, "snapshot": job["snapshot"]}
@@ -3490,7 +3796,129 @@ def loadtest_view(repo: str) -> dict:
         "load_test": values,
         "thinking": thinking_support(repo),
         "blocked": blocked,
+        "compare": loadtest_compare.side_by_side(_stored_runs(repo), repo),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Saved chats: ``chats/`` in the app's private folder. Their text is never logged.
+# --------------------------------------------------------------------------- #
+def saved_chats() -> chat_store.ChatStore:
+    return chat_store.ChatStore(APP_DIR / "chats")
+
+
+# What each page chat last saved, in memory: ``screen -> (named by the page, saved as)``.
+UNSEEN: collections.OrderedDict = collections.OrderedDict()
+UNSEEN_MAX = 32
+UNSEEN_LOCK = threading.Lock()
+
+
+def _page_save(save: dict, screen) -> dict:
+    """Where this send is to be saved.
+
+    A page whose ``done`` event was lost still names the chat as it was before that save.
+    Its next send continues the saved chat: no "changed in another window", no second copy.
+    """
+    named = (save.get("id"), save.get("updated"))
+    screen = screen if isinstance(screen, str) and 0 < len(screen) <= 64 else None
+    target = {"id": named[0], "updated": named[1], "named": named, "screen": screen}
+    with UNSEEN_LOCK:
+        last = UNSEEN.get(screen)
+    if last and last[0] == named:
+        try:
+            saved_chats().current(*last[1])
+        except chat_store.ChatError:
+            return target  # deleted or changed since: as the page names it
+        target.update(id=last[1][0], updated=last[1][1], retry=True)
+    return target
+
+
+def _chat_extras(body: dict) -> tuple[str, dict, dict | None]:
+    """``(system, settings, save)`` sent with a message; ChatError if unusable.
+
+    ``save`` is None for a temporary chat and while history is switched off.
+    """
+    system, own = chat_store.clean_extras(body.get("system", ""), body.get("settings", {}))
+    save = body.get("save")
+    if save is None:
+        return system, own, None
+    if not isinstance(save, dict):
+        raise chat_store.Invalid("save must name the chat")
+    if ui_settings()["save_history"] != "on":
+        return system, own, None
+    save = _page_save(save, body.get("screen"))
+    if save["id"] is not None:  # a lost or stale chat is said before the model is asked
+        saved_chats().current(save["id"], save["updated"])
+    return system, own, save
+
+
+def _split_reply(reasoning: str, content: str) -> tuple[str, str]:
+    """``(thinking, answer)``, as the screen splits them (``splitReply`` in app.js)."""
+    text = content.lstrip()
+    if text.startswith("<think>"):
+        thought, _, answer = text[len("<think>") :].partition("</think>")
+        return (reasoning + thought).strip(), answer.lstrip()
+    return reasoning.strip(), content
+
+
+def _save_turn(repo: str, messages: list[dict], extras: tuple, reply: dict, done: dict) -> dict:
+    """Save an answered or stopped turn; what to add to the ``done`` event."""
+    system, own, save = extras
+    thinking, answer = _split_reply(reply["reasoning"], reply["token"])
+    if save is None or not answer.strip():
+        return {}
+    turns = [{k: m[k] for k in ("role", "content", "files") if k in m} for m in messages]
+    turns.append(
+        {
+            "role": "assistant",
+            "content": answer,
+            "thinking": thinking,
+            "stats": done.get("stats") or {},
+            "stopped": bool(done.get("stopped")),
+        }
+    )
+    kept = {"model": repo, "system": system, "settings": own}
+    try:
+        if save["id"] is None:
+            chat = saved_chats().create(turns, **kept)
+        else:
+            chat = saved_chats().append(
+                save["id"], save["updated"], turns, whole=True, retry="retry" in save, **kept
+            )
+    except chat_store.ChatError as exc:
+        return {"save_error": f"This reply was not saved: {exc}."}
+    if screen := save["screen"]:
+        with UNSEEN_LOCK:
+            UNSEEN[screen] = (save["named"], (chat["id"], chat["updated"]))
+            UNSEEN.move_to_end(screen)
+            while len(UNSEEN) > UNSEEN_MAX:
+                UNSEEN.popitem(last=False)
+    return {"chat": saved_chats().summary(chat)}
+
+
+def chat_change(name: str, body: dict) -> tuple[int, dict]:
+    """The POST routes under ``/api/chats/``: ``(status, answer)``."""
+    store = saved_chats()
+    chat_id = body.get("id")
+    try:
+        if name in ("delete", "delete-all") and body.get("confirm") is not True:
+            return 400, {"error": "confirm must be true"}
+        if name == "search":
+            return 200, store.search(body.get("query"))
+        if name == "rename":
+            return 200, store.summary(store.rename(chat_id, body.get("title")))
+        if name == "settings":
+            system, own = chat_store.clean_extras(body.get("system"), body.get("settings"))
+            chat = store.update(chat_id, body.get("updated"), system=system, settings=own)
+            return 200, store.summary(chat)
+        if name == "delete":
+            store.delete(chat_id)
+            return 200, {"ok": True}
+        if name == "delete-all":
+            return 200, store.delete_all()
+    except chat_store.ChatError as exc:
+        return exc.status, {"error": str(exc)}
+    return 404, {"error": "unknown chat action"}
 
 
 # --------------------------------------------------------------------------- #
@@ -3506,6 +3934,7 @@ REPO_ROUTES = frozenset(
         "/api/reveal",
         "/api/server/start",
         "/api/loadtest/start",
+        "/api/models/alias",
     }
 )
 
@@ -3514,6 +3943,33 @@ class BadBody(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def autostart_change(path: str, body: dict) -> tuple[int, dict]:
+    """Set or clear the default model, or switch start at login. Nothing starts now."""
+    app = sys.modules[__name__]
+    repo, engine = body.get("repo"), body.get("engine", "mlx")
+    anthropic, enabled = body.get("anthropic", True), body.get("enabled")
+    if path.endswith("/default"):
+        if not (isinstance(repo, str) and isinstance(engine, str) and type(anthropic) is bool):
+            return 400, {"error": "repo, engine and anthropic (true or false) required"}
+    elif path == "/api/autostart" and type(enabled) is not bool:
+        return 400, {"error": "enabled must be true or false"}
+    with AUTOSTART_LOCK:
+        try:
+            if path.endswith("/default"):
+                login_agent.set_default(app, repo, engine, anthropic)
+            elif path.endswith("/clear"):
+                login_agent.clear_default(app)
+            elif enabled:
+                login_agent.enable(app)
+            else:
+                login_agent.disable(app)
+        except engine_runtime.Refused as exc:
+            return 409, {"error": str(exc)}
+        except OSError as exc:
+            return 500, {"error": f"could not save the start at login choice: {exc.strerror}"}
+        return 200, login_agent.status(app)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3682,8 +4138,37 @@ class Handler(BaseHTTPRequestHandler):
             self._reject(403, BAD_TOKEN)
             return
 
+        answer = DOWNLOAD_ROUTES.get(path, query)
+        if answer is not None:
+            self._json(*answer)
+            return
         if path == "/api/state":
+            adopt_late_server()
             self._json(STATE.snapshot())
+            return
+        if path == "/api/autostart":
+            self._json(login_agent.status(sys.modules[__name__]))
+            return
+        if path == "/api/projects" or path.startswith("/api/projects/"):
+            code, answer = project_routes.handle_get(sys.modules[__name__], path, query)
+            self._json(answer, code)
+            return
+        if path in feature_routes.GET_ROUTES:
+            code, answer = feature_routes.handle_get(sys.modules[__name__], path)
+            self._json(answer, code)
+            return
+        if path in ("/api/chats", "/api/chats/get"):
+            try:
+                if path == "/api/chats":
+                    self._json(saved_chats().list())
+                else:
+                    self._json(saved_chats().get((query.get("id") or [""])[0]))
+            except chat_store.ChatError as exc:
+                self._json({"error": str(exc)}, exc.status)
+            return
+        if path == "/api/server/test":
+            code, answer = connection_test_result()
+            self._json(answer, code)
             return
         if path == "/api/models":
             self._json({"models": installed_models()})
@@ -3773,6 +4258,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "repo required (a string)"}, 400)
             return
 
+        if path in feature_routes.POST_ROUTES:
+            code, answer = feature_routes.handle_post(sys.modules[__name__], path, body)
+            self._json(answer, code)
+            return
+
         if path == "/api/chat":
             messages = body.get("messages")
             if not (
@@ -3780,14 +4270,35 @@ class Handler(BaseHTTPRequestHandler):
                 and messages
                 and all(
                     isinstance(m, dict)
-                    and isinstance(m.get("role"), str)
+                    and m.get("role") in ("user", "assistant")
                     and isinstance(m.get("content"), str)
                     for m in messages
                 )
             ):
                 self._json({"error": "messages required: a list of {role, content}"}, 400)
                 return
-            self._stream_chat(repo, messages)
+            try:
+                extras = _chat_extras(body)
+                app = sys.modules[__name__]
+                saved = project_routes.saved_messages(app, body)
+                send, keep, limits = project_routes.prepare(
+                    app, repo, messages, extras[0], extras[1], saved
+                )
+            except chat_store.ChatError as exc:
+                self._json({"error": str(exc)}, exc.status)
+                return
+            self._stream_chat(repo, send, extras, keep, limits)
+            return
+
+        if path.startswith("/api/projects/"):
+            name = path.removeprefix("/api/projects/")
+            code, answer = project_routes.handle_post(sys.modules[__name__], name, body)
+            self._json(answer, code)
+            return
+
+        if path.startswith("/api/chats/"):
+            code, answer = chat_change(path.removeprefix("/api/chats/"), body)
+            self._json(answer, code)
             return
 
         if path == "/api/chat/stop":
@@ -3872,12 +4383,14 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 deleting = repo in STATE.deleting
                 testing = STATE.testing()
-                if not (deleting or testing):
+                # Asked under the lock an install is reserved with.
+                installing = _install_refusal(engines.get(engine))
+                if not (deleting or testing or installing):
                     STATE.server_pending.append(repo)
                     ticket = STATE.server_stops
-            if deleting or testing:
+            if deleting or testing or installing:
                 gone = "the model is being deleted. Choose another model, then press Start."
-                why = gone if deleting else LOADTEST_BUSY
+                why = gone if deleting else LOADTEST_BUSY if testing else installing
                 self._json({"error": why}, 409)
                 return
             threading.Thread(
@@ -3913,6 +4426,51 @@ class Handler(BaseHTTPRequestHandler):
                 return
             except OSError as exc:
                 self._json({"error": f"could not save the settings: {exc.strerror}"}, 500)
+                return
+            self._json({"ok": True})
+            return
+
+        if path in AUTOSTART_PATHS:
+            code, answer = autostart_change(path, body)
+            self._json(answer, code)
+            return
+
+        if path == "/api/server/test":
+            code, answer = start_connection_test()
+            self._json(answer, code)
+            return
+
+        if path == "/api/ui/settings":
+            if problem := _ui_change_problem(body):
+                self._json({"error": problem}, 400)
+                return
+            try:
+                save_ui(body)
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            except OSError as exc:
+                self._json({"error": f"could not save the settings: {exc.strerror}"}, 500)
+                return
+            if "theme" in body:
+                retheme_window(body["theme"])
+            self._json({"ok": True})
+            return
+
+        if path == "/api/models/alias":
+            alias = body.get("alias", False)  # absent is not "remove"
+            if alias is not None and not isinstance(alias, str):
+                self._json({"error": "alias required: a name, or an empty one to remove"}, 400)
+                return
+            try:
+                problem = save_alias(repo, alias)
+            except ValueError as exc:
+                problem = str(exc)
+            except OSError as exc:
+                self._json({"error": f"could not save the alias: {exc.strerror}"}, 500)
+                return
+            if problem:
+                self._json({"error": problem}, 400)
                 return
             self._json({"ok": True})
             return
@@ -4004,7 +4562,10 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.deleting.discard(repo)
 
     # -- SSE chat -------------------------------------------------------- #
-    def _stream_chat(self, repo: str, messages: list[dict]) -> None:
+    def _stream_chat(
+        self, repo: str, messages: list[dict], extras: tuple, keep: list[dict], limits: dict
+    ) -> None:
+        """``limits`` are the settings asked with; ``extras`` holds the user's, which are saved."""
         stop = threading.Event()
         busy = _chat_problem(repo)
         with STATE.lock:
@@ -4028,9 +4589,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
-            with contextlib.closing(stream_chat(repo, messages, stop)) as reply:
+            parts = {"token": "", "reasoning": ""}
+            own = {
+                name: value
+                for name, value in zip(("system", "own"), (extras[0], limits), strict=True)
+                if value
+            }
+            asked = stream_chat(repo, messages, stop, **own)
+            with contextlib.closing(asked) as reply:
                 for kind, payload in reply:
-                    emit(kind, payload)
+                    if kind in parts:
+                        parts[kind] += payload
+                    added = {}
+                    if kind == "done":  # saved first: the event names the saved chat
+                        added = _save_turn(repo, keep, extras, parts, payload)
+                    emit(kind, {**payload, **added} if added else payload)
                     if kind == "done":
                         log_activity(
                             "chat",
@@ -4185,6 +4758,92 @@ def adopt_bundle_identity() -> None:
         log_app("warning", "could not set the app icon", error=str(exc)[:200])
 
 
+# --------------------------------------------------------------------------- #
+# Appearance of the app window. The page follows it through prefers-color-scheme.
+# --------------------------------------------------------------------------- #
+def apply_native_theme(theme: str) -> None:
+    """Window, title bar, dialogs and page in light or dark; "system" follows macOS.
+
+    Main thread only. Cosmetic, so a failure is only logged.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import (
+            NSAppearance,
+            NSAppearanceNameAqua,
+            NSAppearanceNameDarkAqua,
+            NSApplication,
+        )
+
+        name = {"light": NSAppearanceNameAqua, "dark": NSAppearanceNameDarkAqua}.get(theme)
+        appearance = NSAppearance.appearanceNamed_(name) if name else None
+        NSApplication.sharedApplication().setAppearance_(appearance)
+    except Exception as exc:
+        log_app("warning", "could not set the appearance", error=str(exc)[:200])
+
+
+def _appearance_theme(appearance) -> str:
+    from AppKit import NSAppearanceNameAqua, NSAppearanceNameDarkAqua
+
+    names = [NSAppearanceNameAqua, NSAppearanceNameDarkAqua]
+    best = appearance.bestMatchFromAppearancesWithNames_(names)
+    return "light" if best == NSAppearanceNameAqua else "dark"
+
+
+def window_background(theme: str) -> str:
+    """The colour the window opens with, so that Light does not flash dark first."""
+    if theme not in WINDOW_BACKGROUNDS:
+        try:
+            from AppKit import NSApplication
+
+            theme = _appearance_theme(NSApplication.sharedApplication().effectiveAppearance())
+        except Exception:
+            theme = "dark"
+    return WINDOW_BACKGROUNDS[theme]
+
+
+def follow_window_background(window) -> None:
+    """Give the window a colour that changes with its appearance.
+
+    pywebview sets one fixed colour; ``before_show`` runs on the main thread, once
+    the native window exists.
+    """
+
+    def colour(appearance):
+        from AppKit import NSColor
+
+        value = WINDOW_BACKGROUNDS[_appearance_theme(appearance)]
+        red, green, blue = (int(value[at : at + 2], 16) / 255 for at in (1, 3, 5))
+        return NSColor.colorWithSRGBRed_green_blue_alpha_(red, green, blue, 1.0)
+
+    def paint() -> None:
+        try:
+            from AppKit import NSColor
+
+            dynamic = NSColor.colorWithName_dynamicProvider_("MLXStudioBackground", colour)
+            window.native.setBackgroundColor_(dynamic)
+        except Exception as exc:
+            log_app("warning", "could not set the window colour", error=str(exc)[:200])
+
+    try:
+        window.events.before_show += paint
+    except Exception as exc:
+        log_app("warning", "could not set the window colour", error=str(exc)[:200])
+
+
+def retheme_window(theme: str) -> None:
+    """Apply a new choice to an open app window; browser mode needs nothing."""
+    if STATE.window is None:
+        return
+    try:
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(apply_native_theme, theme)
+    except Exception as exc:
+        log_app("warning", "could not set the appearance", error=str(exc)[:200])
+
+
 class LocalServer(ThreadingHTTPServer):
     """The stdlib server looks the host's name up between bind and listen. On a
     Mac with slow name lookup that takes tens of seconds, and nothing here uses
@@ -4203,6 +4862,9 @@ def serve() -> ThreadingHTTPServer:
 
 
 def main() -> None:
+    # The login item: one headless server start. No window, no web server.
+    if login_agent.FLAG in sys.argv[1:]:
+        sys.exit(login_agent.login_start(sys.modules[__name__]))
     if not UI_DIR.exists():
         print(f"UI directory missing: {UI_DIR}")
         sys.exit(1)
@@ -4241,6 +4903,7 @@ def main() -> None:
     threading.Thread(target=worker_check_versions, daemon=True).start()
     log_activity("app", "-", "info", f"{APP_NAME} {APP_VERSION} launched")
     restore_server_state()
+    login_agent.refresh(sys.modules[__name__])  # the app may have moved
     restore_loadtest()
 
     # At debug level pywebview logs the window address, which holds the token.
@@ -4249,14 +4912,17 @@ def main() -> None:
         import webview
 
         adopt_bundle_identity()
+        theme = ui_settings()["theme"]
+        apply_native_theme(theme)
         STATE.window = webview.create_window(
             f"{APP_NAME} {APP_VERSION}",
             launch_url(),
             width=1360,
             height=900,
             min_size=(1080, 720),
-            background_color="#0f1115",
+            background_color=window_background(theme),
         )
+        follow_window_background(STATE.window)
         webview.start()
     except Exception as exc:
         # A library error may quote the address it was loading.

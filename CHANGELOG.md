@@ -3,6 +3,90 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.14] — 2026-11-28
+
+Not released as the latest version: pre-release build; the latest release, 2.0.13, has none
+of these changes. The update manifest still points at 2.0.13.
+
+### Read before you use it
+
+- The built-in MLX server still has **no password**, and there is still no memory limit.
+- Not in 2.0.14: a built-in agent harness (a model cannot write files or run commands),
+  image input or generation, and video.
+- A message with attached files names them, and their saved text goes to the model
+  again with later messages. With **Save history** on, that text is stored as plain text
+  in the chat file.
+- With a model alias on the MLX engine, clients must send the alias or `default_model`.
+  Other cached models are no longer found by name; a folder path in a request can still
+  load other files.
+- Going back to 2.0.13: switch start at login off and press **Stop** first. 2.0.13 would
+  not recognise a server started with a model name, and aliases are lost on its next
+  settings save.
+
+### Added
+- Set a default model and start its server at Mac login (off by default; OptiQ only,
+  because it can require a password). The key then stays the same, so tools are set up once.
+- Chat history. Chats are saved on this Mac by default (**Save history**) as plain text in
+  `~/.mlx_studio/chats`, in files only your user account can read. Open, search, rename and
+  delete them under **History**; a **Temporary** chat is never saved. Nothing expires, and
+  Delete is not a secure erase. A later save also adds the turns on screen that the saved
+  chat lacks (sent while saving was off, or after a failed save); those turns have no
+  thinking text or figures and carry the later time.
+- Chat settings for one chat: system prompt, max reply tokens, temperature and top p.
+  An empty number uses the Configuration value.
+- Appearance on Setup: System, Light or Dark.
+- **Test Connection** on API Server: one short reply and one tool call (never run).
+- A warning in Test Connection when a tool call holds the text "null" as a value. It
+  only detects this; replies are not changed.
+- Project files in Chat, read only: choose a folder in the app window, preview the exact
+  text, then attach it to a message.
+- Model alias: a short name for a model, shown across the app and used by the server.
+  With OptiQ and no alias the served name is the model's short name, not its folder path.
+- A new Download screen: one filtered list, Hugging Face search, sizes checked for the
+  cards on screen.
+- Memory and speed on API Server (measured values only).
+- Load Test: the last MLX and OptiQ runs of a model side by side.
+- **Install or update all** and **Check GitHub for a new release** on Setup.
+
+### Fixed
+- Test Connection no longer fails in the app window when a model takes over a minute,
+  keeps keyboard focus, and announces its result.
+- An MLX server start is refused when another program already uses the port.
+- An MLX server left running by an earlier session is no longer shown as ready when its
+  model failed to load, and the MLX load test now runs in its own private folder.
+- The start-at-login switch looks disabled when it cannot be used, an older status can no
+  longer overwrite a change, and a running Test Connection survives a missed check or a
+  page reload.
+- With attached files, the capped reply limit applies to that request only and is no
+  longer saved as the chat's setting.
+- Turns made while saving was off or after a failed save are no longer lost from a saved
+  chat, and the save warning stays until a save succeeds.
+- When a save answer is lost, the next send from the same screen continues the saved chat
+  instead of failing or making a second copy: the same question replaces the unseen turn,
+  another question keeps both. The app remembers this for its last 32 screens, until it
+  restarts. **Save** on chat settings can still say "changed in another window" until the
+  next send.
+- Messages with attached files name them, and opening such a chat announces that their
+  text is sent again.
+- **Remove attached files** and the two new Setup buttons keep keyboard focus.
+- The MLX server cannot be started while packages install, and **Install or update all**
+  does not run if a server start got in first.
+- The Install or update all list is refreshed when an engine changes, and asked again
+  after a failed request.
+- A process check that times out no longer drops the record of a running API server.
+
+### Changed
+- The saved Hugging Face token is sent only to download a gated or private model, not for
+  model search or public downloads.
+
+### What was and was not tried
+- One Mac (Apple M6, 32 GB), through the app's functions, not its window, on an earlier
+  2.0.14 commit (`021fa56`): alias names on both engines, the OptiQ key checks and Test
+  Connection with one 7B model, and the name used without an alias with two models.
+- Not tried: a real logout and login, the real folder dialog, real packages through
+  Install or update all, a real GitHub release check, a screen reader. The newer screens
+  were looked at only in a browser with mock or made-up data.
+
 ## [2.0.13] — 2026-11-28
 
 The latest release since 2026-11-28. The 2.0.9 app has none

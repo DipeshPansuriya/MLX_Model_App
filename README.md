@@ -19,6 +19,9 @@ available.
 > [what is no longer protected](#protections-removed-in-2013) before you use it.
 > Text that says **2.0.9** describes that older release ([CHANGELOG](CHANGELOG.md)).
 > The screenshots show an earlier version.
+>
+> **2.0.14 is not released.** Text marked **2.0.14** describes the source of that
+> version; see [what it adds and its limits](#2014-unreleased-limits).
 
 ![Chat view](screenshots/02-chat-loaded.png)
 
@@ -178,6 +181,51 @@ own. Earlier releases load a second copy for Chat.
 - One reply at a time. A failed turn, or a reply that is only thinking, is removed
   from the history.
 
+#### Saved chats and chat settings
+In the 2.0.14 source (unreleased).
+
+- **Save history** (under **History**) is on by default. Each chat is saved after a
+  reply as a plain text file in `~/.mlx_studio/chats`, readable only by your user
+  account. Anyone who can read your files can read it.
+- **History** lists saved chats: open, search titles and messages, rename, delete
+  one or all. Nothing expires. Delete removes the file; it is not a secure erase.
+- **Temporary** saves nothing. Switching it starts a new chat.
+- With **Save history** off, nothing new is saved. After you turn it on again, the
+  next save also adds the turns on screen that the saved chat lacks; those have no
+  thinking text or figures and carry the later time. A chat that was never saved is
+  saved whole by the next reply, unless it is Temporary.
+- A reply that fails or holds only thinking is not saved. If a save fails, Chat says so
+  until a save succeeds, and the next save adds the missing turns.
+- If the answer to a save is lost, the next send from the same screen continues the
+  saved chat: the same question replaces the unseen turn, another question keeps both.
+  The app remembers this for its last 32 screens, until it restarts. Saving chat
+  settings can say "changed in another window" until that next send.
+- **Chat settings** apply to one chat: system prompt, max reply tokens (64 to
+  131072), temperature (0 to 2) and top p (0.05 to 1). An empty number uses the
+  **Configuration** value. For a saved chat, **Save** stores them with it.
+
+#### Project files (read only, 2.0.14)
+Open **Project files** on the Chat page, press **Choose folder…**, tick files,
+**Preview chosen files**, then **Attach to next message**.
+
+- Needs the app window (browser mode has no folder picker) and a running API server.
+- The app writes and runs nothing in the folder. Your home folder, the folders that
+  hold it, system folders and private folders such as `Library` and `.ssh` are
+  refused. Links are not followed.
+- Names that usually hold secrets (for example `.env*`, `*.pem`, `*.key`, `.git`) are
+  never listed or read. The list cannot be complete, and the key warnings in the
+  preview do not catch every secret: **read the preview**.
+- Limits: 256 KB per file, 50 files and about 8,192 estimated tokens of file text per
+  message. With files attached, the reply limit of that request is capped (your saved
+  setting is unchanged) and the oldest turns may be left out. A file changed after the
+  preview is refused.
+- With **Save history** on, the attached file text is saved in the chat file as plain
+  text until you delete the chat.
+- Each message with attached files names them. Their saved text **goes to the model
+  again** with later messages, also in a reopened chat, which announces this.
+- With the MLX engine the server has no password: see
+  [protections removed](#protections-removed-in-2013).
+
 ### Models
 - Card per cached model with its size on disk, repo id and folder path.
 - **Reveal** (opens the folder in Finder), **Copy model
@@ -185,8 +233,15 @@ own. Earlier releases load a second copy for Chat.
 - Delete is refused while the model is served, starting or
   downloading.
 - A partial download shows **incomplete** with **Resume download**.
+- 2.0.14: **Set alias** / **Change alias** gives a model a short name. Cards and model
+  lists show the alias with the real id, and **Copy model name** copies the alias. A
+  running server takes it after **Apply changes**. With the MLX engine, clients must
+  then send the alias or `default_model`, not the old id. Rules and limits:
+  [Model alias](docs/ENGINES.md#model-alias-2014).
 
 ### Download
+Up to 2.0.13:
+
 - **Best for your Mac**: 25 `mlx-community` models, each rated against this
   machine's unified memory (`great fit`, `good fit`, `tight fit`, `too large`)
   from the 4-bit weight size. The rating does not include context memory.
@@ -196,6 +251,18 @@ own. Earlier releases load a second copy for Chat.
   come from the parameter count; missing details show as unknown.
 - Progress counted in bytes, current file name, **Cancel**, and an Active
   Downloads section that starts collapsed and shows count and progress. Cancelling inside a Xet-backed file was not tested.
+
+In **2.0.14** the screen changes:
+
+- One **Models** list opens with the recommended picks. One filter covers fit (**Best
+  for Mac**, great, good, tight), use (code, reasoning, fast) and task.
+- **Search**, or **More from Hugging Face**, adds `mlx-community` results (matching
+  picks first, then by download count, up to 80 from the Hub). **Recommended only**
+  goes back. If Hugging Face cannot be reached, the picks still show.
+- Sizes are checked for cards on screen. A fit filter hides models whose size is not
+  checked yet, and says how many.
+- Search and size requests send no Hugging Face token. A download asks without it
+  first; your saved token is used only for a gated or private model.
 
 ### API Server
 Since 2.0.13.
@@ -213,6 +280,29 @@ Since 2.0.13.
   the command line and start time still match.
 - If the server dies, the view shows a banner with **Restart** and records the
   event. See [the API Server card](#the-api-server-card).
+
+In **2.0.14**:
+
+- **Test Connection** sends a ready server a short reply and one tool call, and shows
+  a result for each. The tool call is never run. A slow model may take over a minute;
+  the page keeps checking. One pass does not prove tools always work.
+- **"null" warning:** if that test's tool call holds the text `"null"` (or a word like
+  it) as a value, the result is a warning. It **only detects**: replies are not
+  changed, normal chats and other clients' requests are not checked, and no warning
+  does not prove the model never does it.
+- **Memory and speed:** this Mac's memory and pressure, the server process's memory,
+  the speed of the last Chat reply in this app and of a saved load test. Measured
+  values only; a missing one shows as unknown. Requests from other apps are not measured.
+- **Start at login** (off by default): in the installed app, choose a model and
+  **OptiQ**, press **Set as default model**, then turn the switch on. The server
+  starts at your next Mac login, without a window.
+  - **OptiQ only.** It needs a password, and the built-in MLX server has no password
+    support, so it is not offered.
+  - One key is kept for that model while the switch is on. Switching it off removes
+    the key file, but **a running server keeps that key until you press Stop**.
+  - A login item you turn off in macOS System Settings is not detected by the app.
+  - Turn the switch off before you delete the app or go back to an older version.
+  - [How it works](docs/ENGINES.md#start-at-login-2014).
 
 ### Configuration
 Since 2.0.13. Replaces the Settings box on the API Server card.
@@ -272,6 +362,10 @@ OptiQ has passed with a real model; other sizes and MLX have not been tried.** [
   settings used, with earlier runs. Old results are tagged **stale**. A size can
   no longer be applied to the config: MLX has no setting for it.
 
+- 2.0.14, **MLX and OptiQ side by side:** compares the last finished run of each
+  engine for one model, size by size. Better figures are marked only when both runs
+  can be compared; otherwise the reasons are listed. It does not run the two tests for you.
+
 ### Activity
 - Filterable log of chats, loads, downloads, deletes, installs and server events.
 - **Export diagnostics** downloads a zip of the log folder plus an environment
@@ -283,6 +377,29 @@ OptiQ has passed with a real model; other sizes and MLX have not been tried.** [
   configured, the app manifest.
 - **Install / Update** runs pip with the pinned `mlx`, `mlx-lm` and
   `huggingface-hub` 2.4.0 versions; a newer installed version is kept.
+
+In **2.0.14**:
+
+- **Install or update all:** lists what would change for the pinned packages and the
+  installable engines (OptiQ), asks you to confirm, then checks, installs, updates and
+  verifies, stopping at the first failure. It can be a large download. Stop the API
+  server first; it cannot run during a load test or another install.
+- **Check GitHub for a new release:** asks GitHub only when you press it. Nothing is
+  downloaded; a newer release gets an **Open release page** button.
+- **Appearance:** System (default, follows macOS), Light or Dark.
+
+---
+
+## 2.0.14 (unreleased) limits
+
+| Topic | State in the 2.0.14 source |
+|---|---|
+| Release | Not released. `APP_VERSION` is 2.0.14; the update manifest still points at 2.0.13 |
+| Agent harness | None built in: a model cannot write files or run commands. Project files are read only. The DeepSeek Harness settings are only text you copy into that separate tool |
+| Image | No image input or image generation |
+| Video | None |
+| MLX server | Still no password. No start at login |
+| Real use | One run on one Mac checked alias names, the OptiQ key and Test Connection through the app's functions, not its window. A real Mac logout and login, the folder dialog, Install or update all with real packages and the GitHub release check were not tried |
 
 ---
 
@@ -374,6 +491,10 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 works too. **Any other name makes `mlx_lm` load that model in its place**, from the
 local cache or from a local folder path. The app starts the server offline, so
 nothing is downloaded.
+
+**2.0.14 with a [model alias](docs/ENGINES.md#model-alias-2014):** use the alias or
+`default_model`. Other cached models are no longer found by name, but a folder path
+in a request can still load other files. Without an alias, the paragraph above holds.
 
 ## Protections removed in 2.0.13
 
@@ -547,7 +668,8 @@ source the MLX server on 8080 has no such checks and no key; see
 [protections removed](#protections-removed-in-2013). There is no user
 authentication: other programs on the same Mac can use both ports, and in released
 builds one can fetch `/` on 8765 to read the token. Chat prompts are not written to
-the activity log.
+the activity log; saved chats are separate files
+([Saved chats](#saved-chats-and-chat-settings)) and are not in the diagnostics export.
 
 **Since 2.0.10:** `/` no longer holds the token (it goes to the
 window in the URL fragment), every `Origin` header is checked, and replies carry a
@@ -609,6 +731,9 @@ which any local program can fetch, so it is not user authentication. Since
 | POST | `/api/install` `{kind}` | `install` \| `update` \| `reinstall` |
 | POST | `/api/logs/clear` | Delete the activity log files |
 
+2.0.14 adds routes for saved chats, project files, aliases, Test Connection, start at
+login, model sizes, install all and the release check: [docs/API.md](docs/API.md).
+
 ---
 
 ## Storage
@@ -625,6 +750,9 @@ which any local program can fetch, so it is not user authentication. Since
 | User settings | `~/.mlx_studio/settings.json` |
 | Load test results | `~/.mlx_studio/loadtest.json` |
 | Last models that started | `~/.mlx_studio/server.last.json` |
+| Saved chats (2.0.14) | `~/.mlx_studio/chats/` |
+| Project folder list (2.0.14) | `~/.mlx_studio/projects.json` |
+| Start at login (2.0.14) | `~/.mlx_studio/default-model.json`, `autostart.key`, `login-start.json`; `~/Library/LaunchAgents/com.mlxstudio.app.login-server.plist` |
 
 Logs rotate at 2 MB with three backups (`server.log` before a background start).
 The folder is `0700`. The activity, application, launch and server logs are

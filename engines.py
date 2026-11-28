@@ -7,12 +7,79 @@ them through the same methods. A planned engine has no command and no install.
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 
 import engine_runtime as runtime
+import model_info
 import optiq_engine
 
 NOT_AVAILABLE = "Not available"
+
+
+# --------------------------------------------------------------------------- #
+# Served names, by file layout only: no wrapper and no proxy
+# --------------------------------------------------------------------------- #
+def _check_name(name: str) -> None:
+    if model_info.alias_problem(name, longest=model_info.SERVED_NAME_MAX):
+        raise runtime.Refused(f"Not served: {name!r} cannot be used as a model name.")
+
+
+def link_model(folder: Path, name: str, snapshot: Path) -> None:
+    """Make ``folder/name`` a link to ``snapshot``.
+
+    A server started in ``folder`` with ``--model name`` lists and answers to ``name``.
+    The links of earlier starts are removed; nothing else ever is.
+    """
+    _check_name(name)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for entry in folder.iterdir():
+        if entry.is_symlink() and entry.name.lower() not in model_info.RESERVED_NAMES:
+            entry.unlink()
+    target = folder / name
+    if os.path.lexists(target):
+        raise runtime.Refused(
+            f"Not served: {target} is in the way. Remove it or choose another alias."
+        )
+    target.symlink_to(os.path.abspath(snapshot), target_is_directory=True)
+
+
+def alias_cache(root: Path, name: str, snapshot: Path) -> tuple[Path, Path]:
+    """``(Hub cache holding only name, empty folder to run in)``, both under ``root``.
+
+    mlx_lm lists and loads a cached model by its cache folder's name, so this is the
+    whole alias. Each entry is a link to a file of ``snapshot``, which is only read.
+    The folder is built anew at each start.
+    """
+    _check_name(name)
+    if snapshot.parent.name != "snapshots":
+        raise runtime.Refused("Not served: this model is not in the model cache.")
+    hub, run = root / "hub", root / "run"
+    for folder in (root, run):
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        folder.chmod(0o700)
+    if hub.is_symlink() or run.is_symlink():
+        raise runtime.Refused(f"Not served: remove the links in {root}.")
+    # mlx_lm takes a file or folder here, with the model's name, for the model.
+    if any(run.iterdir()):
+        raise runtime.Refused(f"Not served: {run} must be empty. Remove what is in it.")
+    if hub.exists():
+        shutil.rmtree(hub)  # removes links, never what they point to
+    entry = hub / f"models--{name}"
+    view = entry / "snapshots" / snapshot.name
+    view.mkdir(mode=0o700, parents=True)
+    (entry / "refs").mkdir()
+    (entry / "refs" / "main").write_text(snapshot.name, encoding="utf-8")
+    # One link per file: the cache's own links are relative and would break if the
+    # snapshot folder as a whole were linked.
+    for folder, folders, files in os.walk(snapshot):
+        here = view / os.path.relpath(folder, snapshot)
+        here.mkdir(exist_ok=True)
+        linked = [n for n in folders if os.path.islink(os.path.join(folder, n))]
+        for item in [*files, *linked]:
+            (here / item).symlink_to(os.path.realpath(os.path.join(folder, item)))
+    return hub, run
 
 
 class Engine:
@@ -116,15 +183,18 @@ class Optiq(Engine):
     def check_model(self, repo: str, snapshot: Path) -> None:
         optiq_engine.check_model(repo, snapshot)
 
-    def command(self, program, snapshot, port, **options) -> list[str]:
-        return optiq_engine.command(program, snapshot, port, **options)
+    def command(self, program, model, port, **options) -> list[str]:
+        return optiq_engine.command(program, model, port, **options)
 
     def environment(self, root: Path, key: str) -> dict[str, str]:
         return optiq_engine.environment(root, key)
 
-    def identity(self, snapshot) -> str:
-        """The part of the command line that shows a process is this server."""
-        return f" -m optiq.cli serve --model {snapshot} --host "
+    def identity(self, model) -> str:
+        """The part of the command line that shows a process is this server.
+
+        ``model`` is what ``--model`` was given: a served name, or a snapshot folder.
+        """
+        return f" -m optiq.cli serve --model {model} --host "
 
     def new_key(self) -> str:
         return runtime.new_key()

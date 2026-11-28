@@ -336,6 +336,8 @@ different process. Without both guards a restart produced a false
 **Adoption.** `restore_server_state()` runs at startup: if the pidfile names a
 live pid it is adopted, so a background server survives an app restart instead of
 colliding on port 8080.
+In 2.0.14, when `ps` times out or cannot run, nothing is proved: the pidfile stays
+and a later state poll asks again.
 
 The foreground stop is logged once, by the pump that observes the process exit —
 not by the stop endpoint. Logging in both places produced duplicate entries and

@@ -36,6 +36,7 @@ function element(selector) {
     querySelectorAll(s) { return buttons(this, s); },
     appendChild(c) { this.children.push(c); return c; },
     prepend(c) { this.children.unshift(c); return c; },
+    replaceChildren(...c) { this.children = c; },
     remove() { this.removed = true; },
     click() {},
     focus() { ctx.document.activeElement = this; },
@@ -85,6 +86,7 @@ const refuse = () => { if (boot.storageBroken) throw new Error("storage is off")
 const sessionStorage = {
   getItem(k) { refuse(); return stored.get(k) ?? null; },
   setItem(k, v) { refuse(); stored.set(k, String(v)); },
+  removeItem(k) { refuse(); stored.delete(k); },
 };
 const location = { hash: boot.hash || "", pathname: "/", search: "" };
 const replaced = [];
@@ -108,6 +110,7 @@ const ctx = {
     getElementById: (id) => get(`#${id}`),
     createElement: (tag) => element(`<${tag}>${Math.random()}`),
     body: element("body"),
+    documentElement: element("html"),
     listeners: {},
     addEventListener(name, fn) { this.listeners[name] = fn; },
   },

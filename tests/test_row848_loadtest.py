@@ -545,6 +545,24 @@ class TestApiRun:
         assert app.STATE.loadtest is None
         app.STATE.server_proc = app.STATE.server_pid = None
 
+    def test_an_mlx_run_starts_in_its_own_empty_folder(self, api, monkeypatch):
+        """``python -m`` imports from the working directory: never the app's own."""
+        app = api.module
+        real, seen = app.subprocess.Popen, []
+
+        def popen(command, *args, **kwargs):
+            if command == app._loadtest_command():
+                cwd = Path(kwargs.get("cwd") or os.getcwd())
+                seen.append((cwd, sorted(p.name for p in cwd.iterdir())))
+            return real(command, *args, **kwargs)
+
+        monkeypatch.setattr(app.subprocess, "Popen", popen)
+        assert api.start((4096,))[0] == 200
+        api.finished()
+        [(cwd, files)] = seen
+        assert cwd.parent == app.APP_DIR and cwd.name.startswith("loadtest-run-")
+        assert files == ["runner.log"]
+
     def test_a_failed_run_logs_the_tail_and_removes_its_files(self, api):
         api.mode = "load-failed"
         api.start((4096,))

@@ -12,8 +12,21 @@ const state = {
   // The model the user chats with, and whether the server can be asked.
   chatModel: "",
   chatStatus: "",
+  chatRef: null, // {id, updated} of the saved chat on screen
+  screenKey: "", // names this chat on screen to the app, so a lost answer saves no copy
+  unsaved: false, // the saved chat on screen lacks turns
+  chatBusy: false, // its settings are being saved
+  saveHistory: "on",
+  historySaving: 0,
+  historyRows: new Map(),
+  historySeq: 0,
+  openSeq: 0,
+  renameId: "",
   catalog: null,
   search: null,
+  aliases: {}, // repo to its saved alias
+  aliasRepo: "", // the model the alias editor is open for
+  aliasSaving: false,
   searchSeq: 0,
   downloadsOpen: false,
   lastServerRunning: false,
@@ -35,6 +48,16 @@ const state = {
   serverSending: false,
   lastApplyNotice: null,
   view: "",
+  // Test Connection: of the server with this pid, while it runs or what it found.
+  test: { pid: null, running: false, result: null, error: "" },
+  // Start at login: what the app last said, and for which server it was asked.
+  autostart: null,
+  autostartAt: null,
+  autostartBusy: false,
+  autostartError: "",
+  autostartChanges: 0,
+  theme: "system", // as last saved
+  themeSaving: 0, // while a choice is being saved, polls may still carry the old one
   // The Configuration page: whose values it shows, and each field as it was loaded.
   config: { repo: "", view: null, loaded: {}, seq: 0 },
   // The Load Test page: the model, its figures and what the user chose.
@@ -69,7 +92,8 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error || msg; } catch (_) {}
-    throw new Error(msg);
+    // answered: the app said no, unlike a request that never got through.
+    throw Object.assign(new Error(msg), { answered: true });
   }
   return res.json();
 }
@@ -139,9 +163,18 @@ async function copyText(text) {
 
 const COPY_LABEL = "Copy model name";
 
-// The full repo id is what API clients send as "model".
+// What API clients send as "model": the alias if there is one, else the repo id.
+// The name a client must send now: until Apply changes, a running server still
+// answers to what it was started with, not to a newly saved alias.
+function clientName(repo) {
+  const server = state.snapshot?.server;
+  if (!server?.running || !(server.repos || []).includes(repo)) return aliasOf(repo) || repo;
+  return (repo === server.repo && server.alias) || repo;
+}
+
 function copyButton(repo) {
-  return `<button class="btn btn-mini btn-ghost" type="button" data-copy="${esc(repo)}" aria-label="${COPY_LABEL} ${esc(repo)}">${COPY_LABEL}</button>`;
+  const name = clientName(repo);
+  return `<button class="btn btn-mini btn-ghost" type="button" data-copy="${esc(name)}" aria-label="${COPY_LABEL} ${esc(name)}">${COPY_LABEL}</button>`;
 }
 
 // One listener for every card, including cards drawn later.
@@ -214,9 +247,44 @@ function refreshState() {
   return state.refreshing;
 }
 
+/* ───────────── appearance ───────────── */
+const THEMES = ["system", "light", "dark"];
+
+// The app window takes the colours from its native appearance; data-theme does the
+// same in a browser. "System" leaves both to macOS.
+function paintTheme(theme) {
+  state.theme = THEMES.includes(theme) ? theme : "system";
+  const root = document.documentElement;
+  if (state.theme === "system") delete root.dataset.theme;
+  else root.dataset.theme = state.theme;
+  for (const name of THEMES) $(`#theme-${name}`).checked = name === state.theme;
+}
+
+async function chooseTheme(theme) {
+  const before = state.theme;
+  state.themeSaving += 1;
+  paintTheme(theme);
+  try {
+    await api("/api/ui/settings", { method: "POST", body: JSON.stringify({ theme }) });
+  } catch (err) {
+    paintTheme(before);
+    toast(`Could not save the appearance: ${err.message}`, true);
+  } finally {
+    state.themeSaving -= 1;
+  }
+  refreshState();
+}
+
 function render(snap) {
   state.snapshot = snap; // what the Start areas read about installs
   const { app, hardware, python, versions, models, server, downloads, install } = snap;
+  // Before anything is drawn: every screen names a model through these.
+  state.aliases = Object.fromEntries(
+    models.filter((m) => m.alias).map((m) => [m.repo, m.alias]));
+  if (state.aliasRepo && !models.some((m) => m.repo === state.aliasRepo)) hideAlias();
+
+  if (!state.themeSaving) paintTheme(snap.ui?.theme);
+  if (!state.historySaving) paintSaveHistory(snap.ui?.save_history);
 
   // sidebar
   setText($("#appVersion"), `v${app.version}`);
@@ -368,12 +436,14 @@ function render(snap) {
   // A Restart button goes away with its notice: leave the focus on something that stays.
   if (held === $("#serverRestartBtn") && $("#serverNotice").hidden) spareControl().focus();
   renderToolsWarning(server);
+  paintTest(server);
+  watchAutostart(server);
   renderModelCards(models, server, downloads);
   renderDownloads(downloads);
   renderCatalog();
-  renderSearch();
   renderConfigPage(server);
   renderLoadTest(snap);
+  globalThis.renderFeatures?.(snap);
   paintEngineCards(install);
 }
 
@@ -397,6 +467,11 @@ function setPkg(valId, pillId, current, target, missing) {
 /* ───────────── the API Server card ───────────── */
 const MAX_SERVER_MODELS = 1;
 const shortName = (repo) => String(repo || "").split("/").pop();
+const aliasOf = (repo) =>
+  (Object.hasOwn(state.aliases, repo) ? state.aliases[repo] : "");
+// A short title, and a label for places with room for the actual name as well.
+const displayName = (repo) => aliasOf(repo) || shortName(repo);
+const modelLabel = (repo) => (aliasOf(repo) ? `${aliasOf(repo)} (${repo})` : repo);
 const runningSet = (server) =>
   server?.repos?.length ? server.repos : server?.repo ? [server.repo] : [];
 // Order does not make a different choice.
@@ -581,8 +656,11 @@ function paintClientSettings(picked) {
   const engine = running ? engineInfo(runningEngine()) : picked;
   const direct = !!engine?.direct;
   const base = `http://127.0.0.1:${(direct ? engine.port : 8080) || 8080}`;
-  // Both engines call the model they were started with default_model.
-  const model = "default_model";
+  // What a running server answers to; before a start, what the chosen model would get.
+  // Without an alias, default_model: both engines call their start model that.
+  const [chosen = ""] = running ? runningSet(server) : serverSet();
+  const alias = running ? server.alias || "" : aliasOf(chosen);
+  const model = alias || "default_model";
   const keyed = direct && running && server.ready;
   $("#copyKey").hidden = !keyed;
   $("#curlExample").hidden = direct;
@@ -590,17 +668,42 @@ function paintClientSettings(picked) {
   -H "Content-Type: application/json" \\
   -d '{"model":"${model}","messages":[{"role":"user","content":"Hello!"}]}'`);
   $("#mlxModelHint").hidden = direct;
+  setText($("#mlxModelHint"), (alias
+    ? `Send the model name ${alias} or default_model. While an alias is set the server ` +
+      "lists only this model, and other cached models are not found by name. A folder " +
+      "path can still make it load other files."
+    : "Send the model name default_model. Another name makes the MLX server load that " +
+      "model instead.") + " No password: any program on this Mac, and a website open in " +
+    "your browser, can send it requests while it runs.");
   $("#mlxOpenWarn").hidden = direct;
-  setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
-    (direct ? "press Copy key (new at every start)" : "not needed"));
+  const auto = state.autostart;
+  const stable = direct && !!auto?.key_in_use;
+  const keyWords = !direct ? "not needed"
+    : stable ? "press Copy key (kept for start at login)" : "press Copy key (new at every start)";
+  setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ${keyWords}`);
+  const saved = running && auto?.enabled && auto.default?.repo === chosen &&
+    auto.default?.engine === runningEngine();
+  $("#keyUse").hidden = !direct;
+  setText($("#keyUse"), [
+    "Send the key as the header Authorization: Bearer <key> or x-api-key. Claude Code reads " +
+      "it from ANTHROPIC_AUTH_TOKEN; in DeepSeek Harness put it in this provider's API key " +
+      "field. Keep it in the tool's own secret setting or an environment variable, never in " +
+      "a shared file.",
+    stable ? "This key stays the same while start at login is on for this model, so set your " +
+      `tool up once. It is also in the file ${auto.key_file}.`
+      : saved ? "Press Stop, then Start Server, to use the saved start at login key." : "",
+  ].filter(Boolean).join(" "));
   $("#connectPanel").hidden = !running;
-  setText($("#connectState"), running && !server.ready
-    ? "The server is still starting. Use these settings once it is ready." : "");
+  const waiting = running && aliasOf(chosen) !== (server.alias || "");
+  setText($("#connectState"), [
+    running && !server.ready
+      ? "The server is still starting. Use these settings once it is ready." : "",
+    waiting ? "The saved alias is not in use yet: press Apply changes." : "",
+  ].filter(Boolean).join(" "));
   const typed = Number($("#dshContext").value);
   const context = Number.isInteger(typed) && typed > 0 ? typed : null;
   setText($("#dshSettings"), `Type: OpenAI compatible\nBase URL: ${base}/v1\nModel: ${model}\n` +
-    `Context window: ${context ?? "(type a number above)"}\nAPI key: ` +
-    (direct ? "press Copy key (new at every start)" : "not needed"));
+    `Context window: ${context ?? "(type a number above)"}\nAPI key: ${keyWords}`);
   $("#copyDsh").disabled = !context;
   const claude = direct && (running ? !!server.anthropic : anthropicWanted());
   setText($("#claudeSettings"), claude
@@ -659,7 +762,8 @@ async function copyServerKey() {
   try {
     const { key } = await api("/api/server/key", { method: "POST", body: "{}" });
     await navigator.clipboard.writeText(key);
-    toast("Key copied. It changes at every start.");
+    toast(state.autostart?.key_in_use ? "Key copied. It is kept for start at login."
+      : "Key copied. It changes at every start.");
   } catch (err) {
     toast(err.message || "The key was not copied. Press Copy key again.", true);
   }
@@ -705,7 +809,7 @@ function wireEngines() {
 }
 
 function runningNames(server) {
-  return `Running — ${runningSet(server).map(shortName).join(" and ")}`;
+  return `Running — ${runningSet(server).map(displayName).join(" and ")}`;
 }
 
 /* ───────────── configuration page ───────────── */
@@ -862,7 +966,7 @@ async function chooseConfigModel(value) {
   if (configDirty() && !confirm("Discard your unsaved changes?")) {
     paintConfigPick();
     await null; // the list says "Selected" when this first returns
-    setText($("#configModelSelectStatus"), `Kept ${state.config.repo || ALL_MODELS}.`);
+    setText($("#configModelSelectStatus"), `Kept ${modelLabel(state.config.repo) || ALL_MODELS}.`);
     return;
   }
   state.config.repo = repo;
@@ -940,7 +1044,7 @@ async function saveConfig() {
 
 async function resetConfig() {
   const { view, repo } = state.config;
-  if (!view || !confirm(`Clear every value saved for ${repo || ALL_MODELS}?`)) return;
+  if (!view || !confirm(`Clear every value saved for ${modelLabel(repo) || ALL_MODELS}?`)) return;
   try {
     await postSettings({ reset: true, ...(repo ? { repo } : {}) });
   } catch (err) {
@@ -971,6 +1075,7 @@ function setLoadTestModel(repo) {
   ltError("");
   setHTML($("#ltSizes"), "");
   setHTML($("#ltResults"), "");
+  globalThis.renderCompare?.(null);
   setText($("#ltRange"), "");
   $("#ltOutcome").hidden = true;
 }
@@ -1010,6 +1115,7 @@ function paintLoadTest() {
     `This model takes ${min} to ${max} tokens. Up to ${LT_MAX_SIZES} sizes in one test.`);
   paintLoadTestControls();
   paintResults();
+  globalThis.renderCompare?.(view.compare);
 }
 
 // The settings' sizes, the ones used last and the ones typed now.
@@ -1096,7 +1202,7 @@ function paintProgress(run) {
   const cancelling = run.status === "cancelling";
   const where = run.size ? `, size ${run.index} of ${run.of} (${run.size} tokens)` : "";
   const phase = cancelling ? "Stopping the test…"
-    : `Testing ${run.repo}${where}: ${run.step || "starting"}.`;
+    : `Testing ${modelLabel(run.repo)}${where}: ${run.step || "starting"}.`;
   setText($("#ltStep"), phase);
   setText($("#ltAnnounce"), phase);
   const reading = !cancelling && run.total > 0;
@@ -1317,7 +1423,8 @@ function paintServerCard() {
 
   const list = $("#serverModelList");
   const drawn = setHTML(list, set.map((repo) =>
-    `<li><span class="model-name" title="${esc(repo)}">${esc(shortName(repo))}</span>` +
+    `<li><span class="model-name" title="${esc(repo)}">${esc(displayName(repo))}</span>` +
+    (aliasOf(repo) ? `<span class="model-id">${esc(repo)}</span>` : "") +
     `<button class="btn btn-mini btn-ghost" type="button" data-remove="${esc(repo)}" ` +
     `aria-label="Remove ${esc(repo)}">×</button></li>`).join(""));
   if (drawn) {
@@ -1404,7 +1511,7 @@ function addServerModel() {
   if (!repo || set.includes(repo) || set.length >= MAX_SERVER_MODELS) return;
   showAddPicker(false);
   editServerSet([...set, repo]);
-  setText($("#serverSetStatus"), `Added ${shortName(repo)}.`);
+  setText($("#serverSetStatus"), `Added ${displayName(repo)}.`);
   const add = $("#serverAddBtn");
   const row = Array.from($("#serverModelList").querySelectorAll("[data-remove]"))
     .find((btn) => btn.dataset.remove === repo);
@@ -1413,7 +1520,7 @@ function addServerModel() {
 
 function removeServerModel(repo) {
   editServerSet(serverSet().filter((other) => other !== repo));
-  setText($("#serverSetStatus"), `Removed ${shortName(repo)}.`);
+  setText($("#serverSetStatus"), `Removed ${displayName(repo)}.`);
   const next = $("#serverModelList").querySelectorAll("[data-remove]")[0];
   (serverSet().length && next ? next : $("#serverAddBtn")).focus();
 }
@@ -1431,9 +1538,188 @@ function renderToolsWarning(server) {
   if (!warn) return;
   const verified = Object.keys(support).find((r) => support[r]);
   setText($("#serverToolsWarnText"),
-    (repos.length > 1 ? `${without.map(shortName).join(", ")}: ` : "") +
+    (repos.length > 1 ? `${without.map(displayName).join(", ")}: ` : "") +
     "Agent clients will not get tool calls from it; they may show them as plain text." +
-    (verified ? ` For tool use, choose ${verified}.` : ""));
+    (verified ? ` For tool use, choose ${modelLabel(verified)}.` : ""));
+}
+
+/* ───────────── start at login ───────────── */
+// Asked when the page is shown and when the running server changes.
+function watchAutostart(server) {
+  if (state.view !== "server") {
+    state.autostartAt = null;
+    return;
+  }
+  const at = `${server?.pid} ${!!server?.ready}`;
+  if (state.autostartAt === at) return;
+  state.autostartAt = at;
+  loadAutostart();
+}
+
+async function loadAutostart() {
+  const before = state.autostartChanges;
+  let found;
+  try {
+    found = await api("/api/autostart");
+  } catch (_) {
+    state.autostartAt = null; // asked again with the next poll
+    return;
+  }
+  // Read before or during a change: it must not overwrite what the change answered.
+  if (state.autostartBusy || before !== state.autostartChanges) {
+    state.autostartAt = null;
+    return;
+  }
+  state.autostart = found;
+  paintAutostart();
+  paintServerCard();
+}
+
+// Why the switch cannot be turned on. It can always be turned off.
+function autostartBlock(auto) {
+  if (!auto) return "Reading…";
+  if (auto.enabled) return "";
+  if (!auto.available) return auto.unavailable_reason;
+  if (!auto.default) return "Choose a default model first: pick it above, then press Set as default model.";
+  return auto.autostart_refusal || "";
+}
+
+function paintAutostart() {
+  const auto = state.autostart;
+  const block = autostartBlock(auto);
+  const chosen = auto?.default;
+  $("#setDefault").setAttribute("aria-disabled", String(state.autostartBusy));
+  $("#autostartSwitch").checked = !!auto?.enabled;
+  $("#autostartSwitch").setAttribute("aria-disabled", String(state.autostartBusy || !!block));
+  setText($("#defaultState"), !auto ? "" : !chosen ? "No default model."
+    : `Default model: ${modelLabel(chosen.repo)} (${chosen.engine === "mlx" ? "MLX"
+      : engineInfo(chosen.engine)?.name || chosen.engine}). Its saved server settings apply.`);
+  setText($("#autostartWhy"), block || (auto.enabled
+    ? "On: the server starts at your next login." : "Off: nothing starts at login."));
+  setText($("#autostartNote"), auto?.password_note || "");
+  const last = auto?.last;
+  setText($("#autostartLast"), last
+    ? `Last login start (${last.at}): ${last.result}${last.reason ? `. ${last.reason}` : ""}` : "");
+  setText($("#autostartProblem"), state.autostartError || auto?.problem || "");
+}
+
+async function changeAutostart(path, body) {
+  if (state.autostartBusy) return;
+  Object.assign(state, { autostartBusy: true, autostartError: "" });
+  paintAutostart();
+  try {
+    state.autostart = await api(path, { method: "POST", body: JSON.stringify(body) });
+  } catch (err) {
+    state.autostartError = err.message;
+  }
+  state.autostartBusy = false;
+  state.autostartChanges += 1;
+  paintAutostart();
+  paintServerCard();
+}
+
+// The model, engine and route as the card above shows them.
+function setDefaultModel() {
+  const [repo = ""] = serverSet();
+  return changeAutostart("/api/autostart/default",
+    { repo, engine: engineId(), anthropic: anthropicWanted() });
+}
+
+function switchAutostart() {
+  const wanted = $("#autostartSwitch").checked;
+  if ($("#autostartSwitch").getAttribute("aria-disabled") === "true") {
+    paintAutostart(); // puts the box back
+    return;
+  }
+  return changeAutostart("/api/autostart", { enabled: wanted });
+}
+
+/* ───────────── test connection ───────────── */
+const TEST_POLL_MS = 1000;
+const TEST_POLL_MISSES = 5; // polls in a row that may fail before the test is given up
+const TEST_MARK = "mlx-testing"; // kept over a reload while a test is followed
+const TEST_WORDS = {
+  pass: ["ok", "Passed"], warn: ["warn", "Check"],
+  fail: ["bad", "Failed"], skipped: ["", "Not tried"],
+};
+
+function testRow(row) {
+  const [tone, word] = TEST_WORDS[row?.status] || TEST_WORDS.fail;
+  return `<span class="pill ${tone}">${word}</span> ${esc(row?.detail)}`;
+}
+
+// A result belongs to one running server: another one starts empty.
+function paintTest(server) {
+  const test = state.test;
+  const pid = server?.running && server.ready ? server.pid : null;
+  if (test.pid !== pid) {
+    Object.assign(test, { pid, result: null, error: "" });
+    if (pid !== null && !test.running && testMarked()) resumeTest();
+  }
+  // Not disabled: that would drop the keyboard focus. testConnection ignores the press.
+  $("#testBtn").setAttribute("aria-disabled", String(pid === null || test.running));
+  $("#testResults").hidden = !(test.result || (test.running && pid !== null));
+  const rows = test.result || {};
+  setHTML($("#testReply"), test.running ? "Testing…" : test.result ? testRow(rows.reply) : "");
+  setHTML($("#testTool"), test.running ? "Testing…" : test.result ? testRow(rows.tool) : "");
+  setText($("#testError"), test.error);
+}
+
+function markTest(on) {
+  try {
+    if (on) sessionStorage.setItem(TEST_MARK, "1");
+    else sessionStorage.removeItem(TEST_MARK);
+  } catch (_) { /* storage refused: a reload then forgets the test */ }
+}
+
+function testMarked() {
+  try { return !!sessionStorage.getItem(TEST_MARK); } catch (_) { return false; }
+}
+
+// Follows a test the app is still at work on: after a reload, a refused or lost
+// start, or polls that stopped getting through.
+async function resumeTest() {
+  const found = await api("/api/server/test").catch(() => null);
+  if (found?.running) await followTest(() => found);
+}
+
+async function testConnection() {
+  if (state.test.running || state.test.pid === null) return;
+  await followTest(() => api("/api/server/test", { method: "POST", body: "{}" }));
+  if (state.test.error) await resumeTest();
+}
+
+async function followTest(start) {
+  const test = state.test;
+  if (test.running || test.pid === null) return;
+  const asked = test.pid;
+  Object.assign(test, { running: true, result: null, error: "" });
+  markTest(true);
+  paintTest(state.server);
+  let result = null;
+  let error = "";
+  try {
+    result = await start();
+    // A slow model: the app keeps testing and is asked again, so no request times out.
+    let missed = 0;
+    while (result.running) {
+      await new Promise((done) => setTimeout(done, TEST_POLL_MS));
+      try {
+        result = await api("/api/server/test");
+        missed = 0;
+      } catch (err) {
+        if (err.answered || ++missed >= TEST_POLL_MISSES) throw err;
+      }
+    }
+  } catch (err) {
+    result = null;
+    error = err.message;
+  }
+  test.running = false;
+  markTest(false);
+  // An answer about a server that is gone says nothing about this one.
+  if (test.pid === asked && (!result || result.pid === asked)) Object.assign(test, { result, error });
+  paintTest(state.server);
 }
 
 function fillSelect(sel, values, current) {
@@ -1441,7 +1727,7 @@ function fillSelect(sel, values, current) {
   if (!el) return;
   const prev = el.value;
   const rebuilt = setHTML(el, values.length
-    ? values.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("")
+    ? values.map((v) => `<option value="${esc(v)}">${esc(modelLabel(v))}</option>`).join("")
     : `<option value="">No models installed</option>`);
   // Follow the app only when its model changes; otherwise keep the user's choice.
   const moved = el._current !== current;
@@ -1473,12 +1759,12 @@ function createPicker(sel, { onLeave } = {}) {
 
   function draw() {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    shown = values.filter((v) => words.every((w) => v.toLowerCase().includes(w)));
+    shown = values.filter((v) => words.every((w) => modelLabel(v).toLowerCase().includes(w)));
     if (!shown.includes(active)) {
       active = shown.includes(select.value) ? select.value : shown[0] || "";
     }
     setHTML(list, shown.length
-      ? shown.map((v, i) => `<li id="${id}-opt-${i}" role="option" aria-selected="${v === active}" class="${v === select.value ? "chosen" : ""}" data-value="${esc(v)}" title="${esc(v)}">${esc(v)}</li>`).join("")
+      ? shown.map((v, i) => `<li id="${id}-opt-${i}" role="option" aria-selected="${v === active}" class="${v === select.value ? "chosen" : ""}" data-value="${esc(v)}" title="${esc(modelLabel(v))}">${esc(modelLabel(v))}</li>`).join("")
       : `<li class="picker-empty" role="presentation">No models match</li>`);
     if (active) box.setAttribute("aria-activedescendant", `${id}-opt-${shown.indexOf(active)}`);
     else box.removeAttribute("aria-activedescendant");
@@ -1494,8 +1780,8 @@ function createPicker(sel, { onLeave } = {}) {
   function showState() {
     clear.hidden = !box.value;
     if (onLeave) return; // an "add" picker keeps no choice to show
-    setText(chosen, `Selected: ${select.value || "none"}`);
-    chosen.title = select.value;
+    setText(chosen, `Selected: ${modelLabel(select.value) || "none"}`);
+    chosen.title = modelLabel(select.value);
   }
 
   function open(text = "") {
@@ -1523,7 +1809,7 @@ function createPicker(sel, { onLeave } = {}) {
     select.value = value;
     select.dispatchEvent(new Event("change"));
     close();
-    setText(status, `Selected ${value}`);
+    setText(status, `Selected ${modelLabel(value)}`);
   }
 
   box.addEventListener("click", () => {
@@ -1603,7 +1889,7 @@ function modelCard(repo, badge, body, actions) {
     <div class="card">
       <div class="card-top">
         <div>
-          <div class="card-name">${esc(repo.split("/").pop())}</div>
+          <div class="card-name">${esc(displayName(repo))}</div>
           <div class="card-sub">${esc(repo)}</div>
         </div>
         ${badge}
@@ -1636,11 +1922,12 @@ function renderModelCards(models, server, downloads) {
     return modelCard(
       m.repo,
       badge,
-      `${metaLine(m.size_h, info.params, info.category)}
+      `${metaLine(m.size_h, info.params, info.pick)}
        ${metaLine(info.use)}
        <div class="card-path" title="${esc(m.path)}">📁 ${esc(m.path)}</div>`,
       (partial ? button("download", "Resume download", "", MAIN) : "") +
         button("reveal", "Reveal") +
+        aliasButton(m.repo) +
         copyButton(m.repo) +
         button("delete", "Delete", "btn-danger"),
     );
@@ -1650,11 +1937,63 @@ function renderModelCards(models, server, downloads) {
     wrap.querySelectorAll("[data-act]").forEach((btn) => {
       btn.addEventListener("click", () => modelAction(btn.dataset.act, btn.dataset.repo));
     });
+    wrap.querySelectorAll("[data-alias]").forEach((btn) => {
+      btn.addEventListener("click", () => openAlias(btn.dataset.alias));
+    });
   }
 }
 
+/* ───────────── model alias ───────────── */
+function aliasButton(repo) {
+  const label = aliasOf(repo) ? "Change alias" : "Set alias";
+  return `<button class="btn btn-mini" type="button" data-alias="${esc(repo)}" ` +
+    `aria-label="${label} for ${esc(repo)}">${label}</button>`;
+}
+
+// The editor is outside the cards, so a poll never clears what is typed.
+function openAlias(repo) {
+  state.aliasRepo = repo;
+  setText($("#aliasRepo"), repo);
+  $("#aliasInput").value = aliasOf(repo);
+  $("#aliasRemoveBtn").hidden = !aliasOf(repo);
+  setText($("#aliasError"), "");
+  $("#aliasPanel").hidden = false;
+  $("#aliasInput").focus();
+}
+
+function hideAlias() {
+  state.aliasRepo = "";
+  $("#aliasPanel").hidden = true;
+}
+
+// Closed by the user: the focus goes back to the button that opened it.
+function closeAlias() {
+  const repo = state.aliasRepo;
+  hideAlias();
+  Array.from($("#modelCards").querySelectorAll("[data-alias]"))
+    .find((btn) => btn.dataset.alias === repo)?.focus();
+}
+
+async function saveAlias(alias = $("#aliasInput").value.trim()) {
+  const repo = state.aliasRepo;
+  if (!repo || state.aliasSaving) return;
+  state.aliasSaving = true;
+  setText($("#aliasError"), "");
+  try {
+    await api("/api/models/alias", { method: "POST", body: JSON.stringify({ repo, alias }) });
+  } catch (err) {
+    setText($("#aliasError"), err.message);
+    return;
+  } finally {
+    state.aliasSaving = false;
+  }
+  toast(alias ? "Alias saved" : "Alias removed");
+  if (state.aliasRepo === repo) closeAlias();
+  refreshState();
+}
+
 async function modelAction(act, repo) {
-  if (act === "delete" && !confirm(`Delete ${repo} from disk?`)) return;
+  if (act === "delete" && !confirm(`Delete ${modelLabel(repo)} from disk?`)) return;
   try {
     await api(`/api/${act}`, { method: "POST", body: JSON.stringify({ repo }) });
     if (act === "delete") toast("Model deleted");
@@ -1666,84 +2005,6 @@ async function modelAction(act, repo) {
 async function refreshModels() { await refreshState(); }
 
 /* ───────────── catalogue ───────────── */
-async function loadCatalog() {
-  try {
-    const { catalog, hardware } = await api("/api/catalog");
-    state.catalog = catalog;
-    $("#catalogHardware").textContent =
-      `${hardware.chip} · ${hardware.ram} unified — rated on 4-bit weight size`;
-    renderCatalog();
-  } catch (err) { toast(err.message, true); }
-}
-
-function renderCatalog() {
-  const wrap = $("#catalogCards");
-  if (!wrap || !state.catalog) return;
-  const filter = $("#catalogFilter").value || "all";
-  const rows = state.catalog.filter((m) =>
-    filter === "all" || m.fit === filter || m.category === filter);
-  $("#catalogEmpty").hidden = rows.length > 0;
-  renderOfferCards(wrap, rows);
-}
-
-function renderSearch() {
-  if (state.search) renderOfferCards($("#searchResults"), state.search);
-}
-
-// A model that can be downloaded: recommended and search cards are the same card.
-function offerCard(m, busy, ready) {
-  const running = busy.has(m.repo);
-  const disabled = m.fit === "too-large";
-  const label = running ? "Downloading…" : disabled ? "Needs more RAM" : "Download";
-  // The snapshot is live; the catalogue flag is only used before the first one.
-  const installed = state.snapshot ? ready.has(m.repo) : m.installed;
-  const slot = `data-slot="main" data-repo="${esc(m.repo)}"`;
-  const size = !m.size_gb ? "size unknown"
-    : m.size_estimated ? `~${m.size_gb} GB (estimate)` : `${m.size_gb} GB`;
-  return modelCard(
-    m.repo,
-    fitBadge(m.fit || "unknown"),
-    `${metaLine(m.params || "params unknown", size, m.category || "category unknown")}
-       ${metaLine(m.use || "use unknown")}`,
-    (!running && installed
-      // aria-disabled keeps the focus the Download button had.
-      ? `<button class="btn btn-mini" ${slot} aria-disabled="true">Installed</button>`
-      // aria-disabled, not disabled: a busy button must keep keyboard focus.
-      : `<button class="btn btn-mini btn-primary" ${slot} data-cat-download="${esc(m.repo)}" ${disabled ? "disabled" : running ? 'aria-disabled="true"' : ""}>${label}</button>`) +
-      copyButton(m.repo),
-  );
-}
-
-function renderOfferCards(wrap, rows) {
-  // Button state comes from the latest snapshot, so a cancel or failure restores it.
-  const busy = new Set((state.snapshot?.downloads || [])
-    .filter((d) => d.status === "running").map((d) => d.repo));
-  const ready = new Set((state.snapshot?.models || [])
-    .filter((m) => m.complete !== false).map((m) => m.repo));
-  if (!setHTML(wrap, rows.map((m) => offerCard(m, busy, ready)).join(""))) return;
-
-  wrap.querySelectorAll("[data-cat-download]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (btn.getAttribute("aria-disabled") === "true") return;
-      btn.setAttribute("aria-disabled", "true");
-      btn.textContent = "Downloading…";
-      // The button no longer matches the cached markup: the next render redraws it.
-      wrap._lastHtml = null;
-      try {
-        // Switch to Download view so user can see progress
-        showView("download");
-        await api("/api/download", { method: "POST", body: JSON.stringify({ repo: btn.dataset.catDownload }) });
-        toast("Download started");
-        refreshState();
-      } catch (err) {
-        toast(err.message, true);
-        btn.removeAttribute("aria-disabled");
-        btn.textContent = "Download";
-      }
-    });
-  });
-}
-
 /* ───────────── downloads ───────────── */
 // Shown in the header, so a collapsed section still reports progress.
 function downloadSummary(downloads) {
@@ -1809,7 +2070,7 @@ function renderDownloads(downloads) {
     const changed = setHTML(card, `
       <div class="card-top">
         <div>
-          <div class="card-name">${esc(d.repo.split("/").pop())}</div>
+          <div class="card-name">${esc(displayName(d.repo))}</div>
           <div class="card-sub">${esc(d.repo)}</div>
         </div>
         <span class="card-tag ${tag}">${esc(d.status)}</span>
@@ -1829,32 +2090,6 @@ function renderDownloads(downloads) {
       });
     }
   });
-}
-
-async function doSearch(q) {
-  const wrap = $("#searchResults");
-  const seq = ++state.searchSeq; // only the newest search may draw
-  const show = (html) => { wrap._lastHtml = null; wrap.innerHTML = html; };
-  const nothing = (title, text) => {
-    show("");
-    $("#searchEmpty").hidden = false;
-    $("#searchEmpty").querySelector("h2").textContent = title;
-    $("#searchEmpty").querySelector("p").textContent = text;
-  };
-  state.search = null;
-  show(`<div class="card"><div class="card-sub">Searching…</div></div>`);
-  $("#searchEmpty").hidden = true;
-  try {
-    const { results } = await api(`/api/search?q=${encodeURIComponent(q)}`);
-    if (seq !== state.searchSeq) return;
-    if (!results.length) { nothing("No results", "Try a different query."); return; }
-    state.search = results;
-    renderSearch();
-  } catch (err) {
-    if (seq !== state.searchSeq) return;
-    nothing("Search failed", "Check the connection and try again.");
-    toast(err.message, true);
-  }
 }
 
 /* ───────────── chat model ───────────── */
@@ -1892,7 +2127,7 @@ function renderChat(server) {
   if (status === "ready") state.chatModel = chosen;
   const select = $("#chatModelSelect");
   setHTML(select, served.length
-    ? served.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("")
+    ? served.map((v) => `<option value="${esc(v)}">${esc(modelLabel(v))}</option>`).join("")
     : '<option value="">No model served</option>');
   select.value = chosen;
   const ready = status === "ready";
@@ -1915,7 +2150,7 @@ function renderChat(server) {
   if (became && idle && $("#view-chat").classList.contains("active")) input.focus();
 
   $("#globalDot").className = `dot ${dot}`;
-  setText($("#globalStatus"), ready ? served.map(shortName).join(", ")
+  setText($("#globalStatus"), ready ? served.map(displayName).join(", ")
     : server.running || server.starting ? short : "No model served");
 }
 
@@ -2031,11 +2266,37 @@ function statsLine(data) {
   ].filter(Boolean).join(" · ");
 }
 
+// A message's file text goes out again with the later messages of its chat.
+function addFiles(el, names) {
+  if (!names.length) return;
+  addMeta(el, `Attached files: ${names.join(", ")}. Their text is sent again with ` +
+    "your next messages in this chat.");
+}
+
+function addMeta(el, text) {
+  if (!text) return;
+  const meta = document.createElement("div");
+  meta.className = "msg-meta";
+  meta.textContent = text;
+  el.appendChild(meta);
+}
+
 async function sendMessage() {
   const input = $("#input");
   const text = input.value.trim();
-  if (!text || state.streaming || state.chatStatus !== "ready") return;
+  if (!text || state.streaming || state.chatBusy || state.chatStatus !== "ready") return;
   const repo = $("#chatModelSelect").value;
+  const extras = chatExtras();
+  if (extras.invalid) {
+    showChatPanel("settings");
+    extras.invalid.focus();
+    return;
+  }
+  // Absent for a temporary chat: nothing of it is saved.
+  const save = $("#chatTemporary").checked ? undefined
+    : state.chatRef ? { ...state.chatRef } : { id: null };
+  state.screenKey = state.screenKey ||
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
   input.value = "";
   input.style.height = "auto";
@@ -2043,8 +2304,12 @@ async function sendMessage() {
 
   const history = state.messages; // New chat replaces it while a reply is running
   const turn = { role: "user", content: text };
+  // typeof: this file also runs alone, without the project panel's script.
+  const attachment = typeof ProjectsUI === "object" && ProjectsUI.take();
+  if (attachment) turn.attachment = attachment;
   state.messages.push(turn);
-  addMessage("user", text);
+  const userEl = addMessage("user", text);
+  const names = attachment ? ProjectsUI.names() : [];
   let replied = false;
   setText($("#chatAnnounce"), "Assistant is replying");
 
@@ -2091,7 +2356,10 @@ async function sendMessage() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: apiHeaders(),
-      body: JSON.stringify({ repo, messages: state.messages }),
+      body: JSON.stringify({
+        repo, messages: state.messages, system: extras.system, settings: extras.settings, save,
+        screen: state.screenKey,
+      }),
     });
     if (!res.ok) {
       // Refused before anything was asked: give the typed text back.
@@ -2124,16 +2392,27 @@ async function sendMessage() {
         if (alone) notes.push("No answer came after the thinking, so it is shown here.");
         if (!answer) notes.push(stopped ? "Stopped before any reply." : "The reply was empty.");
         replyNote(assistantEl, notes.join(" "));
-        const metaEl = document.createElement("div");
-        metaEl.className = "msg-meta";
-        metaEl.textContent = statsLine(data);
-        if (metaEl.textContent) assistantEl.appendChild(metaEl);
+        addMeta(assistantEl, statsLine(data));
+        // Only for the chat still on screen: New chat may have replaced it.
+        if (state.messages === history) {
+          // A warning stays until a later save succeeds.
+          if (data.chat) {
+            state.chatRef = { id: data.chat.id, updated: data.chat.updated };
+            state.unsaved = false;
+            setText($("#chatSaveError"), "");
+          } else {
+            if (save && answer && !alone) state.unsaved = true;
+            if (data.save_error) setText($("#chatSaveError"), data.save_error);
+          }
+        }
+        if (data.chat && !$("#historyPanel").hidden) loadHistory();
         // A turn with no answer is dropped below, like a failed one: an empty reply,
         // or thinking alone, which the model must not take for what it answered.
         unanswered = alone;
         if (answer && !alone) {
           if (state.messages === history) history.push({ role: "assistant", content: answer });
           replied = true;
+          addFiles(userEl, names);
         }
       } else if (ev === "error") {
         fail(data);
@@ -2146,6 +2425,8 @@ async function sendMessage() {
     // A turn without a reply would break role alternation on every later send.
     const at = state.messages.indexOf(turn);
     if (!replied && at !== -1) state.messages.splice(at, 1);
+    // Refused, unreachable or unanswered: the files wait for the next try.
+    if (!replied && typeof ProjectsUI === "object") ProjectsUI.restore();
     wait.hidden = true;
     body.classList.remove("cursor");
     setText($("#chatAnnounce"),
@@ -2156,8 +2437,370 @@ async function sendMessage() {
     $("#sendBtn").hidden = false;
     $("#stopBtn").hidden = true;
     if (held) $("#input").focus();
+    paintSaveState();
     refreshState();
   }
+}
+
+/* ───────────── saved chats ───────────── */
+// Chat text, titles and file names are drawn as text nodes only, never as markup.
+// field, key, lowest, highest, whole number, name
+const CHAT_SETTINGS = [
+  ["#chatMaxTokens", "max_tokens", 64, 131072, true, "Max reply tokens"],
+  ["#chatTemp", "temperature", 0, 2, false, "Temperature"],
+  ["#chatTopP", "top_p", 0.05, 1, false, "Top p"],
+];
+// button, panel, what takes the focus
+const CHAT_PANELS = {
+  history: ["#historyBtn", "#historyPanel", "#historySave"],
+  settings: ["#chatSettingsBtn", "#chatSettingsPanel", "#chatSystem"],
+};
+const REPLY_RUNS = "Wait for the reply to end, or press Stop,";
+
+const post = (body) => ({ method: "POST", body: JSON.stringify(body) });
+
+// What the settings panel asks for; an empty field leaves the Configuration value.
+// invalid is the first field that cannot be sent.
+function chatExtras() {
+  const settings = {};
+  let invalid = null;
+  let problem = "";
+  for (const [field, key, low, high, whole, name] of CHAT_SETTINGS) {
+    const input = $(field);
+    const text = String(input.value).trim();
+    const value = Number(text);
+    const bad = !!input.validity?.badInput
+      || (!!text && !(value >= low && value <= high && (!whole || Number.isInteger(value))));
+    input.setAttribute("aria-invalid", String(bad));
+    if (bad) {
+      invalid ||= input;
+      problem ||= `${name} must be ${whole ? "a whole number " : ""}from ${low} to ${high}.`;
+    } else if (text) settings[key] = value;
+  }
+  setText($("#chatSettingsError"), problem);
+  return { system: $("#chatSystem").value, settings, invalid };
+}
+
+function fillSettings(chat) {
+  $("#chatSystem").value = chat?.system || "";
+  for (const [field, key] of CHAT_SETTINGS) {
+    $(field).value = String(chat?.settings?.[key] ?? "");
+    $(field).removeAttribute("aria-invalid");
+  }
+  setText($("#chatSettingsError"), "");
+  setText($("#chatSettingsState"), "");
+}
+
+async function saveChatSettings() {
+  const { system, settings, invalid } = chatExtras();
+  const say = (text) => setText($("#chatSettingsState"), text);
+  if (invalid) { say(""); invalid.focus(); return; }
+  const ref = state.chatRef;
+  if (state.saveHistory === "off" || $("#chatTemporary").checked) {
+    return say("Used from the next message. Not saved.");
+  }
+  if (!ref) return say("Used from the next message.");
+  if (state.streaming) return say("A reply is running: used from the next message.");
+  if (state.chatBusy) return;
+  state.chatBusy = true;
+  say("Saving…");
+  try {
+    const chat = await api("/api/chats/settings",
+      post({ id: ref.id, updated: ref.updated, system, settings }));
+    if (state.chatRef !== ref) return;
+    state.chatRef = { id: chat.id, updated: chat.updated };
+    say("Saved with this chat.");
+  } catch (err) {
+    if (state.chatRef !== ref) return;
+    say("");
+    setText($("#chatSettingsError"), err.message);
+  } finally {
+    state.chatBusy = false;
+  }
+}
+
+function paintSaveState() {
+  setText($("#chatSaveState"), $("#chatTemporary").checked
+    ? "Temporary chat: nothing is saved."
+    : state.saveHistory === "off"
+      ? "Saving is off: nothing new is saved. Turn Save history on under History."
+      : state.chatRef ? (state.unsaved
+        ? "Not saved yet: the next reply also saves the missing turns." : "Saved chat.")
+        : state.messages.length ? "Not saved yet: the next reply saves this whole chat."
+          : "This chat will be saved on this Mac.");
+}
+
+function paintSaveHistory(value) {
+  state.saveHistory = value === "off" ? "off" : "on";
+  $("#historySave").checked = state.saveHistory === "on";
+  paintSaveState();
+}
+
+async function chooseSaveHistory(value) {
+  const before = state.saveHistory;
+  state.historySaving += 1;
+  paintSaveHistory(value);
+  try {
+    await api("/api/ui/settings", post({ save_history: value }));
+  } catch (err) {
+    paintSaveHistory(before);
+    toast(`Could not change Save history: ${err.message}`, true);
+  } finally {
+    state.historySaving -= 1;
+  }
+  refreshState();
+}
+
+// Throws the chat on screen away; a saved one stays in History.
+function newChat() {
+  // The reply being generated belongs to that chat.
+  if (state.streaming) api("/api/chat/stop", post({})).catch(() => {});
+  state.messages = [];
+  if (typeof ProjectsUI === "object") ProjectsUI.detach();
+  state.chatRef = null;
+  state.screenKey = "";
+  state.unsaved = false;
+  state.openSeq += 1;
+  $("#messages").replaceChildren();
+  $("#chatEmpty").hidden = false;
+  fillSettings(null);
+  setText($("#chatSaveError"), "");
+  paintSaveState();
+}
+
+// name is "history", "settings" or "" for neither.
+function showChatPanel(name) {
+  for (const [key, [button, panel]] of Object.entries(CHAT_PANELS)) {
+    $(panel).hidden = key !== name;
+    $(button).setAttribute("aria-expanded", String(key === name));
+  }
+  if (!name) return;
+  $(CHAT_PANELS[name][2]).focus();
+  if (name === "history") {
+    hideRename();
+    loadHistory();
+  }
+}
+
+// Closed by the user: the focus goes back to the button that opened it.
+function closeChatPanel(name) {
+  showChatPanel("");
+  $(CHAT_PANELS[name][0]).focus();
+}
+
+const historyStatus = (text) => setText($("#historyStatus"), text);
+
+function textNode(tag, className, text = "") {
+  const el = document.createElement(tag);
+  el.className = className;
+  el.textContent = text;
+  return el;
+}
+
+function rowButton(className, text, label, onClick) {
+  const button = textNode("button", className, text);
+  button.setAttribute("type", "button");
+  button.setAttribute("aria-label", label);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function rowOf(...parts) {
+  const row = textNode("li", "history-row");
+  for (const part of parts) row.appendChild(part);
+  return row;
+}
+
+function historyRow(chat) {
+  const open = rowButton("history-open", chat.title, `Open chat: ${chat.title}`,
+    () => openChat(chat.id));
+  if (state.chatRef?.id === chat.id) open.setAttribute("aria-current", "true");
+  const meta = textNode("span", "history-meta", [
+    new Date(chat.updated).toLocaleString(),
+    `${chat.count} messages`,
+    chat.model ? displayName(chat.model) : "",
+  ].filter(Boolean).join(" · "));
+  const rename = rowButton("btn btn-mini", "Rename", `Rename chat: ${chat.title}`,
+    () => openRename(chat));
+  const remove = rowButton("btn btn-mini btn-danger", "Delete", `Delete chat: ${chat.title}`,
+    () => deleteChat(chat.id, `"${chat.title}"`));
+  state.historyRows.set(chat.id, rename);
+  return rowOf(open, meta, rename, remove);
+}
+
+function brokenRow({ id, reason }) {
+  const name = `${id}.json`;
+  return rowOf(textNode("span", "history-broken", `Broken file ${name}: ${reason}`),
+    rowButton("btn btn-mini btn-danger", "Delete", `Delete broken file ${name}`,
+      () => deleteChat(id, `the file ${name}`)));
+}
+
+async function loadHistory() {
+  const seq = ++state.historySeq;
+  const query = $("#historyQuery").value.trim();
+  try {
+    const { chats, broken } = await (query
+      ? api("/api/chats/search", post({ query })) : api("/api/chats"));
+    if (seq !== state.historySeq) return;
+    state.historyRows = new Map();
+    $("#historyList").replaceChildren(...chats.map(historyRow));
+    $("#historyBroken").replaceChildren(...broken.map(brokenRow));
+    historyStatus([
+      chats.length ? `${chats.length} saved chat(s)${query ? " match the search" : ""}.`
+        : query ? "No saved chat matches the search." : "No saved chats yet.",
+      broken.length ? `${broken.length} file(s) cannot be read.` : "",
+    ].filter(Boolean).join(" "));
+  } catch (err) {
+    if (seq === state.historySeq) historyStatus(`Could not read the saved chats: ${err.message}`);
+  }
+}
+
+async function openChat(id) {
+  if (state.streaming) return historyStatus(`${REPLY_RUNS} before opening a chat.`);
+  const seq = ++state.openSeq;
+  let chat;
+  try {
+    chat = await api(`/api/chats/get?id=${encodeURIComponent(id)}`);
+  } catch (err) {
+    return historyStatus(`Could not open the chat: ${err.message}`);
+  }
+  // A message, New chat or a later Open came first.
+  if (seq !== state.openSeq || state.streaming) return;
+  state.messages = chat.messages.map(({ role, content }) => ({ role, content }));
+  if (typeof ProjectsUI === "object") ProjectsUI.detach();
+  state.chatRef = { id: chat.id, updated: chat.updated };
+  state.screenKey = "";
+  state.unsaved = false;
+  $("#chatTemporary").checked = false;
+  $("#messages").replaceChildren();
+  $("#chatEmpty").hidden = chat.messages.length > 0;
+  for (const message of chat.messages) {
+    const reply = message.role === "assistant";
+    const el = addMessage(message.role, reply ? "" : message.content);
+    addFiles(el, (message.files || []).map((file) => file.path));
+    if (!reply) continue;
+    paintReply(el, { thinking: message.thinking || "", answer: message.content });
+    addMeta(el, statsLine(message));
+  }
+  fillSettings(chat);
+  setText($("#chatSaveError"), "");
+  paintSaveState();
+  showChatPanel("");
+  const carries = chat.messages.some((m) => m.files?.length);
+  setText($("#chatAnnounce"), `Opened chat: ${chat.title}` + (carries
+    ? ". Its attached files are sent again with your next message." : ""));
+  const input = $("#input");
+  (input.disabled ? $("#historyBtn") : input).focus();
+}
+
+function openRename(chat) {
+  state.renameId = chat.id;
+  $("#renameInput").value = chat.title;
+  setText($("#renameError"), "");
+  $("#renameForm").hidden = false;
+  $("#renameInput").focus();
+}
+
+function hideRename() {
+  state.renameId = "";
+  $("#renameForm").hidden = true;
+}
+
+function closeRename() {
+  const id = state.renameId;
+  hideRename();
+  (state.historyRows.get(id) || $("#historyQuery")).focus();
+}
+
+async function saveTitle() {
+  const id = state.renameId;
+  if (!id) return;
+  setText($("#renameError"), "");
+  try {
+    await api("/api/chats/rename", post({ id, title: $("#renameInput").value }));
+  } catch (err) {
+    return setText($("#renameError"), err.message);
+  }
+  await loadHistory();
+  if (state.renameId === id) closeRename();
+}
+
+async function deleteChat(id, name) {
+  if (!confirm(`Delete ${name}? This cannot be undone, and it is not a secure erase.`)) return;
+  try {
+    await api("/api/chats/delete", post({ id, confirm: true }));
+  } catch (err) {
+    return historyStatus(`Could not delete: ${err.message}`);
+  }
+  if (state.chatRef?.id === id) newChat();
+  if (state.renameId === id) hideRename();
+  await loadHistory();
+  $("#historyQuery").focus(); // the button that was pressed is gone
+}
+
+async function deleteAllChats() {
+  // A running reply would be saved again right after.
+  if (state.streaming) return historyStatus(`${REPLY_RUNS} before deleting all chats.`);
+  if (!confirm("Delete every saved chat? This cannot be undone, and it is not a secure erase.")) {
+    return;
+  }
+  let result;
+  try {
+    result = await api("/api/chats/delete-all", post({ confirm: true }));
+  } catch (err) {
+    return historyStatus(`Could not delete: ${err.message}`);
+  }
+  if (state.chatRef) newChat();
+  hideRename();
+  await loadHistory();
+  toast(result.failed
+    ? `${result.deleted} chat(s) deleted, ${result.failed} file(s) could not be deleted.`
+    : `${result.deleted} chat(s) deleted.`, !!result.failed);
+}
+
+function wireSavedChats() {
+  for (const [name, [button, panel]] of Object.entries(CHAT_PANELS)) {
+    $(button).addEventListener("click", () => {
+      if ($(panel).hidden) showChatPanel(name);
+      else closeChatPanel(name);
+    });
+    $(panel).addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (name === "history" && state.renameId) closeRename();
+      else closeChatPanel(name);
+    });
+  }
+  $("#historyClose").addEventListener("click", () => closeChatPanel("history"));
+  $("#chatSettingsClose").addEventListener("click", () => closeChatPanel("settings"));
+  // Switching starts a new chat, so no temporary message is ever saved afterwards.
+  $("#chatTemporary").addEventListener("change", () => {
+    if (state.messages.length || state.chatRef) newChat();
+    else paintSaveState();
+  });
+  $("#historySave").addEventListener("change",
+    () => chooseSaveHistory($("#historySave").checked ? "on" : "off"));
+  // The page's policy allows no forms: a button, and Enter in the field it belongs to.
+  const act = (button, run, ...fields) => {
+    $(button).addEventListener("click", run);
+    for (const field of fields) {
+      $(field).addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" || e.isComposing) return;
+        e.preventDefault();
+        run();
+      });
+    }
+  };
+  act("#historySearchBtn", loadHistory, "#historyQuery");
+  act("#renameSaveBtn", saveTitle, "#renameInput");
+  act("#chatSettingsSave", saveChatSettings, ...CHAT_SETTINGS.map(([field]) => field));
+  $("#historyClear").addEventListener("click", () => {
+    $("#historyQuery").value = "";
+    $("#historyQuery").focus();
+    loadHistory();
+  });
+  $("#renameCancel").addEventListener("click", closeRename);
+  $("#historyDeleteAll").addEventListener("click", deleteAllChats);
 }
 
 /* ───────────── logs ───────────── */
@@ -2313,7 +2956,7 @@ async function openStartConfirm() {
   const mode = settings.performance_mode?.value;
   const loaded = {};
   setText($("#confirmEngine"), engineInfo(engine)?.name || (engine === "mlx" ? "MLX" : engine));
-  setText($("#confirmModel"), set[0]);
+  setText($("#confirmModel"), modelLabel(set[0]));
   for (const key of CONFIRM_KEYS) {
     const input = $(`#confirm-${key}`);
     const entry = settings[key] || {};
@@ -2399,6 +3042,17 @@ async function stopServer() {
 /* ───────────── wiring ───────────── */
 function wire() {
   wireEngines();
+  globalThis.wireFeatures?.();
+  $("#testBtn").addEventListener("click", testConnection);
+  $("#setDefault").addEventListener("click", setDefaultModel);
+  $("#autostartSwitch").addEventListener("change", switchAutostart);
+  $("#autostartSwitch").addEventListener("click", (event) => {
+    // aria-disabled keeps the focus but not the box: stop it flipping.
+    if (event.target.getAttribute("aria-disabled") === "true") event.preventDefault();
+  });
+  for (const name of THEMES) {
+    $(`#theme-${name}`).addEventListener("change", () => chooseTheme(name));
+  }
   createPicker("#serverModelSelect", {
     onLeave(escaped) {
       showAddPicker(false);
@@ -2419,13 +3073,8 @@ function wire() {
     $(".nav-item.active").focus();
   });
 
-  $("#newChatBtn").addEventListener("click", () => {
-    // The reply being generated belongs to the chat that is being thrown away.
-    if (state.streaming) api("/api/chat/stop", { method: "POST", body: "{}" }).catch(() => {});
-    state.messages = [];
-    $("#messages").innerHTML = "";
-    $("#chatEmpty").hidden = false;
-  });
+  $("#newChatBtn").addEventListener("click", newChat);
+  wireSavedChats();
 
   $("#sendBtn").addEventListener("click", sendMessage);
   $("#stopBtn").addEventListener("click", async (e) => {
@@ -2450,6 +3099,14 @@ function wire() {
   $("#showAllBtn").addEventListener("click", () => { $("#searchInput").value = ""; doSearch(""); });
 
   $("#refreshModelsBtn").addEventListener("click", refreshModels);
+  $("#aliasSaveBtn").addEventListener("click", () => saveAlias());
+  $("#aliasRemoveBtn").addEventListener("click", () => saveAlias(""));
+  $("#aliasCancelBtn").addEventListener("click", closeAlias);
+  $("#aliasInput").addEventListener("keydown", (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Enter") { e.preventDefault(); return saveAlias(); }
+    if (e.key === "Escape") { e.preventDefault(); closeAlias(); }
+  });
   $("#catalogFilter").addEventListener("change", renderCatalog);
 
   $("#serverModelSelect").addEventListener("change", addServerModel);

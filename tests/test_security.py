@@ -276,7 +276,7 @@ class TestPidIdentity:
 
 class TestVersion:
     def test_release_version(self, app_module):
-        assert app_module.APP_VERSION == "2.0.13"
+        assert app_module.APP_VERSION == "2.0.14"
 
 
 # F3: exactly one Host header ------------------------------------------------ #
@@ -305,7 +305,9 @@ def test_two_host_headers_are_refused(server, app_module, method, order):
 
 # F4: every /api GET needs the token ----------------------------------------- #
 API_GETS = [
+    "/api/model-size?repo=mlx-community/x",
     "/api/state",
+    "/api/projects",
     "/api/models",
     "/api/search?q=qwen",
     "/api/logs",
@@ -334,6 +336,20 @@ def side_effects(app_module, monkeypatch):
 
 
 class TestGetNeedsTheToken:
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("GET", "/api/projects/files?id=x"),
+            ("POST", "/api/projects/choose"),
+            ("POST", "/api/projects/attach"),
+        ],
+    )
+    def test_the_project_routes_need_it(self, server, side_effects, method, path):
+        body = b"{}" if method == "POST" else None
+        sent = {"Content-Type": "application/json"}
+        assert request(server, method, path, body, headers=sent)[0] == 403
+        assert side_effects == []
+
     @pytest.mark.parametrize("sent", [{}, {"X-MLX-Token": ""}, {"X-MLX-Token": "wrong"}])
     @pytest.mark.parametrize("path", API_GETS)
     def test_refused_without_it_and_nothing_runs(self, server, side_effects, path, sent):

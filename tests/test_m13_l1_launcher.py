@@ -58,7 +58,7 @@ class Bundle:
         self.logs = self.home / ".mlx_studio" / "logs"
         self.log = self.logs / "launch.log"
 
-    def run(self, candidates: list[str]) -> subprocess.CompletedProcess:
+    def run(self, candidates: list[str], args: tuple = ()) -> subprocess.CompletedProcess:
         listed = ",".join(f'"{c}"' for c in candidates)
         subprocess.run(
             [
@@ -75,7 +75,7 @@ class Bundle:
             capture_output=True,
         )
         return subprocess.run(
-            [str(self.binary)],
+            [str(self.binary), *args],
             **self.surroundings(),
             capture_output=True,
             text=True,
@@ -124,6 +124,21 @@ def test_skips_old_or_broken_interpreters(bundle, code):
     assert bundle.run([bad, str(bundle.base / "absent"), good]).returncode == 0
     assert "ran good app.py" in bundle.text()
     assert "ran bad" not in bundle.text()
+
+
+@pytest.mark.parametrize(
+    ("args", "passed"),
+    [
+        (("--start-server-at-login",), " --start-server-at-login"),
+        (("--other",), ""),
+        (("--start-server-at-login", "--other"), ""),
+        (("-c", "print(1)"), ""),
+    ],
+)
+def test_only_the_login_argument_reaches_the_app(bundle, args, passed):
+    good = fake_python(bundle.base, "good", 20)
+    assert bundle.run([good], args).returncode == 0
+    assert f"ran good app.py{passed} in " in bundle.text()
 
 
 def test_logs_the_failure_when_nothing_is_usable(bundle):
