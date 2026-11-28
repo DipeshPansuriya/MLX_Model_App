@@ -112,11 +112,6 @@ def upstream(app_module, monkeypatch):
         httpd.server_close()
 
 
-def report(app, pid=PID, **data):
-    app.APP_DIR.mkdir(parents=True, exist_ok=True)
-    app._resident_file().write_text(json.dumps({"pid": pid, **data}), "utf-8")
-
-
 class Proc:
     pid = PID
     returncode = None
@@ -135,7 +130,7 @@ def running(app, repos=(ONE,), ready=True, owned=True):
         app._pid_alive = lambda pid: pid == PID
         app._is_our_server = lambda pid, *args, **kwargs: pid == PID
     if ready:
-        report(app, resident=list(repos), preload_done=True)
+        app.STATE.server_verdict = "ready"
 
 
 def post(base_url, path, body, headers=None):
@@ -213,7 +208,7 @@ class TestProxy:
         assert "X-MLX-Token" not in headers
         assert headers["Content-Type"] == "application/json"
         assert body == {
-            "model": ONE,
+            "model": "default_model",  # mlx_lm: the loaded model, never another
             "messages": [
                 {"role": "user", "content": "a"},
                 {"role": "assistant", "content": "b"},
@@ -243,14 +238,16 @@ class TestProxy:
         assert [d for k, d in got if k == "token"] == ["42"]
         assert got[-1][1]["truncated"] is True
 
-    def test_a_second_served_model_can_be_asked(self, app_module, upstream, base_url):
-        running(app_module, (ONE, TWO))
-        with ask(base_url, TWO) as resp:
-            resp.read()
-        assert upstream.requests[0][2]["model"] == TWO
-
-    def test_an_adopted_server_without_a_report_can_be_asked(self, app_module, upstream, base_url):
+    def test_an_adopted_server_can_be_asked_once_probed(
+        self, app_module, upstream, base_url, monkeypatch
+    ):
         running(app_module, ready=False, owned=False)
+        assert refused(base_url)[0] == 409
+        runtime = app_module.engine_runtime
+        monkeypatch.setattr(runtime, "listeners", lambda port, **k: {PID})
+        monkeypatch.setattr(runtime, "listener_is", lambda port, pid, **k: True)
+        assert app_module._probe_direct(PID, adopted=True) is None
+        assert not upstream.requests, "an adopted server is not warmed again"
         with ask(base_url) as resp:
             assert events(resp, "done")
 
@@ -271,6 +268,13 @@ class TestRefusals:
         assert "does not serve" in error
         assert not upstream.requests
 
+    def test_an_older_pair_serves_only_its_first_model(self, app_module, upstream, base_url):
+        running(app_module, (ONE, TWO))
+        body = {"repo": TWO, "messages": [{"role": "user", "content": "hi"}]}
+        code, error = refused(base_url, body=body)
+        assert code == 409 and "does not serve" in error
+        assert not upstream.requests
+
     @pytest.mark.parametrize("pending", [False, True])
     def test_starting_or_restarting(self, app_module, upstream, base_url, pending):
         running(app_module, ready=pending)
@@ -283,7 +287,7 @@ class TestRefusals:
 
     def test_a_model_that_did_not_load(self, app_module, upstream, base_url):
         running(app_module, ready=False)
-        report(app_module, events=[{"event": "load-failed", "model": ONE}])
+        app_module.STATE.server_verdict = "failed"
         code, error = refused(base_url)
         assert code == 409
         assert "could not load" in error
@@ -423,61 +427,28 @@ class TestLateReader:
         assert not upstream.requests
 
 
-class TestSnapshotAndMemory:
+class TestSnapshot:
     def view(self, app):
         return app.STATE.snapshot()["server"]
 
-    def test_ready_follows_the_servers_report(self, app_module):
+    def test_ready_follows_the_probe(self, app_module):
         assert self.view(app_module)["ready"] is False
         running(app_module, ready=False)
         assert self.view(app_module)["ready"] is False
-        report(app_module, resident=[ONE])
+        app_module.STATE.server_verdict = "ready"
         assert self.view(app_module)["ready"] is True
         assert self.view(app_module)["load_failed"] is False
 
-    def test_two_models_are_ready_after_the_preload(self, app_module):
-        running(app_module, (ONE, TWO), ready=False)
-        report(app_module, resident=[ONE])
-        assert self.view(app_module)["ready"] is False
-        report(app_module, resident=[ONE, TWO], preload_done=True)
-        assert self.view(app_module)["ready"] is True
-
     def test_load_failure_is_reported(self, app_module):
         running(app_module, ready=False)
-        report(app_module, events=[{"event": "load-failed", "model": ONE}])
+        app_module.STATE.server_verdict = "failed"
         assert self.view(app_module)["load_failed"] is True
         assert self.view(app_module)["ready"] is False
 
-    def test_a_guard_that_cannot_report_counts_as_ready(self, app_module, tmp_path):
-        running(app_module, ready=False)
-        report(app_module, report=False)
-        assert self.view(app_module)["ready"] is True
-
-    def test_the_guard_says_when_it_cannot_report(self, app_module):
-        seen = []
-        guard = app_module._guard_module()
-        guard.install_report(object(), lambda *a, **k: seen.append(k), 1)
-        assert seen == [{"report": False}]
-
-    def test_no_chat_model_in_the_snapshot_or_the_memory(self, app_module, monkeypatch):
-        monkeypatch.setattr(app_module, "hardware", lambda: {"ram_bytes": 100 * 10**9})
+    def test_no_chat_model_in_the_snapshot(self, app_module):
         assert "loaded" not in app_module.STATE.snapshot()
-        assert app_module._server_budget() == int(app_module.SERVER_RAM_FRACTION * 100 * 10**9)
         for name in ("chat_load_problem", "_publish_server_budget"):
             assert not hasattr(app_module, name)
-
-    def test_an_adopted_server_loses_an_old_chat_budget(self, app_module, monkeypatch):
-        app = app_module
-        app.APP_DIR.mkdir(parents=True, exist_ok=True)
-        app._server_pidfile().write_text(
-            json.dumps({"pid": PID, "repo": ONE, "started": "x"}), "utf-8"
-        )
-        app._budget_file().write_text("1", "utf-8")
-        monkeypatch.setattr(app, "_is_our_server", lambda *a: True)
-        monkeypatch.setattr(app, "_is_guarded", lambda pid: True)
-        monkeypatch.setattr(app, "_watch_server", lambda *a: None)
-        app.restore_server_state()
-        assert not app._budget_file().exists()
 
 
 class TestLastModelsDescriptors:
