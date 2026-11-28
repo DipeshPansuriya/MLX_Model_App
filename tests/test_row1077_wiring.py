@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import urllib.error
@@ -270,3 +271,50 @@ class TestScreen:
         for words in ("Authorization: Bearer", "ANTHROPIC_AUTH_TOKEN", "DeepSeek"):
             assert words in fresh_use and words in stable_use
         assert "stays the same" in stable_use and "/k/autostart.key" in stable_use
+
+
+# ───────────────────────── row 1093 review findings ───────────────────────────
+
+
+@pytest.mark.parametrize(
+    "change", [{"autostart": False}, {"repo": "org/another"}, {"engine": "mlx"}]
+)
+def test_the_key_is_only_called_kept_when_the_next_start_keeps_it(app_module, mac, bundle, change):
+    switch_on(app_module, bundle, "optiq")
+    app_module.worker_server_start(REPO, True, None, "optiq", True)
+    assert login_agent.status(app_module)["key_in_use"] is True
+    # The server keeps running with the stored key, but its next start would not.
+    login_agent._save(app_module, {**login_agent.read_default(app_module), **change})
+    assert login_agent.status(app_module)["key_in_use"] is False
+
+
+@pytest.fixture
+def late_server(app_module, monkeypatch):
+    """A server the login start recorded after this app had made its launch checks."""
+    for name in ("_is_our_server", "_still_our_server", "_pid_alive"):
+        monkeypatch.setattr(app_module, name, lambda *a, **k: True)
+    monkeypatch.setattr(app_module, "_watch_server", lambda *a, **k: None)
+    path = app_module._server_pidfile()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"pid": 4242, "repo": REPO, "engine": "mlx", "background": True}))
+    return path
+
+
+def test_the_open_app_adopts_a_login_server_recorded_later(app_module, late_server, base_url):
+    status, view = get(base_url, "/api/state")
+    assert status == 200 and view["server"]["pid"] == 4242
+
+
+@pytest.mark.parametrize("busy", ["start or stop", "queued start", "half written"])
+def test_a_late_server_is_left_alone_while_it_cannot_be_judged(
+    app_module, late_server, base_url, busy
+):
+    if busy == "half written":
+        late_server.write_text('{"pid": 42')
+    if busy == "queued start":
+        app_module.STATE.server_pending = True
+    held = app_module.STATE.server_lock if busy == "start or stop" else contextlib.nullcontext()
+    with held:
+        status, view = get(base_url, "/api/state")
+    assert status == 200 and view["server"]["pid"] is None
+    assert late_server.is_file()

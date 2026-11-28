@@ -3208,6 +3208,28 @@ def restore_server_state() -> None:
     ).start()
 
 
+def adopt_late_server() -> None:
+    """Adopt a server the login start recorded after this app's launch check.
+
+    Asked with each state poll, so it never waits and never judges a pidfile
+    while a start or stop is at work, or one that is still being written.
+    """
+    if STATE.server_pid or STATE.server_pending or not _server_pidfile().is_file():
+        return
+    if not STATE.server_lock.acquire(blocking=False):
+        return
+    try:
+        if STATE.server_pid or STATE.server_pending:
+            return
+        try:
+            json.loads(_server_pidfile().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        restore_server_state()
+    finally:
+        STATE.server_lock.release()
+
+
 # --------------------------------------------------------------------------- #
 # Load test (ADR-012): mlx_loadtest.py runs it; only the app writes its files
 # --------------------------------------------------------------------------- #
@@ -4056,6 +4078,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(*answer)
             return
         if path == "/api/state":
+            adopt_late_server()
             self._json(STATE.snapshot())
             return
         if path == "/api/autostart":

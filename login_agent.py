@@ -175,12 +175,16 @@ def client_key(app, engine_id: str, repo: str) -> str | None:
 
 
 def _key_in_use(app) -> bool:
-    """Whether the running server has the stored key. The key itself never leaves here."""
+    """Whether the running server's key is the one its next start will use.
+
+    False once start at login is off or another model or engine is the default.
+    The key itself never leaves here.
+    """
     engine = app._running_engine()
-    if not app.STATE.server_pid or not engine.direct or key_file(app).is_symlink():
+    if not app.STATE.server_pid or not engine.direct:
         return False
-    stored = engine.read_key(key_file(app))
-    return bool(stored) and engine.read_key(app._key_file()) == stored
+    kept = client_key(app, engine.id, app.STATE.server_repo)
+    return bool(kept) and engine.read_key(app._key_file()) == kept
 
 
 # --------------------------------------------------------------------------- #
