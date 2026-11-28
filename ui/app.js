@@ -2269,7 +2269,7 @@ function statsLine(data) {
 // A message's file text goes out again with the later messages of its chat.
 function addFiles(el, names) {
   if (!names.length) return;
-  addMeta(el, `Attached files: ${names.join(", ")}. Their saved text is sent again with ` +
+  addMeta(el, `Attached files: ${names.join(", ")}. Their text is sent again with ` +
     "your next messages in this chat.");
 }
 

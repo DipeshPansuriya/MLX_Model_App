@@ -162,6 +162,8 @@ class TestReplies:
             """,
         )
         # Row 1100: a new chat also asks to be saved, with its prompt and settings.
+        # Row 1142: and names itself, so a save whose answer is lost is not made twice.
+        assert out["sent"].pop("screen")
         assert out["sent"] == {
             "repo": "org/one",
             "messages": [{"role": "user", "content": "hi"}],
