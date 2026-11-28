@@ -1,6 +1,6 @@
 """Stand-ins for the load test: a small SSE server and a runner that uses it.
 
-Run as a script: ``loadtest_fake.py serve <port> <mode> <resident file>`` or
+Run as a script: ``loadtest_fake.py serve <port> <mode>`` or
 ``loadtest_fake.py runner <mode>``. Nothing here imports mlx or loads a model.
 """
 
@@ -40,13 +40,13 @@ def count_words(text):
     return len(text.split())
 
 
-def spawner(resident, mode, spawned):
+def spawner(mode, spawned):
     """``spawn(command, env, log)`` that starts the fake server on the asked port."""
 
     def spawn(command, env, log):
         port = command[command.index("--port") + 1]
         proc = subprocess.Popen(
-            [sys.executable, __file__, "serve", port, mode, str(resident)],
+            [sys.executable, __file__, "serve", port, mode],
             stdin=subprocess.PIPE,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -60,7 +60,7 @@ def spawner(resident, mode, spawned):
     return spawn
 
 
-def serve(port, mode, resident):
+def serve(port, mode):
     def follow_parent():
         while os.read(0, 4096):
             pass
@@ -78,12 +78,19 @@ def serve(port, mode, resident):
             pass
 
         def do_GET(self):
-            self.send_response(200)
+            # /health as mlx_lm answers it: 503 once the model has failed to load.
+            self.send_response({"load-failed": 503, "slow-load": 404}.get(mode, 200))
             self.send_header("Content-Length", "0")
             self.end_headers()
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            warm_up = body.get("max_tokens") == 1 and not body.get("stream")
+            if warm_up:
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if mode in ("too-long", "refused"):
                 error = {"message": "maximum context length is 1"}
                 if mode == "refused":
@@ -127,34 +134,25 @@ def serve(port, mode, resident):
             )
             send("data: [DONE]\n\n")
 
-    state = {"pid": os.getpid(), "resident": ["org/seven"], "events": []}
-    if mode == "no-listen":  # loaded, but another program holds its port
-        Path(resident).write_text(json.dumps(state), "utf-8")
+    if mode == "no-listen":  # alive, but another program holds its port
         threading.Event().wait()
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    if mode.startswith("limit-"):
-        most = 100 if mode == "limit-low" else int(mode.removeprefix("limit-"))
-        state["prompt_limits"] = {"org/seven": most}
-    if mode == "load-failed":
-        state.update(resident=[], events=[{"event": "load-failed"}])
-    if mode != "slow-load":
-        Path(resident).write_text(json.dumps(state), "utf-8")
     httpd.serve_forever()
 
 
 def run_runner(mode):
+    # The real runner is run as a script in ROOT and imports its neighbours.
+    sys.path.insert(0, str(ROOT))
     lt = load_runner()
     if mode == "vanish":
         sys.stdin.readline()
         sys.exit(3)
-    resident = []
     spawned: list = []
 
     def spawn(command, env, log):
-        return spawner(resident[0], mode, spawned)(command, env, log)
+        return spawner(mode, spawned)(command, env, log)
 
     def load_counter(job):
-        resident.append(job["resident_file"])
         return count_words
 
     lt.main(
@@ -166,6 +164,6 @@ def run_runner(mode):
 
 if __name__ == "__main__":
     if sys.argv[1] == "serve":
-        serve(int(sys.argv[2]), sys.argv[3], sys.argv[4])
+        serve(int(sys.argv[2]), sys.argv[3])
     else:
         run_runner(sys.argv[2])

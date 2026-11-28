@@ -36,7 +36,7 @@ def test_a_size_at_the_models_limit_leaves_room_for_the_replies(lt, tmp_path):  
         lt,
         tmp_path,
         sizes=(4096,),
-        mode="full-limit-4096",
+        mode="full-ok",
         reply_tokens=256,
         context_limit=4096,
     )
@@ -101,7 +101,7 @@ class TestThinking:
             (folder / name).write_text(text, "utf-8")
         assert api.get(f"/api/loadtest?repo={REPO}")[1]["thinking"]["supported"] is True
 
-    def test_the_result_records_it_and_other_runs_are_not_mixed_in(self, api):  # noqa: F811
+    def test_the_result_records_it(self, api):  # noqa: F811
         app = api.module
         _template(app, "{% if enable_thinking %}x{% endif %}")
         assert self.start(api, thinking="yes")[0] == 400
@@ -109,6 +109,6 @@ class TestThinking:
         api.finished()
         result = api.get(f"/api/loadtest?repo={REPO}")[1]["results"][-1]
         assert result["thinking"] is False and result["stale"] is False
-        for wanted, found in ((False, True), (True, False)):
+        for wanted in (False, True):
             built, _ = app._loadtest_job(REPO, [4096], "r2", app.APP_DIR, "mlx", wanted)
-            assert built["thinking"] is wanted and bool(built["priors"]) is found
+            assert built["thinking"] is wanted

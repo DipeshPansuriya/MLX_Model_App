@@ -444,7 +444,6 @@ class Runner:
             if monitor:
                 row["peak_percent"] = round(monitor.peak_percent, 1)
                 row["server_peak_bytes"] = monitor.lifetime_peak
-        # Passed only if the peak also stayed under the kill line.
 
     # A job with "key_env" is a keyed server of another engine; the key is only ever
     # in the environment.

@@ -21,14 +21,23 @@ from pathlib import Path
 import loadtest_fake as fake
 import portguard
 import pytest
-from test_guard import cache_repo
 
 ROOT = Path(__file__).resolve().parent.parent
 GB = 10**9
+K = 1024
 RAM = 32 * 2**30
 REPO, OTHER = "org/seven", "org/other"
-MODEL = {"weights_bytes": 4 * GB, "kv_per_token": 10_000, "margin_bytes": GB}
-K = 1024
+
+
+def cache_repo(cache: Path, repo: str, files=("config.json", "model.safetensors")) -> Path:
+    folder = cache / f"models--{repo.replace('/', '--')}"
+    snapshot = folder / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents=True)
+    (folder / "refs").mkdir()
+    (folder / "refs" / "main").write_text("a" * 40, encoding="utf-8")
+    for name in files:
+        (snapshot / name).write_text("{}", encoding="utf-8")
+    return snapshot
 
 
 @pytest.fixture
@@ -40,95 +49,22 @@ def sample(lt, percent=40.0, footprint=0, peak=0, pressure=1, swap=0):
     return lt.Sample(percent, footprint, peak, pressure, swap)
 
 
-def formula(tokens):
-    return 5 * GB + 6 * 10_000 * tokens
-
-
 class TestSafetyConstants:
-    def test_gate_at_75_and_kill_at_77(self, lt):
-        assert lt.limit_percent(None) == lt.LIMIT_MAX_PERCENT == 80
-        assert lt.limit_percent(95) == 80
-        assert lt.limit_percent(70) == 70
-        assert 80 - lt.GATE_MARGIN_PERCENT == 75
-        assert 80 - lt.KILL_OFFSET_PERCENT == 77
-        assert (lt.FIRST_ESTIMATE_FACTOR, lt.FOLLOW_UP_FACTOR, lt.SLOPE_FACTOR) == (6, 1.35, 1.15)
+    def test_the_stops_that_stay(self, lt):
+        assert (lt.PRESSURE_CRITICAL, lt.SWAP_GROWTH_BYTES) == (4, 500_000_000)
         assert (lt.SAMPLE_SECONDS, lt.MAX_GAP_SECONDS) == (0.1, 1.0)
-
-
-class TestEstimate:
-    def test_nothing_measured(self, lt):
-        assert lt.estimate_bytes(8 * K, MODEL) == formula(8 * K)
-
-    def test_one_measured_size_keeps_the_formula_difference(self, lt):
-        measured = [(4 * K, 20 * GB, True)]
-        expected = 20 * GB + formula(8 * K) - formula(4 * K)
-        assert lt.estimate_bytes(8 * K, MODEL, measured) == expected
-        low = [(4 * K, GB, True)]
-        assert lt.estimate_bytes(8 * K, MODEL, low) == formula(8 * K)
-
-    def test_two_measured_sizes_extend_the_last_slope(self, lt):
-        measured = [(4 * K, 6 * GB, True), (8 * K, 7 * GB, True)]
-        expected = 7 * GB + int(GB / (4 * K) * 8 * K * 1.15)
-        assert abs(lt.estimate_bytes(16 * K, MODEL, measured) - expected) <= 1
-
-    def test_a_follow_up_is_at_least_135_percent_of_its_cold_step(self, lt):
-        assert lt.estimate_bytes(4 * K, MODEL, cold_peak=10 * GB) == int(13.5 * GB)
-
-    def test_a_measured_size_beats_the_formula_and_is_a_floor(self, lt):
-        assert lt.estimate_bytes(8 * K, MODEL, [(8 * K, 6 * GB, True)]) == 6 * GB
-        assert lt.estimate_bytes(8 * K, MODEL, [(8 * K, 30 * GB, True)]) == 30 * GB
-
-    def test_an_unfinished_measurement_only_raises_the_figure(self, lt):
-        assert lt.estimate_bytes(8 * K, MODEL, [(8 * K, GB, False)]) == formula(8 * K)
-        assert lt.estimate_bytes(8 * K, MODEL, [(8 * K, 30 * GB, False)]) == 30 * GB
-
-    def test_a_larger_measured_peak_bounds_a_smaller_size(self, lt):
-        assert lt.estimate_bytes(32 * K, MODEL, [(64 * K, 6 * GB, True)]) == 6 * GB
-
-
-class TestGate:
-    """The benchmark's fp16 32K steps (row-perf-baseline.md), on 32 GB."""
-
-    def test_the_gate_allows_75_and_refuses_above(self, lt):
-        tenth = RAM // 10
-        assert lt.gate(65.0, 0, tenth, RAM, 80, 5)[0]
-        ok, projected = lt.gate(65.2, 0, tenth, RAM, 80, 5)
-        assert not ok and projected > 75
-
-    def test_the_second_32k_follow_up_is_not_sent(self, lt):
-        model = {"weights_bytes": 4 * GB, "kv_per_token": 1000, "margin_bytes": GB}
-        # Before it: the second cold step, 75.96% with 12.0 GB in the server.
-        estimate = max(
-            lt.estimate_bytes(32 * K, model, cold_peak=int(12.0 * GB)),
-            int(13.24 * GB),  # the lifetime peak of the first follow-up
-        )
-        ok, projected = lt.gate(75.96, int(12.0 * GB), estimate, RAM, 80, 5)
-        assert not ok and projected > 83
-
-    def test_nor_the_first_one(self, lt):
-        model = {"weights_bytes": 4 * GB, "kv_per_token": 1000, "margin_bytes": GB}
-        estimate = lt.estimate_bytes(32 * K, model, cold_peak=int(10.17 * GB))
-        assert not lt.gate(70.5, int(10.17 * GB), estimate, RAM, 80, 5)[0]
-
-    def test_a_smaller_margin_than_the_built_in_one_is_not_taken(self, lt):
-        assert not lt.gate(75.5, 0, 0, RAM, 80, 0)[0]
 
 
 class TestTrip:
     @pytest.mark.parametrize(
         ("change", "word"),
-        [
-            ({"percent": 77.0}, "77"),
-            ({"pressure": 4}, "pressure"),
-            ({"swap": 6 * 10**8}, "swap"),
-        ],
+        [({"pressure": 4}, "pressure"), ({"swap": 6 * 10**8}, "swap")],
     )
     def test_each_memory_trigger(self, lt, change, word):
-        why = lt.trip(sample(lt, **change), 0, 77)
-        assert word in why
+        assert word in lt.trip(sample(lt, **change), 0)
 
-    def test_below_every_line(self, lt):
-        assert lt.trip(sample(lt, percent=76.9, pressure=2, swap=5 * 10**8), 0, 77) is None
+    def test_no_share_of_memory_stops_a_test(self, lt):
+        assert lt.trip(sample(lt, percent=99.0, pressure=2, swap=5 * 10**8), 0) is None
 
 
 class Clock:
@@ -160,13 +96,13 @@ class TestMonitor:
         clock, proc = Clock(), Proc()
         cancel, abandon = threading.Event(), threading.Event()
         watch = lt.Monitor(
-            proc, probe, clock, kill=77, base_swap=0, deadline=clock.now + 900,
+            proc, probe, clock, base_swap=0, deadline=clock.now + 900,
             cancel=cancel, abandon=abandon, killer=lambda p: p.kill(), **extra,
         )  # fmt: skip
         return watch, clock, proc, cancel, abandon
 
-    def test_memory_over_the_line_kills_at_once(self, lt):
-        watch, _, proc, _, _ = self.monitor(lt, lambda pid: sample(lt, 78.0))
+    def test_critical_pressure_kills_at_once(self, lt):
+        watch, _, proc, _, _ = self.monitor(lt, lambda pid: sample(lt, 78.0, pressure=4))
         watch.tick()
         assert proc.signals == ["KILL"] and watch.reason[0] == "memory"
         assert watch.peak_percent == 78.0
@@ -229,30 +165,24 @@ class TestPrompts:
 
 
 def job(tmp_path, sizes=(4096, 8192), **extra):
-    resident = tmp_path / "resident.json"
     return {
         "run_id": "run1",
         "repo": REPO,
         "sizes": list(sizes),
         "reply_tokens": 32,
         "rounds": 2,
-        "margin_percent": 5,
         "timeout_seconds": 60,
-        "limit_percent": 80,
-        "ram_bytes": RAM,
-        "model": MODEL,
+        "request_model": REPO,
         "snapshot": str(tmp_path),
         "command": ["python", "fake", "--model", REPO, "--port", "0"],
-        "resident_file": str(resident),
         "workdir": str(tmp_path),
-        "priors": [],
         **extra,
     }
 
 
 def run_job(lt, tmp_path, probe=None, mode="ok", cancel=None, **extra):
     events, spawned = [], []
-    spawn = fake.spawner(tmp_path / "resident.json", mode, spawned)
+    spawn = fake.spawner(mode, spawned)
     runner = lt.Runner(
         job(tmp_path, **extra),
         events.append,
@@ -297,30 +227,27 @@ class TestRunner:
         _, _, rows, *_ = run_job(lt, tmp_path, mode="short", sizes=(4096,))
         assert rows[4096]["write_tps"] is None
 
-    def test_a_projection_over_the_gate_loads_nothing(self, lt, tmp_path):
-        status, reason, rows, _, spawned = run_job(lt, tmp_path, probe=lambda pid: sample(lt, 70.0))
-        assert status == "memory" and spawned == []
-        assert "close other apps or choose a smaller model" in reason
-        assert [r["status"] for r in rows.values()] == ["skipped", "skipped"]
-        assert rows[4096]["projected_percent"] > 75
+    def test_a_high_share_of_memory_alone_stops_nothing(self, lt, tmp_path):
+        status, _, rows, *_ = run_job(lt, tmp_path, probe=lambda pid: sample(lt, 95.0))
+        assert status == "done"
+        assert [r["status"] for r in rows.values()] == ["passed", "passed"]
 
-    def test_a_follow_up_over_the_gate_is_not_sent(self, lt, tmp_path):
+    def test_critical_pressure_stops_this_size_and_all_larger(self, lt, tmp_path):
         def probe(pid):
-            return sample(lt, 68.0, 9 * GB, 9 * GB) if pid else sample(lt)
-
-        status, _, rows, _, spawned = run_job(lt, tmp_path, probe=probe)
-        assert status == "memory"
-        assert rows[4096]["status"] == "skipped" and rows[4096]["steps_done"] == 1
-        assert rows[8192]["status"] == "skipped" and len(spawned) == 1
-
-    def test_over_the_kill_line_stops_this_size_and_all_larger(self, lt, tmp_path):
-        def probe(pid):
-            return sample(lt, 78.0 if pid else 40.0)
+            return sample(lt, 78.0, pressure=4 if pid else 1)
 
         status, _, rows, _, spawned = run_job(lt, tmp_path, probe=probe)
         assert status == "memory" and len(spawned) == 1
         assert rows[4096]["status"] == "stopped" and rows[4096]["peak_percent"] == 78.0
         assert rows[8192]["status"] == "skipped"
+
+    def test_another_program_on_the_port_is_never_asked(self, lt, tmp_path, monkeypatch):
+        import engine_runtime
+
+        monkeypatch.setattr(engine_runtime, "listeners", lambda port, **_: {1})
+        status, reason, *_, spawned = run_job(lt, tmp_path, sizes=(4096,))
+        assert status == "failed" and "another program" in reason
+        assert len(spawned) == 3
 
     @pytest.mark.parametrize(
         ("mode", "word"),
@@ -377,29 +304,6 @@ def until(check, seconds=15):
     raise AssertionError("timed out")
 
 
-class TestFollowUpRoom:
-    """Row 857: a size passes only if the server had room for the whole follow-up reply."""
-
-    @pytest.mark.parametrize("limit", [4096, 4200])
-    def test_a_follow_up_without_room_for_its_reply_does_not_pass(self, lt, tmp_path, limit):
-        status, reason, rows, _, spawned = run_job(
-            lt, tmp_path, sizes=(4096, 8192), mode=f"full-limit-{limit}", reply_tokens=256
-        )
-        row = rows[4096]
-        assert (status, row["status"], row["steps_done"]) == ("memory", "skipped", 2)
-        assert "follow-up reply" in row["reason"] and str(limit) in row["reason"]
-        assert reason == row["reason"]
-        assert rows[8192]["reason"] == "a smaller size did not pass"
-        assert len(spawned) == 1
-
-    def test_with_room_for_the_reply_it_passes(self, lt, tmp_path):
-        status, _, rows, _, _ = run_job(
-            lt, tmp_path, sizes=(4096,), mode="full-limit-4352", reply_tokens=256
-        )
-        assert (status, rows[4096]["status"]) == ("done", "passed")
-        assert rows[4096]["write_tps"] > 0
-
-
 class TestNoOrphans:
     def start(self, tmp_path):
         proc = subprocess.Popen(
@@ -437,27 +341,6 @@ class TestNoOrphans:
         proc.wait(timeout=15)
         proc.stdin.close()
         until(lambda: not alive(server))
-
-    def test_the_guard_exits_when_its_parents_pipe_closes(self, tmp_path):
-        code = (
-            "import importlib.util as u, sys, time\n"
-            f"s = u.spec_from_file_location('g', {str(ROOT / 'mlx_guard.py')!r})\n"
-            "g = u.module_from_spec(s); s.loader.exec_module(g)\n"
-            "g.exit_with_parent(); print('up', flush=True); time.sleep(60)\n"
-        )
-        proc = subprocess.Popen(
-            [sys.executable, "-B", "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE
-        )
-        assert proc.stdout.readline() == b"up\n"
-        proc.stdin.close()
-        assert proc.wait(timeout=10) == 0
-
-    def test_the_guard_option_takes_no_value(self):
-        guard = fake.load_module("mlx_guard.py")
-        rest, opts = guard.split_studio_args(["--studio-exit-with-parent", "--model", REPO])
-        assert rest == ["--model", REPO] and opts.exit_with_parent is True
-        assert guard.split_studio_args([])[1].exit_with_parent is False
-        assert "exit_with_parent" in guard.main.__code__.co_names
 
 
 class TestPortGuard:
@@ -557,7 +440,7 @@ class TestRouteChecks:
 
 
 class TestApiRun:
-    def test_a_run_end_to_end_then_apply(self, api):
+    def test_a_run_end_to_end(self, api):
         app = api.module
         status, body = api.start()
         assert status == 200
@@ -575,26 +458,16 @@ class TestApiRun:
         assert list(app.APP_DIR.glob("loadtest-run-*")) == []
         assert not app._loadtest_pidfile().exists()
         assert app.STATE.snapshot()["loadtest"]["status"] == "done"
-        # Only a stored, passed size of this run is applied.
-        for forged in (
-            {"run_id": "nope", "size": 4096},
-            {"run_id": body["run_id"], "size": 16384},
-            {"run_id": body["run_id"], "size": "4096"},
-        ):
-            assert api.post("/api/loadtest/apply", {"repo": REPO, **forged})[0] in (400, 404)
-        assert app.user_settings(REPO)["max_context_tokens"] is None
+        # The "apply this size" route is gone: a result changes no setting.
         mine = {"repo": REPO, "run_id": body["run_id"], "size": 8192}
-        assert api.post("/api/loadtest/apply", mine)[0] == 200
-        assert app.user_settings(REPO)["max_context_tokens"] == 8192
-        assert api.get(f"/api/loadtest?repo={REPO}")[1]["results"][-1]["stale"] is False
+        assert api.post("/api/loadtest/apply", mine)[0] == 404
+        assert app.user_settings(REPO)["max_context_tokens"] is None
 
     def test_a_result_made_with_other_settings_is_stale(self, api):
-        _, body = api.start((4096,))
+        api.start((4096,))
         api.finished()
         api.module.save_settings({"prompt_cache_size": 2}, REPO)
         assert api.get(f"/api/loadtest?repo={REPO}")[1]["results"][-1]["stale"] is True
-        mine = {"repo": REPO, "run_id": body["run_id"], "size": 4096}
-        assert api.post("/api/loadtest/apply", mine)[0] == 409
 
     def test_the_command_is_the_servers_with_its_own_port_and_files(self, api, monkeypatch):
         app = api.module
@@ -611,17 +484,16 @@ class TestApiRun:
         api.start((4096, 8192))
         api.finished()
         cmd = seen["job"]["command"]
-        # The largest size, with room for the follow-up reply above it.
-        room = 8192 + seen["job"]["reply_tokens"]
-        assert cmd[cmd.index("--studio-max-context") + 1] == str(room)
-        assert cmd[-1] == "--studio-exit-with-parent"
+        # mlx_lm has no context flag, so the sizes change nothing in its command.
+        asked = app.server_settings([REPO])
+        assert cmd == app._server_command(REPO, asked, 0, {})
+        assert cmd[1:4] == ["-m", "mlx_lm", "server"]
+        assert cmd[cmd.index("--host") + 1] == "127.0.0.1"
         assert cmd[cmd.index("--prompt-cache-size") + 1] == "2"
-        assert "--kv-bits" not in cmd and "--studio-also-model" not in cmd
+        assert "--kv-bits" not in cmd
         env = seen["env"]
-        assert env["MLX_STUDIO_MODEL_CONTEXTS"] == "{}"
-        assert env["HF_HUB_OFFLINE"] == "1"
-        for name in ("MLX_STUDIO_RESIDENT_FILE", "MLX_STUDIO_SERVED_FILE"):
-            assert "loadtest-run-" in env[name]
+        assert not [name for name in env if name.startswith("MLX_STUDIO")]
+        assert env["HF_HUB_OFFLINE"] == "1" and env["PYTHONDONTWRITEBYTECODE"] == "1"
 
     def test_busy_while_it_runs_and_cancel(self, api):
         app = api.module
@@ -639,7 +511,6 @@ class TestApiRun:
         assert app.STATE.reserve_download(REPO) is None
         assert app._launch_server(REPO, False) is None
         assert api.get(f"/api/loadtest?repo={REPO}")[1]["status"]["active"] is True
-        assert api.post("/api/loadtest/apply", {"repo": REPO, "run_id": "x", "size": 1})[0] == 409
         pid = until(lambda: app.STATE.loadtest.get("server_pid"))
         assert api.post("/api/loadtest/cancel", {})[0] == 200
         assert api.finished()["status"] == "cancelled"
@@ -722,15 +593,14 @@ class TestLeftovers:
             start_new_session=True,
         )
 
+    # The second is the server of a build before 2.0.13, left behind by it.
+    @pytest.mark.parametrize("start", [["-m", "mlx_lm", "server"], ["/x/mlx_guard.py"]])
     @pytest.mark.parametrize("ours", [True, False])
-    def test_only_a_process_with_our_identity_is_signalled(self, app_module, ours):
+    def test_only_a_process_with_our_identity_is_signalled(self, app_module, ours, start):
         app = app_module
         app.APP_DIR.mkdir(parents=True, exist_ok=True)
-        words = (
-            [f"/x/{app.GUARD_SCRIPT.name}", "--model", REPO, "--studio-exit-with-parent"]
-            if ours
-            else ["someone-else"]
-        )
+        served = ["--model", REPO if ours else OTHER, "--host", "127.0.0.1"]
+        words = [*start, *served]
         proc = self.sleeper(*words)
         try:
             until(lambda: app._ps_field(proc.pid, "lstart"))

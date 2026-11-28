@@ -3339,7 +3339,7 @@ def _watch_loadtest(run: dict, workdir: Path) -> None:
 
 
 def _kill_runner(proc: subprocess.Popen) -> None:
-    """End the runner's process group; its server exits when the runner is gone."""
+    """End the runner's process group; the watcher then ends its test server."""
     if proc.poll() is None:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
