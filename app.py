@@ -17,9 +17,7 @@ import contextlib
 import fnmatch
 import functools
 import http.client
-import importlib.util
 import json
-import math
 import os
 import platform
 import queue
@@ -43,6 +41,7 @@ from pathlib import Path
 
 import engine_runtime
 import engines
+import model_info
 
 APP_NAME = "MLX Studio"
 APP_VERSION = "2.0.12"
@@ -78,7 +77,9 @@ APP_LOG = LOG_DIR / "app.log"
 SERVER_LOG = LOG_DIR / "server.log"
 UI_DIR = Path(__file__).resolve().parent / "ui"
 # The API server starts through this wrapper, which checks every request.
-GUARD_SCRIPT = Path(__file__).resolve().parent / "mlx_guard.py"
+# The command line of a server an older build started behind its own wrapper script:
+# such a server is still recognised, so it can be adopted and stopped.
+OLD_WRAPPER = "/mlx_guard.py"
 LOADTEST_SCRIPT = Path(__file__).resolve().parent / "mlx_loadtest.py"
 # The .app keeps this next to app.py, in Contents/Resources.
 APP_ICON = Path(__file__).resolve().parent / "AppIcon.icns"
@@ -100,9 +101,6 @@ CHAT_ERROR_BYTES = 64 * 1024
 CHAT_CUT_SHORT = "The API server stopped before the reply finished. Check the API Server page."
 # mlx_lm cuts replies at 512 tokens when a client sends no max_tokens.
 SERVER_MAX_TOKENS = 8192
-# Two models at once (see mlx_guard.install_multi). The share of memory they may
-# use is an assumption carried from the 18 GB "safe" figure on a 32 GB Mac.
-SERVER_MAX_MODELS = 2
 # Limits for reading server.last.json: far above two real model ids.
 LAST_MODELS_MAX_BYTES = 4096
 MODEL_NAME_MAX = 200
@@ -110,23 +108,20 @@ MODEL_NAME_MAX = 200
 # absent keeps the built-in rule. Ports, hosts, the token, Origin/CSP checks and
 # paths are deliberately not here.
 SETTINGS = {
-    "max_context_tokens": (4096, 100_000_000),
-    "two_model_context_tokens": (8192, 32768),
-    "memory_limit_percent": (30, 80),
+    "max_context_tokens": (4096, 100_000_000),  # OptiQ only: mlx_lm has no such flag
     "server_max_reply_tokens": (64, 131072),
     "chat_max_reply_tokens": (64, 131072),
     "prompt_cache_size": (1, 100),
     "prompt_cache_bytes": (100_000_000, 100_000_000_000),
-    "mlx_cache_limit_mb": (0, 1_000_000),  # mlx_guard.CACHE_LIMIT_MB_RANGE
     "chat_temperature": (0, 2),
     "chat_top_p": (0.05, 1),
-    # (first, last) of CHOICE_SETTINGS; the read step is mlx_guard.PREFILL_RANGE.
+    # (first, last) of CHOICE_SETTINGS; the read step is model_info.PREFILL_RANGE.
     "performance_mode": ("standard", "advanced"),
     "kv_bits": (4, 8),
     "kv_group_size": (32, 128),
     "prefill_step_size": (64, 2048),
 }
-# These take one of the listed values only (the numbers: mlx_guard.KV_BITS, KV_GROUPS).
+# These take one of the listed values only (see model_info.KV_BITS, KV_GROUPS).
 CHOICE_SETTINGS = {
     "performance_mode": ("standard", "save_memory", "advanced"),
     "kv_bits": (4, 8),
@@ -139,22 +134,16 @@ PERFORMANCE_SETTINGS = ("performance_mode", *PERFORMANCE_FLAGS)
 SAVE_MEMORY_FLAGS = {"kv_bits": 8, "prefill_step_size": 256}
 # These take decimals; every other key takes whole numbers.
 DECIMAL_SETTINGS = ("chat_temperature", "chat_top_p")
-# The guard picks these by the model it loads: {key: name in the launch stamp}.
-PER_MODEL_AT_START = {
-    "max_context_tokens": "model_contexts",
-    "mlx_cache_limit_mb": "model_cache_limits",
-}
 # Sent with each Chat request, so a change needs no server restart.
 CHAT_ONLY_SETTINGS = ("chat_max_reply_tokens", *DECIMAL_SETTINGS)
 # The "load_test" block of settings.json. The offered sizes are only test sizes, none
-# of them a chosen limit. margin_percent: see also mlx_loadtest.GATE_MARGIN_PERCENT.
+# of them a chosen limit.
 LOAD_TEST_SIZES = tuple(4096 << step for step in range(9))  # 4096 to 1,048,576
 LOAD_TEST_SIZE_RANGE = (4096, 100_000_000)
 LOAD_TEST_MAX_SIZES = 12  # every offered size and a few typed ones
 LOAD_TEST_NUMBERS = {  # key: (default, lowest, highest)
     "reply_tokens": (256, 32, 1024),
     "rounds": (2, 1, 3),
-    "margin_percent": (5, 5, 20),
     "timeout_seconds": (900, 60, 3600),
 }
 LOAD_TEST_LISTS = {"sizes": LOAD_TEST_SIZES, "last_sizes": ()}
@@ -165,13 +154,10 @@ LOADTEST_CANCEL_SECONDS = 10  # then the runner's process group is killed
 LOADTEST_LINE_BYTES = 64 * 1024
 LOADTEST_LOG_LINES = 50
 LOADTEST_WAIT_SECONDS = 40  # longer than the runner waits for its server
-# The keys a model may override under "models"; the memory percent is for the whole app.
-MODEL_SETTINGS = tuple(key for key in SETTINGS if key != "memory_limit_percent")
+# The keys a model may override under "models".
+MODEL_SETTINGS = tuple(SETTINGS)
 SETTINGS_MAX_BYTES = 64 * 1024
 SETTINGS_LOCK = threading.Lock()
-SERVER_RAM_FRACTION = 0.52
-# How long a reading of the free memory is shown before it is taken again.
-FREE_CACHE_SECONDS = 10
 # How long a server that replaced another may take to report ready before it counts
 # as started; until then a failure brings the replaced one back.
 START_WATCH_SECONDS = 600
@@ -999,7 +985,6 @@ class State:
         self.loadtest_complaints: set[str] = set()
         self.server_repo: str | None = None
         self.server_repos: list[str] = []  # the first is server_repo
-        self.server_context: int | None = None  # tokens per model, for two
         self.server_started_with: str | None = None  # the settings of the last launch
         self.settings_complaint = ""  # the last settings.json problem logged
         self.free_read: tuple[float, int | None] | None = None  # see free_memory
@@ -1013,7 +998,6 @@ class State:
         self.server_fallback: tuple[list[str], bool] | None = None
         self.server_pid: int | None = None
         self.server_identity: str | None = None
-        self.server_unguarded = False  # adopted, and running without mlx_guard.py
         self.server_engine = "mlx"
         self.server_port = SERVER_PORT  # of a direct engine's server; MLX: SERVER_PORT
         self.server_snapshot: str | None = None  # the folder a direct engine serves
@@ -1073,14 +1057,7 @@ class State:
             return LOADTEST_BUSY
         serving = self.server_proc is not None or _pid_alive(self.server_pid)
         if repo in self.server_pending or (
-            serving
-            and repo
-            in {
-                self.server_repo,
-                *self.server_repos,
-                *_served_models(),
-                *_resident_models(_read_resident(self.server_pid)),
-            }
+            serving and repo in {self.server_repo, *self.server_repos}
         ):
             return "stop the API server first"
         if self.downloads.get(repo, {}).get("status") == "running":
@@ -1097,7 +1074,6 @@ class State:
         hf_v = pkg_version("huggingface-hub")
         with self.lock:
             downloads = [dict(d) for d in self.downloads.values()]
-        view = _resident_view(self.server_pid)
         return {
             "app": {
                 "name": APP_NAME,
@@ -1132,13 +1108,11 @@ class State:
                 "running": self.server_proc is not None or _pid_alive(self.server_pid),
                 "repo": self.server_repo,
                 "repos": list(self.server_repos),
-                **view,
-                **_server_limits(list(self.server_repos), view),
-                "performance": _performance_view(list(self.server_repos), self.server_pid),
+                "performance": _performance_view(list(self.server_repos)),
                 "settings": settings_view(),
                 "model_settings": _read_settings()[1],
                 "settings_pending": _settings_pending(
-                    self.server_proc is not None or _pid_alive(self.server_pid), view
+                    self.server_proc is not None or _pid_alive(self.server_pid)
                 ),
                 "port": _server_port(),
                 "endpoint": f"http://{HOST}:{_server_port()}/v1",
@@ -1158,7 +1132,6 @@ class State:
                 "starting": bool(self.server_pending),
                 **_server_readiness(),
                 "pid": self.server_pid,
-                "unguarded": self.server_unguarded and _pid_alive(self.server_pid),
             },
             "downloads": downloads,
             "loadtest": loadtest_summary(),
@@ -1193,7 +1166,7 @@ def _chat_target(repo: str, messages: list[dict], settings: dict) -> tuple[dict,
     """What Chat asks the running server, and on which port."""
     engine = _running_engine()
     body = {
-        "model": engine.request_model if engine.direct else repo,
+        "model": engine.request_model,
         "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
         "stream": True,
         "stream_options": {"include_usage": True},
@@ -1644,96 +1617,7 @@ def _server_pidfile() -> Path:
     return APP_DIR / "server.pid"
 
 
-def _served_file() -> Path:
-    """Models the running API server has accepted requests for (see mlx_guard)."""
-    return APP_DIR / "server.models"
-
-
-def _served_models() -> set[str]:
-    try:
-        return set(_served_file().read_text("utf-8").split())
-    except (OSError, ValueError):
-        return set()
-
-
-def _resident_file() -> Path:
-    """What a two-model API server holds in memory (see mlx_guard.status_writer)."""
-    return APP_DIR / "server.resident.json"
-
-
-def _budget_file() -> Path:
-    """The memory a two-model server may use now (read by mlx_guard at each load)."""
-    return APP_DIR / "server.budget"
-
-
-def _read_resident(pid: int | None) -> dict:
-    """The resident file, only when the server now running wrote it."""
-    try:
-        data = json.loads(_resident_file().read_text("utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) and pid and data.get("pid") == pid else {}
-
-
-def _resident_models(data: dict) -> list[str]:
-    """Loaded models, the current one first."""
-    names = data.get("resident")
-    return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
-
-
-def _resident_view(pid: int | None) -> dict:
-    data = _read_resident(pid)
-    events = data.get("events")
-    sizes = ("budget_bytes", "active_bytes", "peak_bytes")
-    oversize = data.get("oversize")
-    limits = data.get("prompt_limits")
-    # 0 is kept: that model accepts no prompt.
-    limits = (
-        {repo: most for repo, most in limits.items() if type(most) is int and most >= 0}
-        if isinstance(limits, dict)
-        else {}
-    )
-    measured = all(isinstance(data.get(key), int) for key in sizes)
-    tokens = data.get("context_tokens")
-    started = data.get("started_with")
-    return {
-        "started_with": started if isinstance(started, str) else None,
-        # The longest prompt the server accepts per model (see mlx_guard.prompt_limit).
-        "prompt_limits": limits,
-        # Only for the message about a model that accepts no prompt.
-        "memory_used_percent": _guard_module().used_percent() if 0 in limits.values() else None,
-        "context_tokens": tokens if isinstance(tokens, int) and tokens > 0 else None,
-        "resident": _resident_models(data),
-        # Loaded although it does not fit the budget.
-        "oversize": [n for n in oversize if isinstance(n, str)]
-        if isinstance(oversize, list)
-        else [],
-        "memory": {**{key: data[key] for key in sizes}, "measured": True} if measured else None,
-        "events": [e for e in events if isinstance(e, dict)][-5:]
-        if isinstance(events, list)
-        else [],
-        "multi_off": str(data.get("reason")) if data.get("multi") is False else None,
-        "preload_done": data.get("preload_done") is True,
-    }
-
-
 GUARD_IMPORT_LOCK = threading.Lock()
-
-
-@functools.lru_cache(maxsize=1)
-def _guard_module():
-    """mlx_guard.py as a module: the app and the server share one memory formula."""
-    spec = importlib.util.spec_from_file_location("mlx_studio_guard", GUARD_SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    # A __pycache__ inside the app bundle would break its signature. The switch is
-    # process wide, so two first calls must not restore it under each other.
-    with GUARD_IMPORT_LOCK:
-        before, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-        try:
-            spec.loader.exec_module(module)
-        finally:
-            sys.dont_write_bytecode = before
-    return module
 
 
 def _snapshot_dir(repo: str) -> Path:
@@ -1750,7 +1634,7 @@ def _snapshot_dir(repo: str) -> Path:
         commit = (entry / "refs" / "main").read_text("utf-8").strip()
     except (OSError, ValueError):
         commit = ""
-    weights = _guard_module().weights_bytes
+    weights = model_info.weights_bytes
     found, whole = [], None
     try:
         found = list((entry / "snapshots").glob("*"))
@@ -1761,265 +1645,6 @@ def _snapshot_dir(repo: str) -> Path:
     except OSError:
         pass  # a snapshot cannot be dated or read: the weights alone decide
     return whole or max(reversed(found), key=weights, default=entry)
-
-
-def _server_budget() -> int:
-    """Memory the server's models may use."""
-    percent = user_settings()["memory_limit_percent"]
-    share = min(SERVER_RAM_FRACTION, percent / 100) if percent else SERVER_RAM_FRACTION
-    return int(share * (hardware().get("ram_bytes") or 0))
-
-
-def free_memory(fresh: bool = False) -> int | None:
-    """Memory free now, or None (see mlx_guard.free_bytes). A decision reads it afresh."""
-    last = STATE.free_read
-    if fresh or last is None or time.monotonic() - last[0] >= FREE_CACHE_SECONDS:
-        last = STATE.free_read = (time.monotonic(), _guard_module().free_bytes())
-    return last[1]
-
-
-def _server_models(repos: list[str]) -> list[tuple[str, dict, int]]:
-    """``(repo, config, weight bytes)`` for each model."""
-    guard = _guard_module()
-    snapshots = [(repo, _snapshot_dir(repo)) for repo in repos]
-    return [(repo, guard.read_config(s), guard.weights_bytes(s)) for repo, s in snapshots]
-
-
-def _kv_per_token(models: list) -> int:
-    """The larger cache cost of one token: it sizes the context and the prompt cache."""
-    guard = _guard_module()
-    return max(
-        guard.kv_bytes_per_token(config) or guard.UNKNOWN_KV_PER_TOKEN for _, config, _ in models
-    )
-
-
-def _reply_bytes(config: dict, tokens: int, pair: bool) -> int:
-    """Memory above the weights for ``tokens``: one model's figure is the larger one."""
-    guard = _guard_module()
-    factor = guard.REPLY_FACTOR if pair else guard.ONE_MODEL_FACTOR
-    return guard.kv_reserve(config, tokens, factor)
-
-
-def _server_need(models: list, tokens: int, cache: int) -> dict:
-    """What the server takes holding ``models`` with ``tokens`` of context each."""
-    guard = _guard_module()
-    weights = sum(size for _, _, size in models)
-    reply = max(_reply_bytes(config, tokens, len(models) > 1) for _, config, _ in models)
-    return {
-        "weights_bytes": weights,
-        "reply_bytes": reply,
-        "cache_bytes": cache,
-        "margin_bytes": guard.MEMORY_MARGIN,
-        "total_bytes": weights + reply + cache + guard.MEMORY_MARGIN,
-    }
-
-
-def _running_needs(asked: list[str], view: dict) -> list[dict]:
-    """The running two-model server's need: the pair asked for, then the two loaded now."""
-    guard = _guard_module()
-    # A server that does not report its context was started with the ceiling.
-    tokens = view["context_tokens"] or STATE.server_context or guard.KV_TOKENS
-    cache = guard.CACHED_CONVERSATIONS * _kv_per_token(_server_models(asked)) * tokens
-    pairs = [asked, view["resident"]] if len(view["resident"]) > 1 else [asked]
-    return [_server_need(_server_models(pair), tokens, cache) for pair in pairs]
-
-
-def _server_limits(asked: list[str], view: dict) -> dict:
-    """For the snapshot: a two-model server's context, and whether free memory ran low."""
-    limits = {"context_tokens": None, "memory_low": None}
-    if len(asked) < 2 or view["multi_off"] is not None:
-        return limits
-    limits["context_tokens"] = view["context_tokens"] or STATE.server_context
-    # Without a measurement there is nothing to compare the free memory with, and a
-    # half-done preload would look like memory other apps took.
-    free = free_memory() if view["preload_done"] and view["memory"] else None
-    if free is None:
-        return limits
-    guard = _guard_module()
-    need = max(figures["total_bytes"] for figures in _running_needs(asked, view))
-    # The running process has taken its overhead already, so that is not still to come.
-    # ADR-010 deviation 1: subtract PROCESS_OVERHEAD to fire later (accepted).
-    left = need - guard.PROCESS_OVERHEAD - view["memory"]["active_bytes"]
-    short = left - (free - guard.FREE_RESERVE)
-    if short > 0:
-        limits["memory_low"] = {"free_bytes": free, "short_by_bytes": short}
-    return limits
-
-
-def _running_server_bytes() -> int:
-    """What a running server holds: a start replaces it, so that memory comes back."""
-    memory = _resident_view(STATE.server_pid)["memory"]
-    return memory["active_bytes"] if memory else 0
-
-
-def server_memory_estimate(repos: list[str], fresh: bool = False) -> dict:
-    """Calculated memory for the API server holding ``repos`` together.
-
-    For two, the context per model follows the smaller of the fixed share of RAM and
-    what is free now. One model is never refused here: its context follows what other
-    apps leave under the memory ceiling, as in mlx_guard, and is only described.
-    """
-    guard = _guard_module()
-    static = _server_budget()
-    pair = len(repos) > 1
-    free = free_memory(fresh) if pair else None
-    held = _running_server_bytes() if free is not None else 0
-    budget = static
-    if free is not None:
-        budget = max(0, min(static, held + free - guard.FREE_RESERVE))
-    settings = server_settings(repos)
-    ceiling = guard.memory_ceiling(settings["memory_limit_percent"])
-    others = None
-    if not pair:
-        others = _other_apps_bytes()
-        if others is not None:
-            budget = max(0, ceiling - others)
-    models = _server_models(repos)
-    kv = _kv_per_token(models)
-    weights = sum(size for _, _, size in models)
-    context = guard.context_tokens(budget, weights, kv) if pair else guard.KV_TOKENS
-    cap = settings["two_model_context_tokens"]
-    cap = cap and cap // guard.CONTEXT_STEP * guard.CONTEXT_STEP
-    capped = bool(pair and cap and cap < context)
-    if capped:
-        context = cap
-    # A refused pair is described at the smallest context it would be started with.
-    tokens = max(context, guard.MIN_CONTEXT)
-    chosen = None if pair else settings["max_context_tokens"]
-    alone = None  # one model's safe context
-    if not pair:
-        _, config, size = models[0]
-        if guard.kv_bytes_per_token(config):
-            alone = guard.prompt_limit(config, size, static, None, ceiling, chosen, others)
-            # Sized at what it will serve; one that serves nothing at the least it would.
-            tokens = min(guard.KV_TOKENS, alone or guard.MIN_AUTO_CONTEXT)
-    cache = guard.CACHED_CONVERSATIONS * kv * tokens if pair else 0
-    need = _server_need(models, tokens, cache)
-    items = [
-        guard.Resident(repo, size, _reply_bytes(config, tokens, pair))
-        for repo, config, size in models
-    ]
-    # The guard's own rule, with the earlier model and a full prompt cache in memory.
-    earlier = weights - items[-1].weights_bytes + cache
-    plan = guard.admission_plan(items[:-1], items[-1], earlier, 0, budget, len(items))
-    fits = context >= guard.MIN_CONTEXT and not (plan.evict or plan.alone)
-    refused = None
-    if pair and not fits:
-        least = need["total_bytes"]
-        if free is not None and static >= least:
-            # Said as free memory to reach, so it compares with the free figure.
-            # "needed" is the total free memory required: need(8K) + FREE_RESERVE - held.
-            wanted = least + guard.FREE_RESERVE - held
-            refused = (
-                f"Not enough free memory for two models: {math.floor(free / 1e9 * 10) / 10:.1f} GB free, "
-                f"{math.ceil(wanted / 1e9 * 10) / 10:.1f} GB needed for 8K each. "
-                "Close other apps or start one model."
-            )
-        else:
-            refused = (
-                f"Not enough memory for two models: {static / 1e9:.1f} GB allowed for the "
-                f"API server, {math.ceil(least / 1e9 * 10) / 10:.1f} GB needed for 8K each. "
-                "Choose smaller models or start one model."
-            )
-    described = []
-    for repo, config, size in models:
-        limit = guard.context_limit(config)
-        safe = min(context, limit or context) if pair else alone
-        described.append(
-            {
-                "repo": repo,
-                "weights_bytes": size,
-                "safe_context": safe,
-                "context_limit": limit,
-            }
-        )
-    return {
-        "models": described,
-        **need,
-        "budget_bytes": budget,
-        "free_bytes": free,
-        "held_bytes": held,
-        "context_tokens": context if pair else tokens,
-        "cache_cap_bytes": cache,
-        "fits": fits,
-        "refused": refused,
-        "free_is_limit": not capped
-        and free is not None
-        and held + free - guard.FREE_RESERVE < static,
-        "capped_by_setting": capped,
-        "budget_percent": round(100 * static / ram) if (ram := hardware().get("ram_bytes")) else 52,
-        "context_warning": None
-        if pair
-        else _context_warning(models, static, settings)
-        or _low_context_warning(described[0], chosen, settings),
-    }
-
-
-def _other_apps_bytes() -> int | None:
-    """What other apps hold now, without the running server's own memory."""
-    running = STATE.server_pid if _pid_alive(STATE.server_pid) else None
-    return _guard_module().other_apps_bytes(running)
-
-
-def _serving() -> bool:
-    return STATE.server_proc is not None or _pid_alive(STATE.server_pid)
-
-
-def _no_prompt_words(settings: dict) -> str:
-    return "The API server would accept no prompt for this model. " + (
-        _guard_module().low_context_words(settings["memory_limit_percent"], _serving())
-    )
-
-
-def _applied_context(models: list, budget: int, settings: dict) -> tuple[int | None, str | None]:
-    """The tokens the user's max context comes to, and why when it was lowered."""
-    chosen, percent = settings["max_context_tokens"], settings["memory_limit_percent"]
-    if not chosen:
-        return None, None
-    guard = _guard_module()
-    ceiling, others = guard.memory_ceiling(percent), _other_apps_bytes()
-    for _, config, size in models:
-        applied = guard.prompt_limit(config, size, budget, None, ceiling, chosen, others)
-        if applied is None:
-            continue
-        if applied < min(chosen, guard.context_limit(config) or chosen):
-            if applied == 0:
-                return applied, _no_prompt_words(settings)
-            share = guard.lowered(guard.MAX_RAM_FRACTION, percent)
-            return applied, (
-                f"Your max context of {chosen} tokens is more than {share:.0%} of this "
-                f"Mac's memory holds with what other apps use, so {applied} tokens apply. "
-                f"{guard.close_apps_words(_serving())}"
-            )
-        return applied, None
-    return None, None
-
-
-def _context_warning(models: list, budget: int, settings: dict) -> str | None:
-    """Said when the user's max context was lowered to fit the memory ceiling."""
-    return _applied_context(models, budget, settings)[1]
-
-
-def _low_context_warning(model: dict, chosen: int | None, settings: dict) -> str | None:
-    """Said when the automatic figure is too small to serve any prompt."""
-    if chosen or model["safe_context"] != 0:
-        return None
-    return _no_prompt_words(settings)
-
-
-def _second_model_problem(repo: str, also) -> str | None:
-    """Why the ``also`` field of a server request cannot be used, or None."""
-    if not isinstance(also, list) or not all(isinstance(name, str) for name in also):
-        return "also must be a list of model names"
-    if len(also) >= SERVER_MAX_MODELS:
-        return "only one more model can be kept loaded"
-    if not also:
-        return None
-    if also[0] == repo:
-        return "the second model must be different from the first"
-    installed = {m["repo"] for m in installed_models() if m["complete"]}
-    missing = [name for name in (repo, *also) if name not in installed]
-    return f"{missing[0]} is not installed completely" if missing else None
 
 
 def _ps_field(pid: int, field: str) -> str:
@@ -2049,8 +1674,7 @@ def _is_our_server(
     if not repo or not _pid_alive(pid):
         return False
     command = f"{_ps_field(pid, 'command')} "
-    # The second form is a background server started by a build without the guard.
-    launchers = (f"/{GUARD_SCRIPT.name}", " -m mlx_lm server")
+    launchers = (" -m mlx_lm server", OLD_WRAPPER)
     marks = [f"{start} --model {repo} --host " for start in launchers]
     if direct:  # a direct engine's own command line, see Engine.identity
         marks = [direct]
@@ -2059,11 +1683,6 @@ def _is_our_server(
     if f" --port {port or SERVER_PORT} " not in command:
         return False
     return not started or _ps_field(pid, "lstart") == started
-
-
-def _is_guarded(pid: int) -> bool:
-    """True only when the command line shows the server runs behind the guard."""
-    return f"/{GUARD_SCRIPT.name} --model " in _ps_field(pid, "command")
 
 
 def _running_engine() -> engines.Engine:
@@ -2144,12 +1763,12 @@ def _write_server_pidfile(
         "port": _server_port(),
         "started": _ps_field(pid, "lstart"),
     }
+    payload["settings"] = STATE.server_started_with
     if _running_engine().direct:
         payload.update(
             engine=STATE.server_engine,
             snapshot=STATE.server_snapshot,
             anthropic=STATE.server_anthropic,
-            settings=STATE.server_started_with,
         )
     STATE.server_identity = payload["started"]
     with contextlib.suppress(OSError):
@@ -2171,37 +1790,24 @@ def _clear_server_pidfile(only_pid: int | None = None) -> None:
             return
         if current != only_pid:
             return
-    for stale in (path, _resident_file(), _budget_file()):
-        with contextlib.suppress(OSError):
-            stale.unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
 
 
-def _start_verdict(pid: int, models: int) -> str | None:
-    """What a new server has reported: ``ready``, ``failed``, or None for not yet."""
-    if _running_engine().direct:  # it reports nothing: see _probe_direct
-        return STATE.server_verdict if pid == STATE.server_pid else None
-    view = _resident_view(pid)
-    if view["resident"]:
-        # Two models are not up until the second has been tried as well.
-        both = models < 2 or view["preload_done"] or view["multi_off"] is not None
-        return "ready" if both else None
-    failed = any(e.get("event") == "load-failed" for e in view["events"])
-    return "failed" if failed or view["preload_done"] else None
+def _start_verdict(pid: int) -> str | None:
+    """What the probe found: ``ready``, ``failed``, or None for not yet."""
+    return STATE.server_verdict if pid == STATE.server_pid else None
 
 
 def _server_readiness() -> dict:
     """``ready``: the running server can answer. ``load_failed``: it said it cannot."""
     with STATE.lock:
-        proc, pid, count = STATE.server_proc, STATE.server_pid, len(STATE.server_repos)
+        proc, pid = STATE.server_proc, STATE.server_pid
         running = proc is not None or _pid_alive(pid)
     if not running:
         return {"ready": False, "load_failed": False}
-    verdict = _start_verdict(pid, count)
-    # No report to wait for: an adopted server of an older build, or a guard that
-    # cannot measure loads. Its requests simply wait while it loads.
-    silent = verdict is None and (proc is None or _read_resident(pid).get("report") is False)
-    silent = silent and not _running_engine().direct
-    return {"ready": verdict == "ready" or silent, "load_failed": verdict == "failed"}
+    verdict = _start_verdict(pid)
+    return {"ready": verdict == "ready", "load_failed": verdict == "failed"}
 
 
 def _chat_problem(repo: str) -> str | None:
@@ -2222,8 +1828,8 @@ def _chat_problem(repo: str) -> str | None:
         running = _is_our_server(pid, first, identity)
     if not running:
         return "Start the API server first (API Server page)."
-    # Any other name would make the server load one more model.
-    if repo not in served:
+    # Chat is only for the model the server was started with.
+    if repo not in served[:1]:
         return f"The API server does not serve {repo}."
     readiness = _server_readiness()
     if readiness["load_failed"]:
@@ -2256,7 +1862,7 @@ def _last_good_server() -> tuple[list[str], bool] | None:
     The running server if it has reported ready, else the one it was replacing.
     """
     running = _running_server()
-    if running and _start_verdict(STATE.server_pid, len(running[0])) == "ready":
+    if running and _start_verdict(STATE.server_pid) == "ready":
         return running
     return STATE.server_fallback or running
 
@@ -2340,7 +1946,7 @@ def _valid_repo(repo) -> bool:
     return (
         isinstance(repo, str)
         and len(repo) <= MODEL_NAME_MAX
-        and bool(_guard_module().REPO_ID.fullmatch(repo))
+        and bool(model_info.REPO_ID.fullmatch(repo))
     )
 
 
@@ -2395,18 +2001,12 @@ def user_settings(repo: str | None = None) -> dict[str, int | None]:
 
 
 def server_settings(repos: list[str]) -> dict[str, int | None]:
-    """What one server holding ``repos`` is started with: the stricter (lower) value.
+    """What the server for the model in ``repos`` is started with (none: the global values).
 
     The performance settings are left out: see ``performance_flags``.
     """
-    each = [user_settings(repo) for repo in repos] or [user_settings()]
-    merged = {}
-    for key in SETTINGS:
-        values = [None if key in PERFORMANCE_SETTINGS else own[key] for own in each]
-        if key == "server_max_reply_tokens" and any(values):
-            values = [value or SERVER_MAX_TOKENS for value in values]
-        merged[key] = min((value for value in values if value is not None), default=None)
-    return merged
+    own = user_settings(repos[0] if repos else None)
+    return {key: None if key in PERFORMANCE_SETTINGS else own[key] for key in SETTINGS}
 
 
 def save_settings(changes: dict, repo: str | None = None) -> None:
@@ -2502,7 +2102,7 @@ def _performance_problem(repo: str, changes: dict) -> str | None:
 
 def _model_config(repo: str) -> dict:
     try:
-        return _guard_module().read_config(_snapshot_dir(repo))
+        return model_info.read_config(_snapshot_dir(repo))
     except Exception:  # not downloaded or unreadable: nothing is known
         return {}
 
@@ -2520,7 +2120,7 @@ def _chosen_flags(values: dict) -> dict[str, int]:
 def _blocked_reason(repo: str, flags: dict) -> str | None:
     if "kv_bits" not in flags:
         return None
-    return _guard_module().kv_problem(_model_config(repo), flags.get("kv_group_size", 64))
+    return model_info.kv_problem(_model_config(repo), flags.get("kv_group_size", 64))
 
 
 def performance_flags(repo: str | None = None) -> tuple[dict, str | None]:
@@ -2528,15 +2128,6 @@ def performance_flags(repo: str | None = None) -> tuple[dict, str | None]:
     flags = _chosen_flags(user_settings(repo))
     why = _blocked_reason(repo, flags) if repo else None
     return ({}, why) if why else (flags, None)
-
-
-def _model_performance(repos) -> dict[str, dict]:
-    """The models whose flags differ from the global ones (empty: Standard)."""
-    models = _read_settings()[1]
-    own = {repo for repo, values in models.items() if set(values) & set(PERFORMANCE_SETTINGS)}
-    shared = performance_flags()[0]
-    found = {repo: performance_flags(repo)[0] for repo in sorted(own | set(repos))}
-    return {repo: flags for repo, flags in found.items() if flags != shared}
 
 
 def performance_label(flags: dict) -> str:
@@ -2553,29 +2144,26 @@ def performance_label(flags: dict) -> str:
     return f"Advanced ({', '.join(words[k].format(v) for k, v in chosen.items())})"
 
 
-def _reported_performance(repo: str, pid: int | None) -> dict | None:
-    reported = _read_resident(pid).get("performance")
-    entry = reported.get(repo) if isinstance(reported, dict) else None
-    return entry if isinstance(entry, dict) else None
-
-
 def performance_in_force(repo: str) -> str | None:
-    """The mode the running server says ``repo`` has; None until it has said."""
-    entry = _reported_performance(repo, STATE.server_pid)
-    return None if entry is None else performance_label(entry)
+    """The mode the ready server was started with for ``repo``; None when unknown."""
+    started = STATE.server_started_with
+    if started is None or STATE.server_verdict != "ready" or repo not in STATE.server_repos:
+        return None
+    try:
+        return performance_label(json.loads(started).get("performance") or {})
+    except (ValueError, AttributeError):
+        return None
 
 
-def _performance_view(repos: list[str], pid: int | None) -> dict:
-    """The saved mode and, per served model, the one the server reports."""
+def _performance_view(repos: list[str]) -> dict:
+    """The saved mode and, for the served model, the one it was started with."""
     models = {}
     for repo in repos:
         flags, why = performance_flags(repo)
-        entry = _reported_performance(repo, pid)
-        note = entry.get("note") if entry else why and f"Standard is used: {why}."
         models[repo] = {
             "saved": performance_label(flags),
-            "in_force": None if entry is None else performance_label(entry),
-            "note": note if isinstance(note, str) else None,
+            "in_force": performance_in_force(repo),
+            "note": f"Standard is used: {why}." if why else None,
         }
     return {"saved": performance_label(performance_flags()[0]), "models": models}
 
@@ -2620,59 +2208,21 @@ def chat_settings(repo: str | None = None) -> dict:
     return {**CHAT_SETTINGS, **{k: v for k, v in chosen.items() if v is not None}}
 
 
-def _model_settings(key: str) -> tuple[int | None, dict[str, int]]:
-    """``key``'s global value and each model's own: the guard picks by the model."""
-    shared, models = _read_settings()
-    return shared.get(key), {repo: own[key] for repo, own in models.items() if key in own}
-
-
-def _launch_stamp(settings: dict) -> str:
-    """The set values a server start depends on (Chat's values apply at once)."""
-    skipped = (*CHAT_ONLY_SETTINGS, *PER_MODEL_AT_START, *PERFORMANCE_SETTINGS)
-    used = {k: v for k, v in settings.items() if v is not None and k not in skipped}
-    if flags := performance_flags()[0]:
-        used["performance"] = flags
-    if own := _model_performance([]):
-        used["model_performance"] = own
-    for key, name in PER_MODEL_AT_START.items():
-        shared, models = _model_settings(key)
-        if shared is not None:
-            used[key] = shared
-        if models:
-            used[name] = models
-    return json.dumps(used, sort_keys=True)
-
-
-def _direct_stamp(engine: engines.Engine, settings: dict, repo: str) -> str:
-    """As ``_launch_stamp``, for a direct engine: only what its command is given.
-
-    The memory limit is left out: the watch reads it at every look.
-    """
+def _launch_stamp(engine: engines.Engine, settings: dict, repo: str) -> str:
+    """The set values a server start depends on: only what its command is given."""
     used = {k: settings[k] for k in engine.setting_keys if settings.get(k) is not None}
     if flags := performance_flags(repo)[0]:
         used["performance"] = flags
     return json.dumps(used, sort_keys=True)
 
 
-def _settings_pending(running: bool, view: dict) -> bool:
+def _settings_pending(running: bool) -> bool:
     """Whether the running server was started with other settings than are saved."""
-    started = STATE.server_started_with
-    if started is None:  # adopted: it says itself; an older one was given none
-        started = view.get("started_with") or "{}"
-    if not running:
+    repos = list(STATE.server_repos)
+    if not (running and repos):
         return False
-    repos, engine = list(STATE.server_repos), _running_engine()
-    settings = server_settings(repos)
-    if engine.direct and repos:
-        return started != _direct_stamp(engine, settings, repos[0])
-    return started != _launch_stamp(settings)
-
-
-def _memory_rule(percent: int) -> str:
-    return (
-        f"{percent}% ceiling, less what other apps use, for one model; "
-        f"{min(52, percent)}% share for two models"
-    )
+    stamp = _launch_stamp(_running_engine(), server_settings(repos), repos[0])
+    return (STATE.server_started_with or "{}") != stamp
 
 
 def settings_view(repo: str | None = None) -> dict:
@@ -2681,14 +2231,11 @@ def settings_view(repo: str | None = None) -> dict:
     With ``repo``: also its own value and the one it inherits from the global values.
     """
     automatic = {
-        "max_context_tokens": "calculated from memory",
-        "two_model_context_tokens": "calculated, at most 32768",
-        "memory_limit_percent": _memory_rule(80),
+        "max_context_tokens": "OptiQ: its own default. MLX: not available",
         "server_max_reply_tokens": str(SERVER_MAX_TOKENS),
         "chat_max_reply_tokens": str(CHAT_SETTINGS["max_tokens"]),
-        "prompt_cache_size": str(_guard_module().CACHED_CONVERSATIONS),
-        "prompt_cache_bytes": "calculated: two conversations at the context limit",
-        "mlx_cache_limit_mb": "MLX default",
+        "prompt_cache_size": "the engine's own default",
+        "prompt_cache_bytes": "MLX: no limit. OptiQ: an eighth of this Mac's memory",
         "chat_temperature": str(CHAT_SETTINGS["temperature"]),
         "chat_top_p": str(CHAT_SETTINGS["top_p"]),
         "performance_mode": "Standard",
@@ -2700,8 +2247,6 @@ def settings_view(repo: str | None = None) -> dict:
     shown = {}
     for key, value in user_settings(repo).items():
         effective = f"automatic ({automatic[key]})" if value is None else str(value)
-        if key == "memory_limit_percent" and value is not None:
-            effective = _memory_rule(value)
         low, high = SETTINGS[key]
         shown[key] = {"value": value, "min": low, "max": high, "effective": effective}
         if key in CHOICE_SETTINGS:
@@ -2720,22 +2265,9 @@ def config_view(repo: str | None = None) -> dict:
         entry.setdefault("inherited", None)
         entry["decimal"] = key in DECIMAL_SETTINGS
         entry["global_only"] = key not in MODEL_SETTINGS
-    applied = message = None
-    if repo is not None and settings["max_context_tokens"]["value"]:
-        applied, message = _applied_context(
-            _server_models([repo]), _server_budget(), server_settings([repo])
-        )
-    if applied is not None and applied < settings["max_context_tokens"]["value"]:
-        settings["max_context_tokens"]["effective"] = (
-            f"{applied} (lowered from {settings['max_context_tokens']['value']})"
-            if applied
-            else "0 (no prompt accepted)"
-        )
     return {
         "repo": repo,
         "settings": settings,
-        "applied_context": applied,
-        "context_message": message,
         "load_test": load_test_view(),
         "performance": _config_performance(repo),
     }
@@ -2746,10 +2278,10 @@ def _config_performance(repo: str | None) -> dict:
     mode = user_settings(repo)["performance_mode"] or "standard"
     if repo is None:
         return {"mode": mode, "reason": None, "blocked": {}}
-    guard, config, blocked = _guard_module(), _model_config(repo), {}
-    if why := guard.kv_problem(config):
+    config, blocked = _model_config(repo), {}
+    if why := model_info.kv_problem(config):
         blocked["save_memory"] = why
-    groups = {str(g): guard.kv_problem(config, g) for g in guard.KV_GROUPS}
+    groups = {str(g): model_info.kv_problem(config, g) for g in model_info.KV_GROUPS}
     if groups := {group: why for group, why in groups.items() if why}:
         blocked["kv_group_size"] = groups
     return {"mode": mode, "reason": performance_flags(repo)[1], "blocked": blocked}
@@ -2767,7 +2299,7 @@ def _last_models() -> list[str]:
             return []
     except Exception:  # parsing can fail in more ways than ValueError
         return []
-    return repos[:SERVER_MAX_MODELS]
+    return repos[:1]
 
 
 def _last_engine() -> str:
@@ -2817,7 +2349,7 @@ def _try_launch(*args) -> subprocess.Popen | None:
 
 
 def _bring_back(previous: tuple[list[str], bool], why: str, stops: int) -> subprocess.Popen | None:
-    """Start the replaced server again and say why. The caller holds ``server_lock``.
+    """Start the replaced server again. The caller holds ``STATE.server_lock``.
 
     One try: the start made here has nothing to fall back to.
     """
@@ -2826,20 +2358,16 @@ def _bring_back(previous: tuple[list[str], bool], why: str, stops: int) -> subpr
     STATE.server_fallback = None
     repos, background, *engine = previous
     why = why.rstrip(".")
-    names = " and ".join(name.rsplit("/", maxsplit=1)[-1] for name in repos)
-    args = [repos[1:]] if repos[1:] else []
-    if engine:
-        args = [repos[1:], None, *engine]
-    proc = _try_launch(repos[0], background, *args)
+    name = repos[0].rsplit("/", maxsplit=1)[-1]
+    proc = _try_launch(repos[0], background, *((None, *engine) if engine else ()))
     if proc is None:
         notice = STATE.server_down_notice = (
-            f"The new server did not start: {why}. Starting {names} again failed too: "
+            f"The new server did not start: {why}. Starting {name} again failed too: "
             f"{(STATE.server_down_notice or STATE.server_last_error or '').rstrip('.')}. "
             "The API server is stopped."
         )
     else:
-        was = "were" if len(repos) > 1 else "was"
-        notice = f"The new server did not start: {why}. {names} {was} started again."
+        notice = f"The new server did not start: {why}. {name} was started again."
         with STATE.lock:
             if STATE.server_pid == proc.pid:
                 STATE.server_apply_notice = notice
@@ -2862,51 +2390,46 @@ def _pump_output(proc: subprocess.Popen) -> None:
         STATE.server_last_error = f"exited with status {proc.returncode}"
 
 
-def _over_memory_ceiling() -> str | None:
-    """Why a direct engine's server must stop for memory, from one reading of this Mac.
+def _probe_direct(pid: int, adopted: bool = False) -> str | None:
+    """Look at the running server once. Returns why it must be stopped, or None.
 
-    The same ceiling MLX uses, but only looked at when the server is probed: memory can
-    pass it between two looks, so this cannot guarantee the limit. Unreadable: no stop.
+    Nothing is sent until every listener on the port is seen to be this process. A
+    keyed engine is checked again while it runs. Sets ``server_verdict`` when it
+    answers. ``adopted``: an MLX server left by an earlier session, not warmed again.
     """
-    guard = _guard_module()
-    percent = server_settings(list(STATE.server_repos))["memory_limit_percent"]
-    ceiling, used = guard.memory_ceiling(percent), guard.other_apps_bytes(None)
-    if used is None or used <= ceiling:
+    engine, port = _running_engine(), _server_port()
+    ready = STATE.server_verdict == "ready"
+    if STATE.server_pid != pid or (ready and not engine.direct):
         return None
-    ram = guard.ram_bytes()
-    return (
-        f"memory use on this Mac reached {round(100 * used / ram)}%, "
-        f"over the {round(100 * ceiling / ram)}% limit"
-    )
-
-
-def _probe_direct(pid: int) -> str | None:
-    """Look at a direct engine's server once. Returns why it must be stopped, or None.
-
-    The key is used only after every listener on the port is seen to be this process,
-    at each start and again while it runs. Sets ``server_verdict`` when it answers.
-    """
-    engine, port = _running_engine(), STATE.server_port
-    if STATE.server_pid != pid or not engine.direct:
-        return None
-    if why := _over_memory_ceiling():
-        return why
     holders = engine_runtime.listeners(port)
     if holders is None:
         return None  # unknown: nothing is sent, and the next look tries again
     if holders - {pid}:
-        return f"another program listens on port {port}; the key was not sent to it"
-    if not holders or STATE.server_verdict == "ready":
+        unsent = "; the key was not sent to it" if engine.direct else ""
+        return f"another program listens on port {port}{unsent}"
+    if not holders or ready:
         return None
-    key = engine.read_key(_key_file())
-    if not key:
-        return "its key file is missing"
-    answer = engine_runtime.auth_state(port, key, anthropic=STATE.server_anthropic)
-    if answer == "open":
-        return "it answered without the key"
-    if answer != "ready" or not engine_runtime.listener_is(port, pid):
+    key = None
+    if engine.direct:
+        key = engine.read_key(_key_file())
+        if not key:
+            return "its key file is missing"
+        answer = engine_runtime.auth_state(port, key, anthropic=STATE.server_anthropic)
+        if answer == "open":
+            return "it answered without the key"
+        if answer != "ready":
+            return None
+    elif not adopted:
+        health = engine_runtime.health(port)
+        if health == 503:
+            return "its model could not be loaded"
+        if health != 200:
+            return None
+    if not engine_runtime.listener_is(port, pid):
         return None
-    if not engine_runtime.warm_up(port, key, engine.request_model, START_WATCH_SECONDS):
+    if (engine.direct or not adopted) and not engine_runtime.warm_up(
+        port, key, engine.request_model, START_WATCH_SECONDS
+    ):
         return "it could not answer a first request (see the server output)"
     if STATE.server_pid == pid:
         STATE.server_verdict = "ready"
@@ -2946,14 +2469,14 @@ def _watch_server(
     failed = None
     unheard = True  # this server has not yet said whether it came up
     deadline = time.monotonic() + START_WATCH_SECONDS
-    direct = _running_engine().direct and STATE.server_pid == pid
-    stopped_why = None  # the app stopped a direct engine's server, and why
+    direct = _running_engine().direct
+    stopped_why = None  # the app stopped the server, and why
     while True:
         # Until it answers at every look, then every half minute.
-        if direct and STATE.server_pid == pid and not STATE.server_stopping:
+        if STATE.server_pid == pid and not STATE.server_stopping:
             came_up = STATE.server_verdict == "ready"
-            if not came_up or checks % 15 == 14:
-                stopped_why = _probe_direct(pid)
+            if not came_up or (direct and checks % 15 == 14):
+                stopped_why = _probe_direct(pid, adopted=proc is None)
                 late = STATE.server_verdict != "ready" and time.monotonic() > deadline
                 if late and not stopped_why:
                     stopped_why = "it did not answer in time"
@@ -2966,7 +2489,7 @@ def _watch_server(
                     break
                 stopped_why = None
         if previous or unheard:
-            verdict = _start_verdict(pid, len(STATE.server_repos))
+            verdict = _start_verdict(pid)
             if unheard and verdict == "ready":
                 _remember_models(pid)
             unheard = verdict is None and time.monotonic() <= deadline
@@ -3016,16 +2539,13 @@ def _watch_server(
         # the current pid is allowed to declare the server down.
         if STATE.server_pid != pid:
             return
-        names = " and ".join(
-            name.rsplit("/", maxsplit=1)[-1] for name in STATE.server_repos or [repo]
-        )
+        name = repo.rsplit("/", maxsplit=1)[-1]
         STATE.server_proc = None
         STATE.server_pid = None
         STATE.server_repo = None
         STATE.server_repos = []
         STATE.server_background = False
         STATE.server_started_at = None
-        STATE.server_unguarded = False
         engine = _running_engine()
         _reset_engine()
         STATE.server_last_error = (
@@ -3036,7 +2556,7 @@ def _watch_server(
         elif code == -signal.SIGKILL:
             STATE.server_last_error += ", killed, possibly out of memory"
         STATE.server_down_notice = (
-            f"API server for {names} stopped unexpectedly ({STATE.server_last_error})"
+            f"API server for {name} stopped unexpectedly ({STATE.server_last_error})"
         )
         if engine.direct:
             STATE.server_down_notice += f". Engine: {engine.name}; see Server output."
@@ -3048,73 +2568,40 @@ def _watch_server(
     log_app("error", "api server died", repo=repo, pid=pid, exit_code=code)
 
 
-def _server_command(
-    repo: str,
-    settings: dict,
-    port: int,
-    limits: dict | None = None,
-    performance: dict | None = None,
-) -> list[str]:
-    """The guarded server for ``repo`` on ``port``; ``limits``: the two-model plan."""
+def _server_command(repo: str, settings: dict, port: int, performance: dict | None = None):
+    """mlx_lm's own server for ``repo`` on ``port``. Only its own flags are passed."""
     cmd = [
         sys.executable,
-        str(GUARD_SCRIPT),
+        "-m",
+        "mlx_lm",
+        "server",
         "--model",
         repo,
         "--host",
         HOST,
         "--port",
         str(port),
-        "--max-tokens",
+        "--max-tokens",  # a default: a request may ask for more
         str(settings["server_max_reply_tokens"] or SERVER_MAX_TOKENS),
         # mlx_lm defaults to "*", which lets any web page read replies.
         "--allowed-origins",
         f"http://{HOST}:{PORT},http://localhost:{PORT}",
     ]
-    cache_bytes = settings["prompt_cache_bytes"]
-    if limits:
-        # The user's figure only lowers the cap the memory plan was made with.
-        planned = limits["cache_cap_bytes"]
-        cache_bytes = min(cache_bytes or planned, planned)
-    for flag, value in (
-        (
-            "--prompt-cache-size",
-            settings["prompt_cache_size"] or _guard_module().CACHED_CONVERSATIONS,
-        ),
-        ("--prompt-cache-bytes", cache_bytes),
-        ("--studio-max-context", settings["max_context_tokens"]),
-        ("--studio-memory-percent", settings["memory_limit_percent"]),
-    ):
-        if value:
-            cmd += [flag, str(value)]
-    if settings["mlx_cache_limit_mb"] is not None:  # 0 is a real value: no free cache
-        cmd += ["--studio-cache-limit-mb", str(settings["mlx_cache_limit_mb"])]
+    for key in ("prompt_cache_size", "prompt_cache_bytes"):
+        if settings[key]:
+            cmd += [f"--{key.replace('_', '-')}", str(settings[key])]
     for key in PERFORMANCE_FLAGS:
         if performance and key in performance:
             cmd += [f"--{key.replace('_', '-')}", str(performance[key])]
     return cmd
 
 
-def _server_env(
-    stamp: str,
-    served: Path,
-    resident: Path,
-    contexts: dict,
-    cache_limits: dict,
-    performance: dict | None = None,
-) -> dict:
+def _server_env() -> dict:
     return {
         # No key or token of the app's environment reaches the server.
         **engine_runtime.minimal_environment(),
         # A request must never make the server download a model.
         "HF_HUB_OFFLINE": "1",
-        "MLX_STUDIO_SERVED_FILE": str(served),
-        "MLX_STUDIO_RESIDENT_FILE": str(resident),
-        "MLX_STUDIO_SETTINGS": stamp,
-        # Always set, so a value from the app's own environment is never used.
-        "MLX_STUDIO_MODEL_CONTEXTS": json.dumps(contexts),
-        "MLX_STUDIO_MODEL_CACHE_LIMITS": json.dumps(cache_limits),
-        "MLX_STUDIO_MODEL_PERFORMANCE": json.dumps(performance or {}),
     }
 
 
@@ -3122,7 +2609,6 @@ def worker_server_start(
     repo: str,
     background: bool = False,
     ticket: int | None = None,
-    also: list[str] | None = None,
     engine: str = "mlx",
     anthropic: bool = True,
 ) -> None:
@@ -3131,7 +2617,7 @@ def worker_server_start(
         try:
             stops = STATE.server_stops if ticket is None else ticket
             # Stop can win the lock while this start is still queued.
-            refused = _engine_refusal(engine, [repo, *(also or [])])
+            refused = _engine_refusal(engine, [repo])
             if stops == STATE.server_stops and refused:
                 _refuse_start(repo, refused)
             elif stops == STATE.server_stops:
@@ -3139,11 +2625,9 @@ def worker_server_start(
                 with STATE.lock:
                     if stops == STATE.server_stops:  # not after a Stop just now
                         STATE.server_fallback = previous
-                args = [also] if also else []
-                if previous:
-                    args = [also or [], previous]
+                args = [previous] if previous else []
                 if engine != "mlx":
-                    args = [also or [], previous, engine, anthropic]
+                    args = [previous, engine, anthropic]
                 proc = _try_launch(repo, background, *args)
                 if proc is None and previous:
                     why = STATE.server_down_notice or STATE.server_last_error or "unknown error"
@@ -3158,9 +2642,8 @@ def worker_server_start(
                 log_activity("server", repo, "info", "start cancelled by Stop")
         finally:
             with STATE.lock:
-                for name in (repo, *(also or [])):
-                    if name in STATE.server_pending:
-                        STATE.server_pending.remove(name)
+                if repo in STATE.server_pending:
+                    STATE.server_pending.remove(repo)
     if proc is not None and not background:
         _pump_output(proc)
 
@@ -3178,7 +2661,6 @@ def _refuse_start(repo: str, why: str) -> None:
 def _launch_server(
     repo: str,
     background: bool,
-    also: list[str] | None = None,
     previous: tuple[list[str], bool] | None = None,
     engine: str = "mlx",
     anthropic: bool = True,
@@ -3192,53 +2674,14 @@ def _launch_server(
     STATE.server_down_notice = None
     STATE.server_apply_notice = None
     STATE.server_last_error = None
-    repos = [repo, *(also or [])]
     if engine != "mlx":
         return _launch_direct(engines.get(engine), repo, background, previous, anthropic)
-    # Read again now that the old server has given its memory back.
-    limits = server_memory_estimate(repos, fresh=True) if len(repos) > 1 else None
-    STATE.server_context = None
-    if limits and not limits["fits"]:
-        STATE.server_last_error = "not started: not enough memory"
-        STATE.server_down_notice = limits["refused"]
-        STATE.server_lines.append(limits["refused"])
-        log_activity("server", repo, "failed", limits["refused"])
-        return None
-    settings = server_settings(repos)
-    shared, own = _model_settings("max_context_tokens")
-    cache_shared, cache_own = _model_settings("mlx_cache_limit_mb")
-    # The global figure is the fallback; a model with its own is in the map. Two models
-    # share one MLX cache, so they get the lower of their own figures.
-    sent = {
-        **settings,
-        "max_context_tokens": shared,
-        "mlx_cache_limit_mb": settings["mlx_cache_limit_mb"] if limits else cache_shared,
-    }
-    # The global flags go on the command line; a model that differs gets its own at load.
-    cmd = _server_command(repo, sent, SERVER_PORT, limits, performance_flags()[0])
-    if limits:
-        STATE.server_context = limits["context_tokens"]
-        # Last on the line: the identity check reads from --model onwards.
-        cmd += [
-            "--studio-also-model",
-            repos[1],
-            "--studio-max-models",
-            str(SERVER_MAX_MODELS),
-            "--studio-budget-bytes",
-            str(max(limits["budget_bytes"], 1)),
-            "--studio-kv-tokens",
-            str(limits["context_tokens"]),
-        ]
-    env = _server_env(
-        _launch_stamp(settings),
-        _served_file(),
-        _resident_file(),
-        own,
-        cache_own,
-        _model_performance(repos),
-    )
-    STATE.server_started_with = env["MLX_STUDIO_SETTINGS"]
-    return _spawn_server(cmd, env, repos, background, previous)
+    settings = server_settings([repo])
+    cmd = _server_command(repo, settings, SERVER_PORT, performance_flags(repo)[0])
+    STATE.server_started_with = _launch_stamp(engines.MLX, settings, repo)
+    STATE.server_verdict = None
+    # Its own folder as the working directory: ``-m`` looks for modules there first.
+    return _spawn_server(cmd, _server_env(), [repo], background, previous, cwd=str(APP_DIR))
 
 
 def _direct_settings(settings: dict) -> dict:
@@ -3260,7 +2703,7 @@ def _launch_direct(
         raise engine_runtime.Refused(why)
     snapshot = _snapshot_dir(repo)
     settings = server_settings([repo])
-    stamp = _direct_stamp(engine, settings, repo)
+    stamp = _launch_stamp(engine, settings, repo)
     command = engine.command(
         engine.program(APP_DIR),
         snapshot,
@@ -3274,7 +2717,6 @@ def _launch_direct(
     key = engine.new_key()
     env = engine.environment(root, key)
     engine_runtime.write_key(_key_file(), key)
-    STATE.server_context = None
     STATE.server_started_with = stamp
     STATE.server_engine, STATE.server_port = engine.id, engine.port
     STATE.server_snapshot, STATE.server_verdict = str(snapshot), None
@@ -3319,9 +2761,6 @@ def _spawn_server(
     """Run ``cmd`` as the API server, record it and watch it."""
     repo, port = repos[0], _server_port()
     where = {"cwd": cwd} if cwd else {}
-    for stale in (_served_file(), _resident_file(), _budget_file()):
-        with contextlib.suppress(OSError):
-            stale.unlink(missing_ok=True)
     try:
         if background:
             # Detached: survives the app window closing, output goes to a file
@@ -3433,7 +2872,6 @@ def _stop_server_locked() -> None:
             STATE.server_started_at = None
             STATE.server_down_notice = None
             STATE.server_apply_notice = None
-            STATE.server_unguarded = False
             _reset_engine()
         _clear_server_pidfile(only_pid=pid)
         if repo:
@@ -3467,10 +2905,11 @@ def restore_server_state() -> None:
         _clear_server_pidfile()
         _reset_engine()
         return
+    STATE.server_started_with = data.get("settings")
+    STATE.server_verdict = None
     if engine.direct and type(data.get("port")) is int:
         STATE.server_engine, STATE.server_port = engine.id, data["port"]
         STATE.server_snapshot, STATE.server_verdict = data.get("snapshot"), None
-        STATE.server_started_with = data.get("settings")
         STATE.server_anthropic = data.get("anthropic") is True
     STATE.server_pid = pid
     STATE.server_identity = data.get("started")
@@ -3481,26 +2920,14 @@ def restore_server_state() -> None:
     STATE.server_background = bool(data.get("background"))
     STATE.server_started_at = data.get("started_at")
     STATE.server_stopping = False
-    # A 2.0.12 session lowered it for its Chat model; none can be loaded now.
-    with contextlib.suppress(OSError):
-        _budget_file().unlink(missing_ok=True)
-    # A build without the guard may have left it. Restarting is the user's call.
-    STATE.server_unguarded = not engine.direct and not _is_guarded(pid)
-    if STATE.server_unguarded:
-        log_app(
-            "warning",
-            "adopted an api server running without the request guard",
-            pid=pid,
-            repo=STATE.server_repo,
-        )
+    log_app("info", "adopted running api server", pid=pid, repo=STATE.server_repo)
+    if OLD_WRAPPER in _ps_field(pid, "command"):
         log_activity(
             "server",
             STATE.server_repo,
             "info",
-            "running without the request guard; restart it on the API Server page",
+            "started by an earlier version of MLX Studio; restart it on the API Server page",
         )
-    else:
-        log_app("info", "adopted running api server", pid=pid, repo=STATE.server_repo)
     threading.Thread(
         target=_watch_server, args=(pid, STATE.server_repo or "?", None), daemon=True
     ).start()
@@ -3587,8 +3014,8 @@ def _stored_runs(repo: str) -> list[dict]:
 
 
 def _loadtest_fingerprint(repo: str, engine_id: str = "mlx") -> dict:
-    """What a result depends on; the max context is left out, as Apply changes it."""
-    unused = (*CHAT_ONLY_SETTINGS, "max_context_tokens", "two_model_context_tokens")
+    """What a result depends on; the max context is left out, as each test sets its own."""
+    unused = (*CHAT_ONLY_SETTINGS, "max_context_tokens")
     settings = {
         k: v
         for k, v in server_settings([repo]).items()
@@ -3609,9 +3036,18 @@ def _loadtest_fingerprint(repo: str, engine_id: str = "mlx") -> dict:
 
 
 def _model_max_size(repo: str) -> int:
-    guard = _guard_module()
-    limit = guard.context_limit(guard.read_config(_snapshot_dir(repo)))
+    limit = model_info.context_limit(_model_config(repo))
     return min(limit or LOAD_TEST_SIZE_RANGE[1], LOAD_TEST_SIZE_RANGE[1])
+
+
+def _offered_sizes(repo: str, values: dict) -> list[int]:
+    """The saved sizes, and the model's own limit so that its top size can be picked."""
+    sizes = values["sizes"]["value"]
+    own = model_info.context_limit(_model_config(repo))
+    low, high = LOAD_TEST_SIZE_RANGE
+    if own and low <= own <= high and own not in sizes:
+        return sorted([*sizes, own])
+    return list(sizes)
 
 
 def _loadtest_blocked_locked(repo: str) -> str | None:
@@ -3658,7 +3094,6 @@ def _direct_test_launch(engine, repo: str, settings: dict) -> tuple[list[str], d
         "key_env": engine.key_env,
         "server_env": server_env,
         "server_dir": str(root),
-        "request_model": engine.request_model,
     }
     return command, env, fields
 
@@ -3698,32 +3133,20 @@ def _loadtest_job(
 ) -> tuple[dict, dict]:
     """The runner's job and the environment its server inherits."""
     engine = engines.get(engine_id)
-    guard = _guard_module()
     values = {key: entry["value"] for key, entry in load_test_view().items()}
     settings = server_settings([repo])
-    # The largest size asked for, plus room for its follow-up reply; the guard still
-    # lowers it to the memory ceiling and the model's own limit.
-    room = max(sizes) + values["reply_tokens"]
-    resident = workdir / "resident.json"
-    asked = {**settings, "max_context_tokens": room}
+    # The largest size asked for, plus room for its follow-up reply (a direct engine
+    # is started with it as its max context).
+    asked = {**settings, "max_context_tokens": max(sizes) + values["reply_tokens"]}
     fields = {}
     if engine.direct:
         command, env, fields = _direct_test_launch(engine, repo, asked)
     else:
-        command = _server_command(repo, asked, 0, performance=performance_flags(repo)[0])
-        command.append("--studio-exit-with-parent")
-        env = _server_env(_launch_stamp(settings), workdir / "served.models", resident, {}, {})
+        command = _server_command(repo, asked, 0, performance_flags(repo)[0])
+        env = _server_env()
         env["PYTHONDONTWRITEBYTECODE"] = "1"  # nothing is written into the app bundle
     snapshot = _snapshot_dir(repo)
-    fingerprint = _loadtest_fingerprint(repo, engine_id)
-    priors = [
-        [row["size"], row["server_peak_bytes"], row.get("status") == "passed"]
-        for run in _stored_runs(repo)
-        if run.get("fingerprint") == fingerprint and run.get("thinking") == thinking
-        for row in run["rows"]
-        if type(row.get("size")) is int and type(row.get("server_peak_bytes")) is int
-    ]
-    config = guard.read_config(snapshot)
+    config = model_info.read_config(snapshot)
     if thinking is not None:
         fields["thinking"] = thinking
     job = {
@@ -3731,19 +3154,11 @@ def _loadtest_job(
         "repo": repo,
         "sizes": sorted(sizes),
         **{key: values[key] for key in LOAD_TEST_NUMBERS},
-        "limit_percent": settings["memory_limit_percent"],
-        "ram_bytes": hardware().get("ram_bytes"),
-        "context_limit": guard.context_limit(config),
-        "model": {
-            "weights_bytes": guard.weights_bytes(snapshot),
-            "kv_per_token": guard.kv_bytes_per_token(config) or guard.UNKNOWN_KV_PER_TOKEN,
-            "margin_bytes": guard.MEMORY_MARGIN,
-        },
+        "context_limit": model_info.context_limit(config),
+        "request_model": engine.request_model,
         "snapshot": str(snapshot),
         "command": command,
-        "resident_file": str(resident),
         "workdir": str(workdir),
-        "priors": priors,
         **fields,
     }
     return job, env
@@ -3771,8 +3186,6 @@ def start_loadtest(
         return 400, {"error": support["reason"]}
     # Named in every request where the model has the switch; not given means on.
     thinking = thinking is not False if support["supported"] else None
-    if not hardware().get("ram_bytes"):
-        return 500, {"error": "this Mac's memory size cannot be read"}
     if engine.direct and (why := _engine_refusal(engine.id, [repo], port_too=False)):
         return 409, {"error": why}
     run_id = secrets.token_hex(8)
@@ -3904,7 +3317,7 @@ def _watch_loadtest(run: dict, workdir: Path) -> None:
         log_app("error", "load test watch failed", error=repr(exc)[:300])
     finally:
         _kill_runner(proc)
-        # A direct engine's server does not exit by itself when the runner is gone.
+        # The server does not exit by itself when the runner is gone.
         _end_test_server(run.get("pids", {}))
         if record["status"] == "running":
             if run["cancel"]:
@@ -3983,27 +3396,27 @@ def _end_left(saved: dict, name: str, marks: tuple[str, ...]) -> None:
 
 
 def _end_test_server(saved: dict) -> None:
-    """End the server of a direct engine's load test, if one is left."""
+    """End a load test's server, if one is left: it does not exit when the runner is gone."""
     engine = engines.get(saved.get("engine"))
     if engine is not None and engine.direct:
-        _end_left(saved, "server", (engine.identity(saved.get("snapshot")),))
+        marks = (engine.identity(saved.get("snapshot")),)
+    else:
+        repo = saved.get("repo")
+        marks = tuple(
+            f"{start} --model {repo} --host " for start in (" -m mlx_lm server", OLD_WRAPPER)
+        )
+    for mark in marks:
+        _end_left(saved, "server", (mark,))
 
 
 def restore_loadtest() -> None:
     """Clear what a killed app left: end only processes that are still ours."""
     try:
         saved = json.loads(_read_small(_loadtest_pidfile(), LAST_MODELS_MAX_BYTES))
-        repo = saved["repo"]
+        saved["repo"]
     except Exception:  # missing or unusable: nothing is signalled
-        saved, repo = {}, None
-    ours = {
-        "runner": (str(LOADTEST_SCRIPT),),
-        "server": (f"/{GUARD_SCRIPT.name} --model {repo} ", "--studio-exit-with-parent"),
-    }
-    if saved.get("engine"):
-        del ours["server"]
-    for name, marks in ours.items():
-        _end_left(saved, name, marks)
+        saved = {}
+    _end_left(saved, "runner", (str(LOADTEST_SCRIPT),))
     _end_test_server(saved)
     for record in _read_loadtest():
         if record.get("status") == "running":
@@ -4053,33 +3466,13 @@ def loadtest_view(repo: str) -> dict:
             "min": LOAD_TEST_SIZE_RANGE[0],
             "max": most,
             "offered": [
-                {"size": size, "allowed": size <= most} for size in values["sizes"]["value"]
+                {"size": size, "allowed": size <= most} for size in _offered_sizes(repo, values)
             ],
         },
         "load_test": values,
         "thinking": thinking_support(repo),
         "blocked": blocked,
     }
-
-
-def apply_loadtest(repo: str, run_id, size) -> tuple[int, dict]:
-    """Save a size as ``repo``'s max context, only from a stored, passed, current run."""
-    if STATE.testing():
-        return 409, {"error": LOADTEST_BUSY}
-    record = next((r for r in _stored_runs(repo) if r["id"] == run_id), None)
-    if record is None:
-        return 404, {"error": "no such load test result for this model"}
-    passed = any(
-        row.get("status") == "passed" and row.get("size") == size for row in record["rows"]
-    )
-    if type(size) is not int or not passed:
-        return 400, {"error": "that size did not pass in this test"}
-    if record.get("engine", "mlx") != "mlx":
-        return 400, {"error": "Apply saves a size for MLX results only"}
-    if record.get("fingerprint") != _loadtest_fingerprint(repo):
-        return 409, {"error": "this result is out of date; run the test again"}
-    save_settings({"max_context_tokens": size}, repo)
-    return 200, {"ok": True}
 
 
 # --------------------------------------------------------------------------- #
@@ -4094,9 +3487,7 @@ REPO_ROUTES = frozenset(
         "/api/delete",
         "/api/reveal",
         "/api/server/start",
-        "/api/server/estimate",
         "/api/loadtest/start",
-        "/api/loadtest/apply",
     }
 )
 
@@ -4152,7 +3543,7 @@ class Handler(BaseHTTPRequestHandler):
         hosts = self.headers.get_all("Host") or []
         if len(hosts) != 1 or hosts[0].strip().lower() not in allowed:
             return "forbidden host"
-        # Every value counts, as in mlx_guard.py: a second header must not slip by.
+        # Every value counts: a second header must not slip by.
         own = {f"http://{host}" for host in allowed}
         if any(origin not in own for origin in self.headers.get_all("Origin") or []):
             return "forbidden origin"
@@ -4162,7 +3553,7 @@ class Handler(BaseHTTPRequestHandler):
         reason = self._foreign_request()
         if reason:
             return 403, reason
-        # Exactly one, as in mlx_guard.py.
+        # Exactly one.
         types = self.headers.get_all("Content-Type") or []
         if len(types) != 1 or types[0].split(";")[0].strip().lower() != "application/json":
             return 415, "Content-Type must be application/json"
@@ -4387,22 +3778,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             return
 
-        if path in ("/api/loadtest/start", "/api/loadtest/apply"):
-            if path == "/api/loadtest/start":
-                engine = body.get("engine", "mlx")
-                if not isinstance(engine, str):
-                    code, answer = 400, {"error": "engine must be a name"}
-                else:
-                    code, answer = start_loadtest(
-                        repo, body.get("sizes"), engine, body.get("thinking")
-                    )
-            elif not _valid_repo(repo):
-                code, answer = 400, {"error": "repo must be a model id"}
+        if path == "/api/loadtest/start":
+            engine = body.get("engine", "mlx")
+            if not isinstance(engine, str):
+                code, answer = 400, {"error": "engine must be a name"}
             else:
-                try:
-                    code, answer = apply_loadtest(repo, body.get("run_id"), body.get("size"))
-                except (ValueError, OSError) as exc:
-                    code, answer = 500, {"error": f"could not save the setting: {exc}"[:300]}
+                code, answer = start_loadtest(repo, body.get("sizes"), engine, body.get("thinking"))
             self._json(answer, code)
             return
 
@@ -4447,41 +3828,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": f"could not open Finder: {out.strip()[:200]}"}, 500)
             return
 
-        if path in ("/api/server/start", "/api/server/estimate"):
-            also = [] if body.get("also") is None else body["also"]
-            problem = _second_model_problem(repo, also)
-            if problem:
-                self._json({"error": problem}, 400)
+        if path == "/api/server/start":
+            if body.get("also"):
+                self._json({"error": "the server serves one model"}, 400)
                 return
-            repos = [repo, *also]
             engine = body.get("engine", "mlx")
             if not isinstance(engine, str) or engines.get(engine) is None:
                 self._json({"error": "unknown engine"}, 400)
                 return
-            # A pair is checked above. One name alone is checked here: nothing else is
-            # launched, and a running server is not stopped for it.
-            if not also and repo not in _complete_models():
+            # Nothing else is launched, and a running server is not stopped for it.
+            if repo not in _complete_models():
                 self._json({"error": f"{repo} is not installed completely"}, 400)
-                return
-            if path == "/api/server/estimate":
-                self._json(server_memory_estimate(repos))
-                return
-            estimate = server_memory_estimate(repos, fresh=True) if also else None
-            if estimate and not estimate["fits"]:
-                self._json({"error": estimate["refused"], "estimate": estimate}, 409)
                 return
             background = bool(body.get("background"))
             options = ()
             if engine != "mlx":
-                if why := _engine_refusal(engine, repos):
+                if why := _engine_refusal(engine, [repo]):
                     self._json({"error": why}, 409)
                     return
                 options = (engine, body.get("anthropic") is not False)
             with STATE.lock:
-                deleting = any(name in STATE.deleting for name in repos)
+                deleting = repo in STATE.deleting
                 testing = STATE.testing()
                 if not (deleting or testing):
-                    STATE.server_pending.extend(repos)
+                    STATE.server_pending.append(repo)
                     ticket = STATE.server_stops
             if deleting or testing:
                 why = "the model is being deleted" if deleting else LOADTEST_BUSY
@@ -4489,7 +3859,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             threading.Thread(
                 target=worker_server_start,
-                args=(repo, background, ticket, also, *options),
+                args=(repo, background, ticket, *options),
                 daemon=True,
             ).start()
             self._json({"ok": True, "background": background})

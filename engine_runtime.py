@@ -8,10 +8,12 @@ import json
 import os
 import re
 import secrets
+import select
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HOST = "127.0.0.1"
@@ -167,19 +169,27 @@ def auth_state(port: int, key: str, anthropic: bool = False) -> str:
     return "ready" if _status(port, "GET", "/v1/models", key) == 200 else "starting"
 
 
-def warm_up(port: int, key: str, model: str, timeout: float) -> bool:
+def health(port: int) -> int | None:
+    """mlx_lm's own /health: 200, or 503 once its model thread has failed."""
+    return _status(port, "GET", "/health")
+
+
+def warm_up(port: int, key: str | None, model: str, timeout: float) -> bool:
     """One tiny reply: the model really loads and answers. ``listener_is`` goes first."""
     body = {"model": model, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 1}
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     conn = http.client.HTTPConnection(HOST, port, timeout=timeout)
     try:
-        conn.request(
-            "POST",
-            "/v1/chat/completions",
-            json.dumps(body),
-            {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-        )
+        conn.request("POST", "/v1/chat/completions", json.dumps(body), headers)
+        # mlx_lm leaves a request unanswered when its model fails to load: watch for that.
+        end = time.monotonic() + timeout
+        while not key and not select.select([conn.sock], [], [], 1)[0]:
+            if health(port) == 503 or time.monotonic() > end:
+                return False
         return conn.getresponse().status == 200
-    except (OSError, http.client.HTTPException):
+    except (OSError, ValueError, http.client.HTTPException):
         return False
     finally:
         conn.close()

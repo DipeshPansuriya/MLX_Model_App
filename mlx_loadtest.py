@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""The Load Test runner (ADR-012): its own guarded API server, watched and gated.
+"""The Load Test runner (ADR-012): its own API server, timed and measured.
 
 Started by MLX Studio. stdin: one job line, then ``cancel``; its end means the app is
 gone. stdout: one JSON event per line. No prompt or reply text is ever reported.
 
-Memory is protected by sampling: a request is not sent when the projected use is over
-the gate, and the server is killed at the kill line. A jump between two samples
-cannot be stopped, so this cannot guarantee that use never passes the limit.
+Memory is measured and reported, with no percentage limit. The server is still killed
+when macOS reports critical memory pressure or swap grows by more than 0.5 GB.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ import http.client
 import json
 import os
 import random
-import shutil
 import signal
 import socket
 import subprocess
@@ -29,12 +27,6 @@ from pathlib import Path
 from typing import NamedTuple
 
 # Safety figures, deliberately not settings. At the 80% limit: gate 75, kill 77.
-LIMIT_MAX_PERCENT = 80
-GATE_MARGIN_PERCENT = 5  # the user's margin can only be wider
-KILL_OFFSET_PERCENT = 3
-FIRST_ESTIMATE_FACTOR = 6  # x cache bytes per token, with nothing measured
-SLOPE_FACTOR = 1.15
-FOLLOW_UP_FACTOR = 1.35  # x the peak of the cold step before it
 SAMPLE_SECONDS = 0.1
 MAX_GAP_SECONDS = 1.0  # a longer gap between samples: the Mac slept or stalled
 SWAP_GROWTH_BYTES = 500_000_000
@@ -129,55 +121,8 @@ def mac_probe(pid: int | None) -> Sample:
     )
 
 
-def limit_percent(setting: int | None) -> int:
-    return min(LIMIT_MAX_PERCENT, setting or LIMIT_MAX_PERCENT)
-
-
-def estimate_bytes(tokens: int, model: dict, measured=(), cold_peak: int | None = None) -> int:
-    """The server memory one request of ``tokens`` may need.
-
-    ``measured`` holds ``(tokens, peak bytes, finished)``. A finished measurement
-    beats the formula; any one at this size or smaller is a floor.
-    """
-
-    def formula(size: int) -> float:
-        per_token = FIRST_ESTIMATE_FACTOR * model["kv_per_token"]
-        return model["weights_bytes"] + model["margin_bytes"] + per_token * size
-
-    done: dict[int, int] = {}
-    for size, peak, finished in measured:
-        if finished:
-            done[size] = max(peak, done.get(size, 0))
-    below = sorted((size, peak) for size, peak in done.items() if size <= tokens)
-    if len(below) > 1:
-        (first, low), (last, high) = below[-2:]
-        slope = max(0, (high - low) / (last - first))
-        most = max(peak for _, peak in below)
-        estimate = most + slope * (tokens - last) * SLOPE_FACTOR
-    elif below:
-        size, peak = below[0]
-        estimate = peak
-        if size < tokens:
-            estimate = max(formula(tokens), peak + formula(tokens) - formula(size))
-    else:  # a larger size that did fit bounds a smaller one
-        larger = [peak for size, peak in done.items() if size > tokens]
-        estimate = min([formula(tokens), *larger])
-    floors = [peak for size, peak, _ in measured if size <= tokens]
-    if cold_peak:
-        floors.append(FOLLOW_UP_FACTOR * cold_peak)
-    return int(max([estimate, *floors]))
-
-
-def gate(percent, footprint, estimate, ram, limit, margin) -> tuple[bool, float]:
-    """Whether a request may be sent, and the memory use it is projected to reach."""
-    projected = percent + 100 * (estimate - footprint) / ram
-    return projected <= limit - max(margin, GATE_MARGIN_PERCENT), projected
-
-
-def trip(sample: Sample, base_swap: int, kill: float) -> str | None:
+def trip(sample: Sample, base_swap: int) -> str | None:
     """Why this reading means the server must be killed now, else None."""
-    if sample.percent >= kill:
-        return f"{sample.percent:.1f}% of memory in use reached the kill line of {kill}%"
     if sample.pressure >= PRESSURE_CRITICAL:
         return "macOS reported critical memory pressure"
     if sample.swap - base_swap > SWAP_GROWTH_BYTES:
@@ -198,11 +143,11 @@ class Monitor:
     """Samples memory while one server lives, and ends it when a rule says so."""
 
     def __init__(
-        self, proc, probe, clock, *, kill, base_swap, deadline, cancel, abandon,
+        self, proc, probe, clock, *, base_swap, deadline, cancel, abandon,
         killer=kill_group, report=None,
     ) -> None:  # fmt: skip
         self.proc, self.probe, self.clock, self.killer = proc, probe, clock, killer
-        self.kill, self.base_swap, self.deadline = kill, base_swap, deadline
+        self.base_swap, self.deadline = base_swap, deadline
         self.cancel, self.abandon, self.report = cancel, abandon, report
         self.reason: tuple[str, str] | None = None
         self.peak_percent = 0.0
@@ -251,7 +196,7 @@ class Monitor:
                 self.end("memory", "memory could not be read")
             return
         self.note(sample)
-        if why := trip(sample, self.base_swap, self.kill):
+        if why := trip(sample, self.base_swap):
             return self.end("memory", why)
         if self.cancel.is_set():
             if self.hard_kill_at is None:
@@ -316,11 +261,7 @@ def make_prompt(tokens: int, run_id: str, label: str, count) -> str:
 
 
 class RequestError(Exception):
-    refused = False  # the server's own prompt limit said no
-
-
-# The guard's two refusals of a prompt (see mlx_guard.PromptTooLong).
-REFUSALS = ("context_length_exceeded", "insufficient_memory")
+    pass
 
 
 def ask(port: int, body: dict, clock, beat, progress, headers: dict | None = None) -> dict:
@@ -333,13 +274,9 @@ def ask(port: int, body: dict, clock, beat, progress, headers: dict | None = Non
         reply = conn.getresponse()
         if reply.status != 200:
             raw = reply.read(64 * 1024).decode("utf-8", "replace")
-            code = None
-            with contextlib.suppress(ValueError, TypeError, KeyError, AttributeError):
-                error = json.loads(raw)["error"]
-                raw, code = error["message"], error.get("code")
-            failed = RequestError(f"the server answered {reply.status}: {raw[:300]}")
-            failed.refused = reply.status == 400 and code in REFUSALS
-            raise failed
+            with contextlib.suppress(ValueError, TypeError, KeyError):
+                raw = str(json.loads(raw)["error"])
+            raise RequestError(f"the server answered {reply.status}: {raw[:300]}")
         first = last = usage = None
         pieces, done = [], False
         while line := reply.readline(LINE_BYTES):
@@ -392,19 +329,6 @@ def free_port(reserved=RESERVED_PORTS) -> int:
             return port
 
 
-def listens(pid: int, port: int) -> bool:
-    """True only when the process ``pid`` is the one listening on ``port``."""
-    command = [
-        shutil.which("lsof") or "/usr/sbin/lsof",
-        "-nP", "-a", "-p", str(int(pid)), f"-iTCP:{int(port)}", "-sTCP:LISTEN", "-t",
-    ]  # fmt: skip
-    try:
-        found = subprocess.run(command, capture_output=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return found.returncode == 0 and str(pid).encode() in found.stdout.split()
-
-
 def spawn_server(command, env, log):
     return subprocess.Popen(
         command,
@@ -422,21 +346,6 @@ class Stop(Exception):
         self.status, self.reason = status, reason
 
 
-def over_limit(what: str) -> str:
-    """Why a size the server will not take is skipped."""
-    return (
-        f"memory: the server {what} now, below this size. Close other apps, then run the test again"
-    )
-
-
-def no_reply_room(accepts: int) -> str:
-    """Why a size whose follow-up reply could be cut short does not pass."""
-    return (
-        f"no room for the whole follow-up reply: the server accepts at most {accepts} tokens "
-        "(the memory limit or the model's own limit). Test a smaller size"
-    )
-
-
 class Runner:
     def __init__(
         self, job, emit, *, spawn, probe, clock, count_tokens, cancel=None, abandon=None
@@ -445,11 +354,7 @@ class Runner:
         self.spawn, self.probe, self.clock, self.count = spawn, probe, clock, count_tokens
         self.cancel = cancel or threading.Event()
         self.abandon = abandon or threading.Event()
-        self.limit = limit_percent(job.get("limit_percent"))
-        self.kill = self.limit - KILL_OFFSET_PERCENT
-        self.measured = [tuple(entry) for entry in job.get("priors", [])]
         self.base_swap = 0
-        self.accepts: int | None = None  # the server's prompt limit, as it reports it
         self.taken = False  # another program holds the server's port
         self.seconds = job.get("timeout_seconds")  # of the size being run
 
@@ -488,23 +393,6 @@ class Runner:
         if self.cancel.is_set() or self.abandon.is_set():
             raise Stop("cancelled", "cancelled by you")
 
-    def allow(self, row, pid, estimate: int, what: str) -> None:
-        """The gate: before the model is loaded and before every request."""
-        sample = self.read(pid)
-        # Never below the most this server has already held.
-        ok, projected = gate(
-            sample.percent, sample.footprint, max(estimate, sample.peak), self.job["ram_bytes"],
-            self.limit, self.job["margin_percent"],
-        )  # fmt: skip
-        if not ok:
-            row["projected_percent"] = round(projected, 1)
-            raise Stop(
-                "skipped",
-                f"memory: {what} is projected to reach {projected:.1f}%, over the "
-                f"{self.limit - max(self.job['margin_percent'], GATE_MARGIN_PERCENT)}% gate; "
-                "close other apps or choose a smaller model",
-            )
-
     def read(self, pid) -> Sample:
         try:
             return self.probe(pid)
@@ -516,24 +404,21 @@ class Runner:
 
     def run_size(self, size: int, row: dict) -> None:
         self.check()
-        self.allow(row, None, estimate_bytes(size, self.job["model"], self.measured), "loading")
         log_path = Path(self.job["workdir"]) / "server.log"
         monitor = proc = None
         self.seconds = self.time_limit(size)
         deadline = self.clock() + self.seconds
-        finished = False
         try:
             for attempt in range(1, PORT_ATTEMPTS + 1):
                 self.progress(state="loading", step="loading the model")
                 port = free_port()
                 command = list(self.job["command"])
                 command[command.index("--port") + 1] = str(port)
-                Path(self.job["resident_file"]).unlink(missing_ok=True)
                 with open(log_path, "ab") as log:
                     proc = self.spawn(command, self.server_environment(), log)
                 self.emit({"event": "server", "pid": proc.pid, "port": port})
                 monitor = Monitor(
-                    proc, self.probe, self.clock, kill=self.kill, base_swap=self.base_swap,
+                    proc, self.probe, self.clock, base_swap=self.base_swap,
                     deadline=deadline, cancel=self.cancel, abandon=self.abandon,
                     report=lambda percent: self.progress(memory_percent=round(percent, 1)),
                 )  # fmt: skip
@@ -550,10 +435,7 @@ class Runner:
                         if self.taken
                         else "the server stopped while starting",
                     )
-            if self.accepts is not None and self.accepts < size:
-                raise Stop("skipped", over_limit(f"accepts at most {self.accepts} tokens"))
             self.steps(size, row, proc, port, monitor)
-            finished = True
         finally:
             if monitor:
                 monitor.stop()
@@ -562,11 +444,7 @@ class Runner:
             if monitor:
                 row["peak_percent"] = round(monitor.peak_percent, 1)
                 row["server_peak_bytes"] = monitor.lifetime_peak
-                if monitor.lifetime_peak:
-                    self.measured.append((size, monitor.lifetime_peak, finished))
         # Passed only if the peak also stayed under the kill line.
-        if row["peak_percent"] >= self.kill:
-            raise Stop("stopped", f"memory reached {row['peak_percent']}%")
 
     # A job with "key_env" is a keyed server of another engine; the key is only ever
     # in the environment.
@@ -583,8 +461,8 @@ class Runner:
             return dict(os.environ)
         return {**self.job["server_env"], self.job["key_env"]: self.key()}
 
-    def wait_keyed(self, proc, port: int, monitor) -> bool:
-        """Ours alone listens, refuses calls without the key and answers one with it."""
+    def wait_ready(self, proc, port: int, monitor) -> bool:
+        """True once this server, alone on its port, has loaded its model and answered."""
         import engine_runtime as runtime
 
         while proc.poll() is None:
@@ -593,56 +471,25 @@ class Runner:
             if holders and holders != {proc.pid}:
                 self.taken = True
                 return False
-            if holders:
+            state = None
+            if holders and self.job.get("key_env"):
                 state = runtime.auth_state(port, self.key())
                 if state == "open":
                     raise Stop("failed", "the server answered without the key")
-                if state == "ready" and runtime.listener_is(port, proc.pid):
-                    model, wait = self.job["request_model"], self.seconds
-                    if not runtime.warm_up(port, self.key(), model, wait):
-                        self.check(monitor)
-                        raise Stop("failed", "the model could not be loaded")
-                    return True
-            time.sleep(SAMPLE_SECONDS)
-        self.check(monitor)
-        return False
-
-    def wait_ready(self, proc, port: int, monitor) -> bool:
-        """Our child is alive, has written its report, loaded, and its port answers."""
-        if self.job.get("key_env"):
-            return self.wait_keyed(proc, port, monitor)
-        while proc.poll() is None:
-            self.check(monitor)
-            try:
-                report = json.loads(Path(self.job["resident_file"]).read_text("utf-8"))
-            except (OSError, ValueError):
-                report = {}
-            if isinstance(report, dict) and report.get("pid") == proc.pid:
-                events = report.get("events") or []
-                if any(e.get("event") == "load-failed" for e in events):
+            elif holders:
+                health = runtime.health(port)
+                if health == 503:
                     raise Stop("failed", "the model could not be loaded")
-                loaded = report.get("resident") or report.get("report") is False
-                if loaded and self.answers(port):
-                    limits = report.get("prompt_limits")
-                    most = limits.get(self.job["repo"]) if isinstance(limits, dict) else None
-                    self.accepts = most if type(most) is int else None
-                    # Whoever else holds the port gets no request: try another one.
-                    self.taken = not listens(proc.pid, port)
-                    return not self.taken
+                state = "ready" if health == 200 else None
+            if state == "ready" and runtime.listener_is(port, proc.pid):
+                model, wait = self.job["request_model"], self.seconds
+                if not runtime.warm_up(port, self.key(), model, wait):
+                    self.check(monitor)
+                    raise Stop("failed", "the model could not be loaded")
+                return True
             time.sleep(SAMPLE_SECONDS)
         self.check(monitor)
         return False
-
-    def answers(self, port: int) -> bool:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
-        try:
-            conn.request("GET", "/health")
-            conn.getresponse().read(1024)
-            return True
-        except (OSError, http.client.HTTPException):
-            return False
-        finally:
-            conn.close()
 
     def steps(self, size, row, proc, port, monitor) -> None:
         reply_tokens, rounds = self.job["reply_tokens"], self.job["rounds"]
@@ -666,19 +513,15 @@ class Runner:
             label = f"{size}-{number}"
             prompt = make_prompt(first, self.job["run_id"], label, self.count)
             messages = [{"role": "user", "content": prompt}]
-            cold_peak = None
             for step in ("cold", "follow-up"):
                 self.check(monitor)
-                estimate = estimate_bytes(size, self.job["model"], self.measured, cold_peak)
-                estimate = max(estimate, monitor.lifetime_peak)
-                self.allow(row, proc.pid, estimate, f"the {step} step {number}")
                 name = f"{step} {number} of {rounds}"
                 self.progress(state="running", step=name)
                 before = self.read(proc.pid)
                 monitor.note(before)
                 monitor.begin_step()
                 body = {
-                    "model": self.job.get("request_model", self.job["repo"]),
+                    "model": self.job["request_model"],
                     "messages": messages,
                     "stream": True,
                     "stream_options": {"include_usage": True},
@@ -703,9 +546,6 @@ class Runner:
                     )  # fmt: skip
                 except RequestError as exc:
                     self.check(monitor)
-                    if exc.refused:
-                        why = over_limit("refused the prompt")
-                        raise Stop("skipped", why) from None
                     raise Stop("failed", str(exc)) from None
                 finally:
                     monitor.in_reply = False
@@ -725,7 +565,6 @@ class Runner:
                     cold_first.append(got["first"])
                     if got["first"] > 0:
                         reading.append((count - cached) / got["first"])
-                    cold_peak = monitor.step_peak or None
                     messages = [
                         *messages,
                         {"role": "assistant", "content": got["text"] or "ok"},
@@ -737,10 +576,6 @@ class Runner:
                     writing.append((written - 1) / got["writing"])
                 row["steps_done"] += 1
                 figures()
-                # The server gives a reply only what the prompt leaves of its limit.
-                room = None if self.accepts is None else self.accepts - count
-                if step == "follow-up" and room is not None and room < reply_tokens:
-                    raise Stop("skipped", no_reply_room(self.accepts))
 
     def end_server(self, proc) -> None:
         if proc.poll() is None:

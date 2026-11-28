@@ -24,7 +24,7 @@
 
 # Runtime and interface.
 /app.py                             @DipeshPansuriya
-/mlx_guard.py                       @DipeshPansuriya
+/model_info.py                      @DipeshPansuriya
 /mlx_loadtest.py                    @DipeshPansuriya
 /optiq_engine.py                    @DipeshPansuriya
 /engine_runtime.py                  @DipeshPansuriya

@@ -70,7 +70,7 @@ BUILD_RECORD = "SHA256SUMS"
 # Sources that end up in the bundle; a release tag must hold exactly these.
 SHIPPED = (
     "app.py",
-    "mlx_guard.py",
+    "model_info.py",
     "mlx_loadtest.py",
     "optiq_engine.py",
     "engine_runtime.py",
@@ -80,7 +80,7 @@ SHIPPED = (
 )
 BUNDLED = (
     "app.py",
-    "mlx_guard.py",
+    "model_info.py",
     "mlx_loadtest.py",
     "optiq_engine.py",
     "engine_runtime.py",

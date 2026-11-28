@@ -1,6 +1,6 @@
 """The engines the app ships. To add one: a class here, then one entry in REGISTRY.
 
-``mlx`` is built in (``mlx_guard.py``; its command stays in ``app.py``). A ``direct``
+``mlx`` is mlx_lm's own server (its command stays in ``app.py``). A ``direct``
 engine is the publisher's own server behind a per-launch key; the app drives each of
 them through the same methods. A planned engine has no command and no install.
 """
@@ -24,9 +24,9 @@ class Engine:
     refusal: str | None = None  # why it can never be started
     version: str | None = None
     port: int | None = None
-    # (what, why it is missing) for everything the built-in MLX server does and this not.
+    # (what, why it is missing): protections and features this engine's server lacks.
     missing: tuple[tuple[str, str], ...] = ()
-    setting_keys: tuple[str, ...] = ()  # direct: the server settings its command takes
+    setting_keys: tuple[str, ...] = ()  # the server settings its command takes
 
     def state(self, app_dir: Path) -> str:
         return "installed"
@@ -51,6 +51,23 @@ class Engine:
 class Mlx(Engine):
     id = "mlx"
     name = "MLX (built in)"
+    request_model = "default_model"  # mlx_lm's name for the model it was started with
+    setting_keys = ("server_max_reply_tokens", "prompt_cache_size", "prompt_cache_bytes")
+    missing = (
+        ("API key", "any program on this Mac can use the server"),
+        ("Max context setting and long prompt refusal", NOT_AVAILABLE),
+        ("Memory limit", NOT_AVAILABLE),
+        ("MLX cache limit setting", NOT_AVAILABLE),
+        ("Reply token cap", "the setting is a default only"),
+        ("Two models in one server", "one model"),
+        ("Null tool argument fix", NOT_AVAILABLE),
+        ("Web page checks (Host, JSON only)", "only the allowed origins list"),
+        (
+            "Refusal of other models, draft models, adapters and file paths",
+            "a request can load another model or folder on this Mac",
+        ),
+        ("Request size limits, loaded model and memory readout", NOT_AVAILABLE),
+    )
 
 
 class Optiq(Engine):
@@ -64,7 +81,7 @@ class Optiq(Engine):
     request_model = "default_model"
     setting_keys = tuple(key for key, _ in optiq_engine.SETTING_FLAGS)
     missing = (
-        ("Memory limit inside the server", "only sampled: a sudden jump can pass 80%"),
+        ("Memory limit", NOT_AVAILABLE),
         ("MLX cache limit setting", "not passed to this engine"),
         ("Long prompt refusal", "older text is dropped beyond the max context"),
         ("Reply token cap", "the setting is a default only"),

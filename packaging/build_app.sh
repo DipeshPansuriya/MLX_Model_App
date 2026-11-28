@@ -48,7 +48,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 
 # ── resources: app sources + UI ──────────────────────────────────────────────
 cp "$ROOT/app.py" "$APP/Contents/Resources/app.py"
-cp "$ROOT/mlx_guard.py" "$APP/Contents/Resources/mlx_guard.py"
+cp "$ROOT/model_info.py" "$APP/Contents/Resources/model_info.py"
 cp "$ROOT/mlx_loadtest.py" "$APP/Contents/Resources/mlx_loadtest.py"
 cp "$ROOT/optiq_engine.py" "$APP/Contents/Resources/optiq_engine.py"
 cp "$ROOT/engine_runtime.py" "$APP/Contents/Resources/engine_runtime.py"
