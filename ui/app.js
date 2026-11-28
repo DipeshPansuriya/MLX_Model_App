@@ -152,8 +152,16 @@ async function copyText(text) {
 const COPY_LABEL = "Copy model name";
 
 // What API clients send as "model": the alias if there is one, else the repo id.
+// The name a client must send now: until Apply changes, a running server still
+// answers to what it was started with, not to a newly saved alias.
+function clientName(repo) {
+  const server = state.snapshot?.server;
+  if (!server?.running || !(server.repos || []).includes(repo)) return aliasOf(repo) || repo;
+  return (repo === server.repo && server.alias) || repo;
+}
+
 function copyButton(repo) {
-  const name = aliasOf(repo) || repo;
+  const name = clientName(repo);
   return `<button class="btn btn-mini btn-ghost" type="button" data-copy="${esc(name)}" aria-label="${COPY_LABEL} ${esc(name)}">${COPY_LABEL}</button>`;
 }
 
