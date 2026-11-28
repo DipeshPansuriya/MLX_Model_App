@@ -8,11 +8,27 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - Set a default model and start its server at Mac login (off by default; OptiQ only,
   because it can require a password). The key then stays the same, so tools are set up once.
+- Chat history. Chats are saved on this Mac by default (**Save history**) as plain text in
+  `~/.mlx_studio/chats`, in files only your user account can read. Open, search, rename and
+  delete them under **History**; a **Temporary** chat is never saved. Nothing expires, and
+  Delete is not a secure erase. Turns sent while saving is off are not added to a chat that
+  is already saved, also after saving is turned on again.
+- Chat settings for one chat: system prompt, max reply tokens, temperature and top p.
+  An empty number uses the Configuration value.
 
 ### Fixed
 - Test Connection no longer fails in the app window when a model takes over a minute,
   keeps keyboard focus, and announces its result.
 - An MLX server start is refused when another program already uses the port.
+- An MLX server left running by an earlier session is no longer shown as ready when its
+  model failed to load, and the MLX load test now runs in its own private folder.
+- The start-at-login switch looks disabled when it cannot be used, an older status can no
+  longer overwrite a change, and a running Test Connection survives a missed check or a
+  page reload.
+
+### Changed
+- The saved Hugging Face token is sent only to download a gated or private model, not for
+  model search or public downloads.
 
 ## [2.0.13] — 2026-11-28
 

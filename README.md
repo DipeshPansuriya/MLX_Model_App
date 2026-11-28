@@ -178,6 +178,24 @@ own. Earlier releases load a second copy for Chat.
 - One reply at a time. A failed turn, or a reply that is only thinking, is removed
   from the history.
 
+#### Saved chats and chat settings
+In the 2.0.14 source (unreleased).
+
+- **Save history** (under **History**) is on by default. Each chat is saved after a
+  reply as a plain text file in `~/.mlx_studio/chats`, readable only by your user
+  account. Anyone who can read your files can read it.
+- **History** lists saved chats: open, search titles and messages, rename, delete
+  one or all. Nothing expires. Delete removes the file; it is not a secure erase.
+- **Temporary** saves nothing. Switching it starts a new chat.
+- With **Save history** off, nothing new is saved. Turns sent while it is off are
+  **not added** to a chat that is already saved, also after you turn it on again. A
+  chat that was never saved is saved whole by the next reply after you turn it on,
+  unless it is Temporary.
+- A reply that fails or holds only thinking is not saved. If a save fails, Chat says so.
+- **Chat settings** apply to one chat: system prompt, max reply tokens (64 to
+  131072), temperature (0 to 2) and top p (0.05 to 1). An empty number uses the
+  **Configuration** value. For a saved chat, **Save** stores them with it.
+
 ### Models
 - Card per cached model with its size on disk, repo id and folder path.
 - **Reveal** (opens the folder in Finder), **Copy model
@@ -550,7 +568,8 @@ source the MLX server on 8080 has no such checks and no key; see
 [protections removed](#protections-removed-in-2013). There is no user
 authentication: other programs on the same Mac can use both ports, and in released
 builds one can fetch `/` on 8765 to read the token. Chat prompts are not written to
-the activity log.
+the activity log; saved chats are separate files
+([Saved chats](#saved-chats-and-chat-settings)) and are not in the diagnostics export.
 
 **Since 2.0.10:** `/` no longer holds the token (it goes to the
 window in the URL fragment), every `Origin` header is checked, and replies carry a
