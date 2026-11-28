@@ -71,7 +71,7 @@ def test_a_stopped_card_starts_from_the_remembered_switch_and_is_on_by_default(t
 def test_the_remembered_start_keeps_the_anthropic_switch(rig):  # noqa: F811
     app = rig.app
     assert app.STATE.snapshot()["server"]["last_anthropic"] is True
-    app.worker_server_start(REPO, False, None, None, "optiq", False)
+    app.worker_server_start(REPO, False, None, "optiq", False)
     app._remember_models(rig.started[-1].pid)
     assert app.STATE.snapshot()["server"]["last_anthropic"] is False
     app.stop_server()
@@ -197,38 +197,12 @@ def test_a_start_refuses_a_linked_engine_folder(rig, tmp_path):  # noqa: F811
         optiq_engine.python_path(rig.app.APP_DIR)
 
 
-# ---- 4: the sampled memory stop --------------------------------------------------
-@pytest.mark.parametrize(
-    ("percent", "limit", "stops"),
-    [(81, None, True), (79, None, False), (61, 60, True), (None, None, False)],
-)
-def test_a_running_direct_server_is_stopped_above_the_memory_ceiling(
-    rig,  # noqa: F811
-    other_apps,
-    percent,
-    limit,
-    stops,
-):
-    app = rig.app
-    proc = rig.ready()
-    if limit:
-        app.APP_DIR.joinpath("settings.json").write_text(
-            json.dumps({"memory_limit_percent": limit})
-        )
-        assert app.server_settings([REPO])["memory_limit_percent"] == limit
-    other_apps.percent = percent
-    why = app._probe_direct(proc.pid)
-    if not stops:
-        assert why is None
-        return
-    assert f"{percent}%" in why and f"{limit or 80}% limit" in why
-    assert other_apps.pids[-1] is None  # the whole Mac, the server included
-
-
-def test_the_watch_stops_it_and_says_why(app_module, other_apps, monkeypatch):
+# ---- 4: the watch stops a direct server ------------------------------------------
+def test_the_watch_stops_it_and_says_why(app_module, monkeypatch):
     app, watch = app_module, app_module._watch_server  # the rig replaces it
-    proc = Rig(app, monkeypatch).start()
-    other_apps.percent = 95
+    fake = Rig(app, monkeypatch)
+    proc = fake.start()
+    fake.holders, fake.auth = {proc.pid}, "open"
     watcher = threading.Thread(target=watch, args=(proc.pid, REPO, proc), daemon=True)
     watcher.start()
     watcher.join(10)
@@ -236,7 +210,7 @@ def test_the_watch_stops_it_and_says_why(app_module, other_apps, monkeypatch):
     proc.terminate()  # so a watch that did not stop it ends too
     watcher.join(5)
     assert stopped
-    assert "95%" in app.STATE.server_down_notice and "memory" in app.STATE.server_down_notice
+    assert "without the key" in app.STATE.server_down_notice
 
 
 # ---- 6: what OptiQ does not use or report ----------------------------------------
@@ -249,7 +223,7 @@ def test_only_settings_optiq_uses_ask_for_a_restart(rig):  # noqa: F811
     rig.ready()
     pending = lambda: app.STATE.snapshot()["server"]["settings_pending"]  # noqa: E731
     assert pending() is False
-    _save(app, mlx_cache_limit_mb=512, memory_limit_percent=70, two_model_context_tokens=4096)
+    _save(app, chat_temperature=0.5, chat_top_p=0.5, chat_max_reply_tokens=100)
     assert pending() is False
     _save(app, prompt_cache_size=7)
     assert pending() is True
