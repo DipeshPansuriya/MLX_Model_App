@@ -1,7 +1,7 @@
 ---
 type: Security
 title: "Security — MLX Studio"
-status: "2.0.9 released 2026-11-26; parts marked unreleased describe the working source"
+status: "2.0.13 is the latest release (2026-11-28); parts marked unreleased shipped after 2.0.9"
 date: 2026-11-25
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -13,6 +13,8 @@ related:
 ---
 
 # Security — MLX Studio
+
+In this file **unreleased** means not in 2.0.9: those changes shipped in 2.0.10 to 2.0.13 (latest release, 2026-11-28).
 
 This file describes the source tree. An app built before 2.0.9, or an API server
 still running from it, does not have the 2.0.9 controls (see §5).

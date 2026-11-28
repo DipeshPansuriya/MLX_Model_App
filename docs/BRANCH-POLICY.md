@@ -17,11 +17,13 @@ related:
 
 # Branch and repository policy
 
-> **2.0.13 (unreleased) supersedes parts of this file.** `mlx_guard.py` and the 80%
+> **2.0.13 supersedes parts of this file.** `mlx_guard.py` and the 80%
 > memory rule are removed: MLX is `mlx_lm`'s own server with one model, no memory or
 > prompt limit and no request checks beyond `--allowed-origins`. Text, figures and
 > diagrams about the guard, memory limits or two models apply to 2.0.12 and earlier.
 > [What is no longer protected](../README.md#protections-removed-in-2013).
+>
+> In this file **unreleased** means not in 2.0.9: those changes shipped in 2.0.10 to 2.0.13 (latest release, 2026-11-28).
 
 One document for every control on this repository: what is **in force today**,
 what is **planned**, what it costs, and how each was verified. Nothing here is
@@ -261,7 +263,7 @@ before the security fixes and shipped the vulnerable code while the source looke
 clean. It now fails the audit until the bundle is rebuilt.
 
 **Done:** the security fixes shipped in `2.0.1`
-([CHANGELOG.md](../CHANGELOG.md)). The latest release is `v2.0.9` (2026-11-26).
+([CHANGELOG.md](../CHANGELOG.md)). The latest release is `v2.0.13` (2026-11-28).
 
 ---
 

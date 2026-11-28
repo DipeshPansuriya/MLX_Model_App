@@ -14,11 +14,11 @@ for DeepSeek Harness or any OpenAI-compatible client, and review a day-to-day
 activity log. It also reports installed versions and tells you when updates are
 available.
 
-> This page describes **2.0.9**, released on 2026-11-26 as the
-> [latest release](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest).
-> Text marked **unreleased** came with the 2.0.10 source or later, is in the
-> 2.0.13 source, and is not in the released app ([CHANGELOG](CHANGELOG.md)). The
-> screenshots show an earlier version.
+> The [latest release](https://github.com/DipeshPansuriya/MLX_Model_App/releases/latest)
+> is **2.0.13** (2026-11-28). Read
+> [what is no longer protected](#protections-removed-in-2013) before you use it.
+> Text that says **2.0.9** describes that older release ([CHANGELOG](CHANGELOG.md)).
+> The screenshots show an earlier version.
 
 ![Chat view](screenshots/02-chat-loaded.png)
 
@@ -41,7 +41,7 @@ the old one, checks the signature, then swaps them and opens the app.
 | Note | Detail |
 |---|---|
 | Fails closed | No checksum line for the file, or a mismatch, means nothing is installed |
-| Availability | Needs a line for the version in `release/SHA256SUMS` on `main`. The file lists the 2.0.9 dmg and pkg. 2.0.8 and older are not backfilled ([release steps](docs/DEPLOYMENT.md)). Versions with no line are refused |
+| Availability | Needs a line for the version in `release/SHA256SUMS` on `main`. The file lists the 2.0.9 and 2.0.13 dmg and pkg. 2.0.8 and older, and 2.0.10 to 2.0.12, are not listed ([release steps](docs/DEPLOYMENT.md)). Versions with no line are refused |
 | Signature | Ad-hoc: it detects a damaged bundle, not who published it |
 | Options | `--version <x.y.z>`, `--dir ~/Applications`, `--no-launch` |
 
@@ -160,8 +160,8 @@ The double-clicked app does not look in that folder.
 ## Features
 
 ### Chat
-2.0.13 source (unreleased). Chat asks the running API server; the app loads no
-model of its own. Released builds load a second copy for Chat.
+Since 2.0.13, Chat asks the running API server; the app loads no model of its
+own. Earlier releases load a second copy for Chat.
 
 - Start the API server first. While it is stopped, Chat says so and offers
   **Go to API Server**; while it starts or restarts, typing is off.
@@ -198,7 +198,7 @@ model of its own. Released builds load a second copy for Chat.
   Downloads section that starts collapsed and shows count and progress. Cancelling inside a Xet-backed file was not tested.
 
 ### API Server
-2.0.13 source (unreleased).
+Since 2.0.13.
 
 - Starts `mlx_lm server` itself, with no MLX Studio wrapper or proxy, on
   `http://127.0.0.1:8080/v1`, with 8192 reply tokens by default.
@@ -215,7 +215,7 @@ model of its own. Released builds load a second copy for Chat.
   event. See [the API Server card](#the-api-server-card).
 
 ### Configuration
-2.0.13 source (unreleased). Replaces the Settings box on the API Server card.
+Since 2.0.13. Replaces the Settings box on the API Server card.
 
 - Pick **All models (defaults)** or an installed model. Fields: max context
   (OptiQ only), server reply cap (a default only), Chat reply cap, temperature,
@@ -250,7 +250,7 @@ A model that cannot use compressed memory has the choice switched off, with the
 reason, and runs in Standard.
 
 ### Load Test
-2.0.13 source (unreleased). Measures one model on this Mac. **One 4096-token run on
+Since 2.0.13. Measures one model on this Mac. **One 4096-token run on
 OptiQ has passed with a real model; other sizes and MLX have not been tried.** [How to run it safely](docs/RUNBOOK.md#37a-run-a-load-test-safely).
 
 - Tick context sizes (4096 up to 1,048,576) or type your own (up to 12 in one
@@ -330,7 +330,7 @@ Needs the Xcode command line tools (`clang`).
 ```
 
 The script compiles `packaging/launcher.c` for macOS 12.0 and stops if the binary
-reports a different minimum. Unreleased: it also stops if `codesign` fails or
+reports a different minimum. Since 2.0.10 it also stops if `codesign` fails or
 `app.py` lacks exactly one `APP_VERSION = "X.Y.Z"` line. Release files are generated from that exact build
 (Python 3.11+), never edited by hand:
 
@@ -377,7 +377,7 @@ nothing is downloaded.
 
 ## Protections removed in 2.0.13
 
-Unreleased 2.0.13 source. MLX Studio's request guard and its 80% memory rule are
+Since 2.0.13, MLX Studio's request guard and its 80% memory rule are
 gone; the MLX engine is `mlx_lm`'s own server.
 
 | Removed | Effect now |
@@ -432,7 +432,7 @@ proven and is not recommended here.
 
 ### The API Server card
 
-**Unreleased (2.0.13 source).**
+**Since 2.0.13.**
 
 | Part | Behaviour |
 |---|---|
@@ -549,7 +549,7 @@ authentication: other programs on the same Mac can use both ports, and in releas
 builds one can fetch `/` on 8765 to read the token. Chat prompts are not written to
 the activity log.
 
-**Unreleased (2.0.10 source):** `/` no longer holds the token (it goes to the
+**Since 2.0.10:** `/` no longer holds the token (it goes to the
 window in the URL fragment), every `Origin` header is checked, and replies carry a
 full `Content-Security-Policy`. A POST needs exactly one `Content-Type`, and
 `PYWEBVIEW_LOG` is ignored. In browser mode, if the browser cannot be opened, quit
@@ -580,8 +580,8 @@ App API on `http://127.0.0.1:8765`, used by the window. Every `/api/*` request,
 GET and POST, needs the `X-MLX-Token` header (`403` without it); the exceptions
 are `GET /api/ping` and `POST /api/focus`. POSTs also need
 `Content-Type: application/json`. In 2.0.9 the app puts the token into its page,
-which any local program can fetch, so it is not user authentication. In the
-unreleased source the page no longer holds it.
+which any local program can fetch, so it is not user authentication. Since
+2.0.10 the page no longer holds it.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -622,9 +622,9 @@ unreleased source the page no longer holds it.
 | Launch log | `~/.mlx_studio/logs/launch.log` |
 | Background server output | `~/.mlx_studio/logs/server.log` |
 | Background server pid | `~/.mlx_studio/server.pid` |
-| User settings (unreleased) | `~/.mlx_studio/settings.json` |
-| Load test results (unreleased) | `~/.mlx_studio/loadtest.json` |
-| Last models that started (unreleased) | `~/.mlx_studio/server.last.json` |
+| User settings | `~/.mlx_studio/settings.json` |
+| Load test results | `~/.mlx_studio/loadtest.json` |
+| Last models that started | `~/.mlx_studio/server.last.json` |
 
 Logs rotate at 2 MB with three backups (`server.log` before a background start).
 The folder is `0700`. The activity, application, launch and server logs are
@@ -668,10 +668,10 @@ launcher needs Python 3.10+.
 in your default browser.
 
 **"invalid session token; reload the window"**: a window or tab from an earlier
-launch. Reload it. In the unreleased source the message is **"invalid session
+launch. Reload it. Since 2.0.10 the message is **"invalid session
 token; open MLX Studio again from its icon"**, and reloading does not help.
 
-**"This page has no session. Open MLX Studio from its app icon."** (unreleased):
+**"This page has no session. Open MLX Studio from its app icon."** (since 2.0.10):
 the page was opened without the app, for example from a bookmark. Open the app; in
 browser mode a second launch opens a new tab (not checked live: if an icon click
 only brings the running app forward, quit it and open it again).

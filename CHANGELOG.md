@@ -5,7 +5,7 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [2.0.13] — 2026-11-28
 
-Not released as the latest version: pre-release build; the released 2.0.9 app has none
+The latest release since 2026-11-28. The 2.0.9 app has none
 of these changes. It holds the 2.0.10, 2.0.11 and 2.0.12 changes and those below.
 
 ### Read before you use it
@@ -211,9 +211,19 @@ Pre-release review, security and browser findings:
 - In a narrow browser window the Load Test page no longer scrolls sideways, and
   **New chat** stays on screen in Chat.
 
+### Checksums
+
+```
+pkg  sha256  76695f2b7ef9cbe5eb515d7cccc4012c169ab3f957638449afb128a416901f9b
+pkg  size    1053096 bytes
+dmg  sha256  b4ca35c2c19da823f32a87502ac7b878915f4266fe8cad2fda92765b8b920211
+dmg  size    1098423 bytes
+```
+
 ## [2.0.12] — 2026-11-27
 
-Not released: pre-release build; the released 2.0.9 app has none of these changes.
+Published 2026-11-27 as a pre-release; the mark was removed on 2026-11-28. The
+2.0.9 app has none of these changes.
 It holds the 2.0.10 and 2.0.11 changes and those below. Checked with automated
 tests and the screen served with made-up data. No model was loaded and no API
 server was started. **The real-model and two-model memory tests have not been run.**
@@ -262,7 +272,8 @@ server was started. **The real-model and two-model memory tests have not been ru
 
 ## [2.0.11] — 2026-11-27
 
-Not released: pre-release build; the released 2.0.9 app has none of these changes.
+Published 2026-11-27 as a pre-release; the mark was removed on 2026-11-28. The
+2.0.9 app has none of these changes.
 It holds the 2.0.10 changes and the fix below. Checked with automated tests; no
 model was loaded. **The real two-model memory test has not been run.**
 
@@ -278,7 +289,8 @@ model was loaded. **The real two-model memory test has not been run.**
 
 ## [2.0.10] — 2026-11-27
 
-Not released: pre-release build; the released 2.0.9 app has none of these changes.
+Published 2026-11-27 as a pre-release; the mark was removed on 2026-11-28. The
+2.0.9 app has none of these changes.
 Checked with automated tests, temporary instances and offscreen web views. The real
 app window was not launched. One earlier real-model run of two models led to the
 memory limits below; **the re-test of those limits has not run yet.**

@@ -2,7 +2,7 @@
 type: Index
 title: "MLX Studio — documentation index"
 date: 2026-11-24
-updated: "2026-11-26 — release status updated for v2.0.9"
+updated: "2026-11-28 — release status updated for v2.0.13"
 author: "Dipesh Pansuriya"
 project: mlx-studio
 version: "2.0.9"
@@ -20,11 +20,13 @@ related:
 
 # MLX Studio — documentation index
 
-> **2.0.13 (unreleased) supersedes parts of this file.** `mlx_guard.py` and the 80%
+> **2.0.13 supersedes parts of this file.** `mlx_guard.py` and the 80%
 > memory rule are removed: MLX is `mlx_lm`'s own server with one model, no memory or
 > prompt limit and no request checks beyond `--allowed-origins`. Text, figures and
 > diagrams about the guard, memory limits or two models apply to 2.0.12 and earlier.
 > [What is no longer protected](../README.md#protections-removed-in-2013).
+>
+> In this file **unreleased** means not in 2.0.9: those changes shipped in 2.0.10 to 2.0.13 (latest release, 2026-11-28).
 
 MLX Studio is a native macOS application for running local AI models on Apple
 Silicon through Apple's MLX runtime. It provides a chat surface with streaming
@@ -33,7 +35,8 @@ OpenAI-compatible HTTP server, a persistent activity log, and version/update
 reporting for both the app and its runtime packages.
 
 This directory holds the product, architecture and operational documentation. It is
-being kept current with the **2.0.9** source, released on 2026-11-26 as `v2.0.9`.
+was last reviewed in full against **2.0.9** (`v2.0.9`, 2026-11-26). The latest
+release is **2.0.13** (2026-11-28).
 Dated records (audit, recorded test results, "Status at a glance" evidence)
 describe the release named in them. Where a document describes intent rather than
 code, it says so.
@@ -94,7 +97,7 @@ code, it says so.
 | Automated PR review | Built — sticky report comment | [GITHUB-POLICY.md](GITHUB-POLICY.md) §3.1 |
 | Automated CI build on tag | Built: the `v2.0.9` tag run passed 6 of 6 jobs (2026-11-26) | [DEPLOYMENT.md](DEPLOYMENT.md) §8 |
 | Multi-turn context trimming | Open | [PRD.md](PRD.md) §10 |
-| Unreleased (2.0.10 source): two models on the API server, token handoff, full CSP, Dock icon, launcher, build and CI fixes | In the 2.0.10 source, not released; real window and real two-model memory UNVERIFIED; the re-test of the new two-model memory limits has not run | [CHANGELOG](../CHANGELOG.md) |
+| 2.0.10 (two models removed again in 2.0.13): two models on the API server, token handoff, full CSP, Dock icon, launcher, build and CI fixes | Released after 2.0.9; real window and real two-model memory UNVERIFIED; the re-test of the new two-model memory limits has not run | [CHANGELOG](../CHANGELOG.md) |
 
 ## Source layout
 
