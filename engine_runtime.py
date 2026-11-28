@@ -54,6 +54,14 @@ class Refused(Exception):
     """Why an engine will not start or install, in words for the user."""
 
 
+def reasoning_flags(choice: str | None) -> list[str]:
+    """The server flag for "reasoning" ``on`` or ``off``; nothing when unset."""
+    if choice not in ("on", "off"):
+        return []
+    value = "true" if choice == "on" else "false"
+    return ["--chat-template-args", f'{{"enable_thinking":{value}}}']
+
+
 def minimal_environment(source=None) -> dict[str, str]:
     """The app's environment without keys, tokens or anything else not listed."""
     source = os.environ if source is None else source

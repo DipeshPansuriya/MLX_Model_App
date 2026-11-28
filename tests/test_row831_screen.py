@@ -83,7 +83,8 @@ const removers = () => $("#serverModelList").querySelectorAll("[data-remove]");
 const drop = async (repo) => {
   removers().find((b) => b.dataset.remove === repo).listeners.click(); await tick(); };
 const listed = () => removers().map((b) => b.dataset.remove);
-const press = async (id) => { await $(id).listeners.click(); await tick(); };
+const press = async (id) => { await $(id).listeners.click();
+  if (id === "#serverStartBtn") await $("#confirmStartBtn").listeners.click(); await tick(); };
 const main = () => [$("#serverStartBtn").textContent, $("#serverStartBtn").disabled];
 const why = () => text("#serverWhy");
 const focused = () =>
@@ -415,7 +416,8 @@ const held = []; const answer = respond;
 const hold = (wanted) => { respond = (path, opts) => path === wanted
   ? new Promise((done) => held.push(() => done(answer(path, opts)))) : answer(path, opts); };
 const release = async () => { respond = answer; held.splice(0).forEach((f) => f()); await tick(); };
-const click = () => { $("#serverStartBtn").listeners.click(); };
+const click = async () => { await $("#serverStartBtn").listeners.click();
+  $("#confirmStartBtn").listeners.click(); };
 const starts = () => sent("/api/server/start").length;
 """
 
@@ -427,8 +429,8 @@ def test_a_second_click_is_ignored_until_the_start_is_on_screen(tmp_path, slow):
     out = screen(
         tmp_path,
         HOLD + "await show(loaded()); await drop('org/a'); await add('org/b');"
-        f" hold('{slow}'); click(); await tick(); click(); await tick(); const during = starts();"
-        " await release(); click(); await tick(); return [during, starts()];",
+        f" hold('{slow}'); await click(); await tick(); await click(); await tick(); const during = starts();"
+        " await release(); await click(); await tick(); return [during, starts()];",
     )
     assert out == [1, 2]
 

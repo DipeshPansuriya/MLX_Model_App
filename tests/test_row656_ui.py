@@ -48,6 +48,7 @@ def test_start_sends_the_chosen_model(tmp_path):
     out = ui(
         tmp_path,
         'await pick("org/b"); await $("#serverStartBtn").listeners.click();'
+        ' await $("#confirmStartBtn").listeners.click();'
         ' return sent("/api/server/start");',
     )
     assert out == [{"repo": "org/b", "background": True}]

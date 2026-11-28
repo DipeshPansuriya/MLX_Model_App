@@ -115,6 +115,7 @@ SETTINGS = {
     "prompt_cache_bytes": (100_000_000, 100_000_000_000),
     "chat_temperature": (0, 2),
     "chat_top_p": (0.05, 1),
+    "server_reasoning": ("on", "off"),  # unset: the model's own default
     # (first, last) of CHOICE_SETTINGS; the read step is model_info.PREFILL_RANGE.
     "performance_mode": ("standard", "advanced"),
     "kv_bits": (4, 8),
@@ -123,6 +124,7 @@ SETTINGS = {
 }
 # These take one of the listed values only (see model_info.KV_BITS, KV_GROUPS).
 CHOICE_SETTINGS = {
+    "server_reasoning": ("on", "off"),
     "performance_mode": ("standard", "save_memory", "advanced"),
     "kv_bits": (4, 8),
     "kv_group_size": (32, 64, 128),
@@ -2240,6 +2242,7 @@ def settings_view(repo: str | None = None) -> dict:
         "kv_bits": "off, full precision",
         "kv_group_size": "64",
         "prefill_step_size": "2048",
+        "server_reasoning": "the model's own default",
     }
     shared, models = _read_settings()
     shown = {}
@@ -2595,6 +2598,7 @@ def _server_command(repo: str, settings: dict, port: int, performance: dict | No
         "--allowed-origins",
         f"http://{HOST}:{PORT},http://localhost:{PORT}",
     ]
+    cmd += engine_runtime.reasoning_flags(settings.get("server_reasoning"))
     for key in ("prompt_cache_size", "prompt_cache_bytes"):
         if settings[key]:
             cmd += [f"--{key.replace('_', '-')}", str(settings[key])]

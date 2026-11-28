@@ -52,7 +52,12 @@ class Mlx(Engine):
     id = "mlx"
     name = "MLX (built in)"
     request_model = "default_model"  # mlx_lm's name for the model it was started with
-    setting_keys = ("server_max_reply_tokens", "prompt_cache_size", "prompt_cache_bytes")
+    setting_keys = (
+        "server_max_reply_tokens",
+        "prompt_cache_size",
+        "prompt_cache_bytes",
+        "server_reasoning",
+    )
     missing = (
         ("API key", "any program on this Mac can use the server"),
         ("Max context setting and long prompt refusal", NOT_AVAILABLE),
@@ -79,7 +84,7 @@ class Optiq(Engine):
     version = optiq_engine.VERSION
     key_env = optiq_engine.KEY_ENV
     request_model = "default_model"
-    setting_keys = tuple(key for key, _ in optiq_engine.SETTING_FLAGS)
+    setting_keys = (*(key for key, _ in optiq_engine.SETTING_FLAGS), "server_reasoning")
     missing = (
         ("Memory limit", NOT_AVAILABLE),
         ("MLX cache limit setting", "not passed to this engine"),

@@ -267,6 +267,53 @@
             <button class="btn btn-ghost" id="serverStopBtn" hidden>Stop</button>
             <span class="hint" id="serverApplyNote"></span>
           </div>
+          <div class="start-confirm" id="startConfirm" role="group" aria-labelledby="startConfirmTitle" hidden>
+            <div class="panel-head"><span id="startConfirmTitle">Check, then start</span></div>
+            <div class="kv-row"><span>Engine</span><span id="confirmEngine"></span></div>
+            <div class="kv-row"><span>Model</span><span class="mono" id="confirmModel"></span></div>
+            <div class="setting">
+              <label for="confirm-max_context_tokens">Context limit (tokens)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="confirm-max_context_tokens" aria-describedby="confirm-max_context_tokens-note" />
+              <span class="hint" id="confirm-max_context_tokens-note"></span>
+            </div>
+            <div class="setting">
+              <label for="confirm-server_reasoning">Reasoning</label>
+              <select id="confirm-server_reasoning" class="select" aria-describedby="confirm-server_reasoning-note"><option value="">Model default</option><option value="on">On</option><option value="off">Off</option></select>
+              <span class="hint" id="confirm-server_reasoning-note"></span>
+            </div>
+            <div class="setting">
+              <label for="confirm-vision">Vision</label>
+              <input type="text" class="input" id="confirm-vision" value="Off" disabled aria-describedby="confirm-vision-note" />
+              <span class="hint" id="confirm-vision-note">Not supported by either engine.</span>
+            </div>
+            <div class="setting">
+              <label for="confirm-prompt_cache_size">Prompt cache (conversations)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="confirm-prompt_cache_size" aria-describedby="confirm-prompt_cache_size-note" />
+              <span class="hint" id="confirm-prompt_cache_size-note"></span>
+            </div>
+            <div class="setting">
+              <label for="confirm-prompt_cache_bytes">Prompt cache limit (bytes)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="confirm-prompt_cache_bytes" aria-describedby="confirm-prompt_cache_bytes-note" />
+              <span class="hint" id="confirm-prompt_cache_bytes-note"></span>
+            </div>
+            <div class="setting">
+              <label for="confirm-kv_bits">KV cache bits</label>
+              <select id="confirm-kv_bits" class="select" aria-describedby="confirm-kv_bits-note"><option value="">Off (full precision)</option><option value="8">8</option><option value="4">4</option></select>
+              <span class="hint" id="confirm-kv_bits-note"></span>
+            </div>
+            <div class="setting">
+              <label for="confirm-server_max_reply_tokens">Reply tokens (default)</label>
+              <input type="number" step="1" inputmode="numeric" class="input" id="confirm-server_max_reply_tokens" aria-describedby="confirm-server_max_reply_tokens-note" />
+              <span class="hint" id="confirm-server_max_reply_tokens-note"></span>
+            </div>
+            <label class="check"><input type="checkbox" id="confirmBackground" /><span>Run in background (keeps holding memory until Stop)</span></label>
+            <p class="hint">Changes here are saved as this model's settings.</p>
+            <p class="field-error" id="confirmError" role="alert"></p>
+            <div class="server-row">
+              <button class="btn btn-primary" type="button" id="confirmStartBtn">Start now</button>
+              <button class="btn btn-ghost" type="button" id="confirmCancelBtn">Cancel</button>
+            </div>
+          </div>
         </div>
         <div class="notice" id="serverToolsWarn" hidden>
           <div class="notice-body">
@@ -402,6 +449,17 @@
               <span class="hint" id="cfg-max_context_tokens-scope">MLX does not use this: it has no prompt limit.</span>
               <span class="hint" id="cfg-max_context_tokens-now"></span>
               <span class="field-error" id="cfg-max_context_tokens-error"></span>
+            </div>
+            <div class="setting">
+              <label for="cfg-server_reasoning">Reasoning (server default)</label>
+              <select id="cfg-server_reasoning" class="select" aria-describedby="cfg-server_reasoning-scope cfg-server_reasoning-now cfg-server_reasoning-error">
+                <option value="">automatic</option>
+                <option value="on">on</option>
+                <option value="off">off</option>
+              </select>
+              <span class="hint" id="cfg-server_reasoning-scope">A model without a thinking switch ignores it.</span>
+              <span class="hint" id="cfg-server_reasoning-now"></span>
+              <span class="field-error" id="cfg-server_reasoning-error"></span>
             </div>
             <div class="setting">
               <label for="cfg-server_max_reply_tokens">Server max reply tokens</label>

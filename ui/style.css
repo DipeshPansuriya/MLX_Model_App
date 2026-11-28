@@ -525,3 +525,5 @@ html, body {
 
 .engine-install { margin: 8px 0; }
 .engine-install .btn { margin-right: 8px; }
+.start-confirm { margin-top: 12px; }
+.start-confirm[hidden] { display: none; }

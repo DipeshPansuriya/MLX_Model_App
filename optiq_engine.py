@@ -16,7 +16,7 @@ import sysconfig
 from pathlib import Path
 
 import engine_runtime as runtime
-from engine_runtime import HOST, Refused, new_key, write_key  # noqa: F401 - the engine's own
+from engine_runtime import HOST, Refused, new_key, reasoning_flags, write_key  # noqa: F401 - the engine's own
 
 VERSION = "0.8.6"  # the reviewed release; any other needs a new review
 PORT = 8080  # the one place; allowed with the ownership checks of review section 8
@@ -290,6 +290,8 @@ def command(
     cmd += ["--on-generation-death", "exit", "--max-concurrent", "1"]
     # Covers the OpenAI replies only; some of OptiQ's replies still allow any origin.
     cmd += ["--allowed-origins", origins]
+    # Not one of OptiQ's own flags: it hands it on to the mlx_lm server inside.
+    cmd += reasoning_flags(settings.get("server_reasoning"))
     for values, flags in ((settings, SETTING_FLAGS), (performance, PERFORMANCE_FLAGS)):
         for key, flag in flags:
             if values.get(key):

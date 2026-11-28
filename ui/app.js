@@ -679,7 +679,7 @@ function runningNames(server) {
 /* ───────────── configuration page ───────────── */
 const CONFIG_KEYS = ["max_context_tokens", "server_max_reply_tokens", "chat_max_reply_tokens",
   "chat_temperature", "chat_top_p", "prompt_cache_size", "prompt_cache_bytes",
-  "performance_mode", "kv_bits", "kv_group_size", "prefill_step_size"];
+  "performance_mode", "kv_bits", "kv_group_size", "prefill_step_size", "server_reasoning"];
 const PERF_NAMES = { standard: "Standard", save_memory: "Save memory", advanced: "Advanced" };
 const KV_GROUPS = [32, 64, 128];
 const ALL_MODELS = "All models (defaults)";
@@ -873,7 +873,8 @@ async function saveConfig() {
     const { min, max, decimal } = view.settings[key];
     const input = configField(key);
     const raw = input.value.trim();
-    const word = key === "performance_mode"; // every other setting is a number
+    // Every other setting is a number.
+    const word = key === "performance_mode" || key === "server_reasoning";
     const value = raw === "" ? null : word ? raw : Number(raw);
     const fits = value === null || word ||
       (value >= min && value <= max && (decimal || Number.isInteger(value)));
@@ -1312,6 +1313,10 @@ function paintServerCard() {
   // The status region is always in the page, so a screen reader hears its changes.
   setText($("#serverStartWhy"), direct ? "" : reason);
   paintEngine(set);
+  // The panel shows one choice: another choice needs a new look.
+  if (state.confirm && state.confirm.choice !== JSON.stringify(serverChoice(set))) {
+    closeStartConfirm();
+  }
 
   const start = $("#serverStartBtn");
   const stop = $("#serverStopBtn");
@@ -2245,6 +2250,111 @@ async function startFromCard() {
   }
 }
 
+/* ───────────── confirm before a start ───────────── */
+const CONFIRM_KEYS = ["max_context_tokens", "server_reasoning", "prompt_cache_size",
+  "prompt_cache_bytes", "kv_bits", "server_max_reply_tokens"];
+
+function closeStartConfirm() {
+  state.confirm = null;
+  $("#startConfirm").hidden = true;
+  $("#confirmError").textContent = "";
+}
+
+// Shows what the start would use. Nothing is saved or started here.
+async function openStartConfirm() {
+  if (state.serverSending) return;
+  const set = serverSet();
+  if (!set.length) { toast("No model chosen. Press + Add model, then Start.", true); return; }
+  const choice = JSON.stringify(serverChoice(set));
+  const engine = engineId();
+  let view;
+  try {
+    view = await api(`/api/config${repoQuery(set[0])}`);
+  } catch (err) {
+    toast(`Could not read the settings: ${err.message}. Press Start again.`, true);
+    return;
+  }
+  if (choice !== JSON.stringify(serverChoice())) return;
+  const { settings = {}, performance } = view;
+  const mode = settings.performance_mode?.value;
+  const loaded = {};
+  setText($("#confirmEngine"), engineInfo(engine)?.name || (engine === "mlx" ? "MLX" : engine));
+  setText($("#confirmModel"), set[0]);
+  for (const key of CONFIRM_KEYS) {
+    const input = $(`#confirm-${key}`);
+    const entry = settings[key] || {};
+    let value = entry.value ?? "";
+    let note = entry.inherited != null ? `Empty: the All models value (${entry.inherited}).`
+      : "Empty: automatic.";
+    let off = "";
+    if (key === "kv_bits") {
+      value = mode === "save_memory" ? 8 : mode === "advanced" ? value : "";
+      note = "A change sets this model's performance mode to Advanced, or Standard when off.";
+      off = performance?.blocked?.save_memory || "";
+    } else if (key === "server_reasoning") {
+      note = "A model without a thinking switch ignores it.";
+    } else if (key === "max_context_tokens") {
+      if (engine === "mlx") off = "MLX has no context limit.";
+      else note += " Older text is dropped beyond the limit.";
+    }
+    // MLX takes no limit: a value saved for OptiQ is not shown as one.
+    loaded[key] = off && key === "max_context_tokens" ? "" : String(value);
+    input.value = loaded[key];
+    input.disabled = !!off;
+    setText($(`#confirm-${key}-note`), off || note);
+  }
+  $("#confirmBackground").checked = $("#serverBackground").checked;
+  $("#confirmError").textContent = "";
+  state.confirm = { choice, repo: set[0], loaded, settings };
+  $("#startConfirm").hidden = false;
+  $("#confirmCancelBtn").focus();
+}
+
+// Saves what was changed, then starts. A refused value starts nothing.
+async function confirmStart() {
+  const open = state.confirm;
+  if (!open || open.sending || state.serverSending) return;
+  const values = {};
+  for (const key of CONFIRM_KEYS) {
+    const input = $(`#confirm-${key}`);
+    const raw = String(input.value).trim();
+    if (input.disabled || (raw === open.loaded[key] && !input.validity?.badInput)) continue;
+    const label = $(`label[for="confirm-${key}"]`)?.textContent || key.replace(/_/g, " ");
+    const { min, max } = open.settings[key] || {};
+    const number = Number(raw);
+    if (input.validity?.badInput || (key !== "server_reasoning" && key !== "kv_bits" && raw &&
+      !(Number.isInteger(number) && number >= min && number <= max))) {
+      $("#confirmError").textContent =
+        `${label}: use a whole number from ${min} to ${max}, or leave it empty.`;
+      return;
+    }
+    if (key === "kv_bits") {
+      values.performance_mode = raw ? "advanced" : "standard";
+      if (raw) values.kv_bits = number;
+    } else {
+      values[key] = raw === "" ? null : key === "server_reasoning" ? raw : number;
+    }
+  }
+  open.sending = true;
+  try {
+    if (Object.keys(values).length) {
+      await api("/api/server/settings",
+        { method: "POST", body: JSON.stringify({ repo: open.repo, values }) });
+    }
+  } catch (err) {
+    open.sending = false;
+    $("#confirmError").textContent = `Nothing was started. ${err.message} Change it and try again.`;
+    return;
+  }
+  // Cancel or a changed card while saving: no start.
+  if (state.confirm !== open) return;
+  $("#serverBackground").checked = $("#confirmBackground").checked;
+  closeStartConfirm();
+  // The button just pressed is gone: the focus goes back to Start, which moves it on.
+  $("#serverStartBtn").focus();
+  await startFromCard();
+}
+
 async function stopServer() {
   try { await api("/api/server/stop", { method: "POST", body: "{}" }); refreshState(); }
   catch (err) { toast(err.message, true); }
@@ -2361,7 +2471,12 @@ function wire() {
   $("#view-server").addEventListener("click", secondClick, true);
   $("#view-server").addEventListener("mousedown", secondClick, true);
 
-  $("#serverStartBtn").addEventListener("click", startFromCard);
+  $("#serverStartBtn").addEventListener("click", openStartConfirm);
+  $("#confirmStartBtn").addEventListener("click", confirmStart);
+  $("#confirmCancelBtn").addEventListener("click", () => {
+    closeStartConfirm();
+    $("#serverStartBtn").focus();
+  });
   $("#serverStopBtn").addEventListener("click", stopServer);
   const dismissNotice = async () => {
     try { await api("/api/server/notice/clear", { method: "POST", body: "{}" }); refreshState(); }

@@ -19,7 +19,7 @@ const AUTO = { max_context_tokens: [4096, 100000000], server_max_reply_tokens: [
   chat_max_reply_tokens: [64, 131072], chat_temperature: [0, 2], chat_top_p: [0.05, 1],
   prompt_cache_size: [1, 100], prompt_cache_bytes: [100000000, 100000000000],
   performance_mode: ["standard", "advanced"], kv_bits: [4, 8], kv_group_size: [32, 128],
-  prefill_step_size: [64, 2048] };
+  prefill_step_size: [64, 2048], server_reasoning: ["on", "off"] };
 const config = (repo, over = {}, extra = {}) => ({
   repo: repo || null, applied_context: null, context_message: null, load_test: {},
   settings: Object.fromEntries(Object.entries(AUTO).map(([key, [min, max]]) => [key, {

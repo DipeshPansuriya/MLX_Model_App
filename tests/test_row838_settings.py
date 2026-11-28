@@ -32,7 +32,7 @@ PERFORMANCE_KEYS = {
     "kv_group_size": (32, 128),
     "prefill_step_size": (64, 2048),
 }
-ALL_KEYS = {**KEYS, **PERFORMANCE_KEYS}
+ALL_KEYS = {**KEYS, **PERFORMANCE_KEYS, "server_reasoning": ("on", "off")}
 GB = 10**9
 REPO, OTHER = "org/seven", "org/other"
 

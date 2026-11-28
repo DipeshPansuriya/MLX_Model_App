@@ -387,7 +387,7 @@ def test_the_last_model_is_already_chosen_and_one_click_starts_it(tmp_path):
         ["org/b"],
         ["Start Server", False],
         0,
-        [{"repo": "org/b", "background": False}],
+        [{"repo": "org/b", "background": True}],
     ]
 
 

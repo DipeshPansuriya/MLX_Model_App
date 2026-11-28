@@ -144,3 +144,129 @@ return [first, el("#serverBackground").checked];
 """,
             )
             assert out == [shown, not shown]
+
+
+class TestRow889Reasoning:
+    def test_the_saved_choice_reaches_both_commands_as_a_real_flag(self, app_module):
+        app = app_module
+        for choice, flag in (("on", "true"), ("off", "false"), (None, None)):
+            app.save_settings({"server_reasoning": choice})
+            settings = app.server_settings(["org/a"])
+            mlx = app._server_command("org/a", settings, 8080)
+            optiq = app.engines.OPTIQ.command(
+                "py",
+                "snap",
+                8080,
+                settings=app._direct_settings(settings),
+                performance={},
+                origins="o",
+            )
+            for cmd in (mlx, optiq):
+                if flag is None:
+                    assert "--chat-template-args" not in cmd
+                else:
+                    found = cmd[cmd.index("--chat-template-args") + 1]
+                    assert found == f'{{"enable_thinking":{flag}}}'
+        for engine in (app.engines.MLX, app.engines.OPTIQ):
+            assert "server_reasoning" in engine.setting_keys
+
+    def test_only_on_or_off_is_accepted(self, app_module):
+        check = app_module._settings_change_problem
+        assert check({"values": {"server_reasoning": "on"}}) is None
+        assert check({"values": {"server_reasoning": '{"x":1}'}})
+
+
+# The settings view the panel reads, and every request the page sends.
+CONFIRM = (
+    CARD
+    + """
+const sent = [];
+const setting = (value) => ({ value, own: value, inherited: null, min: 1, max: 1e11 });
+const settings = { max_context_tokens: setting(null), server_reasoning: setting(null),
+  prompt_cache_size: setting(null), prompt_cache_bytes: setting(null),
+  kv_bits: setting(null), performance_mode: setting(null),
+  server_max_reply_tokens: setting(4096) };
+globalThis.fetch = (url, init) => {
+  if (init?.method === "POST") sent.push([url, JSON.parse(init.body)]);
+  return reply(url.startsWith("/api/config")
+    ? { settings, performance: { blocked: {} } } : { ok: true });
+};
+const field = (key) => el(`#confirm-${key}`);
+"""
+)
+
+
+@needs_node
+class TestRow889Confirm:
+    def test_start_shows_the_panel_and_cancel_starts_nothing(self, tmp_path):
+        out = run(
+            tmp_path,
+            CONFIRM
+            + """
+draw();
+return openStartConfirm().then(() => {
+  const open = [el("#startConfirm").hidden, el("#confirmEngine").textContent,
+    el("#confirmModel").textContent, field("max_context_tokens").disabled,
+    el("#confirm-max_context_tokens-note").textContent,
+    field("server_max_reply_tokens").value, el("#confirmBackground").checked];
+  closeStartConfirm();
+  return [...open, el("#startConfirm").hidden, sent.length];
+});
+""",
+        )
+        assert out[:4] == [False, "MLX (built in)", "org/custom", True]
+        assert "MLX has no context limit" in out[4]
+        assert out[5:] == ["4096", True, True, 0]
+        assert "Vision" in PAGE and "Not supported by either engine" in PAGE
+
+    def test_confirm_saves_the_edits_for_the_model_then_starts(self, tmp_path):
+        out = run(
+            tmp_path,
+            CONFIRM
+            + """
+draw({ engines: [mlx, optiq, splash], last_engine: "optiq" });
+return openStartConfirm().then(() => {
+  const enabled = !field("max_context_tokens").disabled;
+  field("max_context_tokens").value = "32768";
+  field("server_reasoning").value = "off";
+  field("kv_bits").value = "8";
+  el("#confirmBackground").checked = false;
+  return confirmStart().then(() => [enabled, sent]);
+});
+""",
+        )
+        assert out[0] is True
+        assert out[1] == [
+            [
+                "/api/server/settings",
+                {
+                    "repo": "org/custom",
+                    "values": {
+                        "max_context_tokens": 32768,
+                        "server_reasoning": "off",
+                        "performance_mode": "advanced",
+                        "kv_bits": 8,
+                    },
+                },
+            ],
+            [
+                "/api/server/start",
+                {"repo": "org/custom", "engine": "optiq", "anthropic": True, "background": False},
+            ],
+        ]
+
+    def test_a_changed_card_closes_the_panel(self, tmp_path):
+        out = run(
+            tmp_path,
+            CONFIRM
+            + """
+draw();
+return openStartConfirm().then(() => {
+  state.engine = "optiq";
+  serverCardChanged();
+  const hidden = el("#startConfirm").hidden;
+  return confirmStart().then(() => [hidden, sent.length]);
+});
+""",
+        )
+        assert out == [True, 0]
