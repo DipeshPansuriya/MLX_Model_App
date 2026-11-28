@@ -1,5 +1,11 @@
 # MLX Studio - API
 
+> **2.0.13 (unreleased):** MLX is `mlx_lm`'s own server on port 8080. The request guard,
+> the 80% memory rule, two models, memory estimates and the settings
+> `mlx_cache_limit_mb`, `two_model_context_tokens` and `memory_limit_percent` are
+> removed. Where a section below still describes them, it applies to 2.0.12 and
+> earlier. [What is no longer protected](../README.md#protections-removed-in-2013).
+
 **Date:** 2026-11-25 | **Applies to:** 2.0.9 (released 2026-11-26); parts marked unreleased describe the working source | **Security:** [SECURITY.md](SECURITY.md)
 
 ## 1. Overview
@@ -88,136 +94,12 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/logs/clear` | - | 500 |
 | other paths | - | 404 |
 
-## 5. Two models (unreleased, 2.0.10 source)
+## 5. One model (2.0.13, unreleased)
 
-### Request fields
-
-`also` is optional: a list with at most one model id.
-
-| Answer | When |
-|---|---|
-| 400 | `also` is not a list of strings, holds more than one name, repeats `repo`, or, with a second name, either model is not installed completely |
-| 400 | `/api/server/estimate` with `also` empty: `repo` is not installed completely |
-| 409 | `/api/server/start` with a pair: it does not fit at 8,192 tokens each. `error` is the refusal text and `estimate` is the estimate reply below |
-| 409 | `/api/server/start`: a model is being deleted |
-| 400 | 2.0.12 source: `/api/server/start` with one model: it is not installed completely. Nothing is launched, and a running server is left alone |
-
-A start with one model is never refused for memory (in the 2.0.13 source its
-prompts can be, [6a](#6a-api-server-prompt-limit)). The app stops the running
-server before the new one starts and then checks memory again. If the pair is
-refused at that point, the call has already answered 200 and `/api/state` tells
-the outcome.
-
-### Replacing a running server (unreleased, 2.0.12 source)
-
-A start that replaces a server remembers a fallback: the models and mode of the
-last server that was ready, else of the running one. A further start before the new
-server is ready keeps that fallback. It is started again, once, when the new server:
-
-| Case | Detected |
-|---|---|
-| Is refused for memory after the stop, cannot be spawned, or the start raises an unexpected error (a process already spawned is stopped) | At once |
-| Exits before it is ready | By the watcher, every 2 s |
-| Cannot load its first model (still running) | `load-failed` or `preload_done` with nothing resident; the process is stopped |
-
-Ready means a model is resident and, for two, `preload_done` is `true` (not needed
-with `multi_off`). A server still running 10 minutes after its start counts as
-ready. `/api/server/stop` forgets the fallback. Nothing is started again after it,
-while a newer start waits, or when there is no fallback and no server was running.
-
-| Outcome | Field |
-|---|---|
-| Previous server started again | `apply_notice`: **The new server did not start: … was started again.** |
-| That failed too | `down_notice`: both reasons, ending **The API server is stopped.** |
-| The restored server stops later | `down_notice`: the `apply_notice` text followed by **API server for … stopped unexpectedly**; `apply_notice` is `null`. Nothing more is started |
-| No earlier server, and the new one cannot be started | `down_notice`: **The API server did not start: …** (a memory refusal keeps its own text) |
-
-Three further fields under `server`: `apply_notice` (text or `null`), `starting`
-(`true` while a requested start has not launched yet) and `last_models` (up to two
-ids of the last server that reported ready, else `[]`). `apply_notice` is cleared
-by the next start, by stop and by `/api/server/notice/clear`.
-
-`last_models` is read from `~/.mlx_studio/server.last.json`, written when the
-watcher sees the ready report within 10 minutes of the start (not by the 10 minute
-rule above, and not after a failed load). It may name a model that has since been
-removed; the page leaves those out of the card and of **Restart**, and
-`/api/server/start` refuses them. Reading it starts nothing. Anything but a regular
-file of at most 4 KB holding printable ids of at most 200 characters reads as `[]`.
-
-### Estimate reply
-
-All values are calculated, not measured.
-
-| Field | Meaning |
-|---|---|
-| `models[]` | `repo`, `weights_bytes`, `safe_context` (tokens, `null` if unknown), `context_limit`. For a pair, `safe_context` is the smaller of `context_tokens` and the model's limit. 2.0.13 source, one model: the limit a server started now would apply ([6a](#6a-api-server-prompt-limit)); 0 means every prompt would be refused, and `context_warning` says so |
-| `weights_bytes`, `reply_bytes`, `cache_bytes`, `margin_bytes`, `total_bytes` | the memory sum; `total_bytes` is the need. Reply room is cache bytes per token × context × 6.4 for one model, or × 3.1 for two (largest model only); margin is 1.4 GB; `cache_bytes` is 0 for one model. A pair below 8,192 is summed at 8,192 |
-| `budget_bytes` | static = 0.52 × RAM. For a pair with readable free memory: max(0, min(static, `held_bytes` + `free_bytes` − 2 GB)). 2.0.13 source, one model with other apps' memory readable: max(0, 0.80 × RAM − what all but the running server holds). Otherwise static |
-| `free_bytes` | free memory in bytes (cached up to 10 s for this route, read afresh for a start). `null` if `vm_stat` cannot be read, and always for one model, where it is not read |
-| `held_bytes` | measured `active_bytes` of the running server, which a restart gives back; 0 if there is none, for one model, or without `free_bytes` |
-| `context_tokens` | pair: context per model T, a multiple of 1,024, at most 32,768; below 8,192 (down to 0) means refused. One model: 32,768 |
-| `cache_cap_bytes` | pair: 2 × cache bytes per token × T (at least 8,192), using the larger of the two models' bytes per token (131,072 if a config cannot be read). 0 for one model |
-| `fits` | pair: T is at least 8,192 and the guard's admission rule accepts both. A start refuses a pair when this is `false`. One model: `false` if the guard's rule would count it as not fitting; it is still started |
-| `refused` | pair that does not fit: the refusal text. Otherwise `null` |
-| `free_is_limit` | `true` when `held_bytes` + `free_bytes` − 2 GB is below the static budget; `false` for one model or unreadable free memory |
-
-Refusal text, with free memory readable and the static budget large enough:
-`Not enough free memory for two models: X GB free, Y GB needed for 8K each. ...`.
-Y is the need at 8,192 plus the 2 GB reserve, less `held_bytes`; X is rounded down
-and Y up, to 0.1 GB. Otherwise:
-`Not enough memory for two models: X GB allowed for the API server, Y GB needed for 8K each. ...`.
-
-### New fields in `/api/state` under `server`
-
-| Field | Meaning |
-|---|---|
-| `repos` | models the server was started with; the first equals `repo` |
-| `resident` | models in memory now, the current one first |
-| `memory` | `budget_bytes`, `active_bytes`, `peak_bytes`, `measured`, or `null`. Updated at a model load or switch; with two models also at evictions, trims and about every 10 s from `mlx_lm`'s request loop |
-| `events` | the last 5 events, by name: `hit`, `load`, `evict`, `trim`, `alone`, `load-failed`, `preload-skipped`. The periodic refresh adds none |
-| `oversize` | models loaded alone although they do not fit the budget; empty list if none |
-| `multi_off` | why only one model is kept, when the installed `mlx_lm` no longer matches; else `null` |
-| `context_tokens` | context per model of a running two-model server: the guard's figure, or the one the app started it with. `null` for one model or with `multi_off`. It does not depend on `events` |
-| `preload_done` | `true` once the guard has finished preloading, however that ended (both loaded, second skipped, or a load failed); else `false` |
-| `memory_low` | `null` or `{free_bytes, short_by_bytes}`. Stays `null` until `preload_done` is `true`, without a measurement, if free memory cannot be read, for one model and with `multi_off` |
-
-`short_by_bytes` is (need − 0.4 GB − `active_bytes`) − (`free_bytes` − 2 GB), and
-`memory_low` is set when that is above 0. Need is the larger of the pair asked for
-and the pair loaded now, at the running context. The 0.4 GB process overhead is
-taken off because the running process already uses it. Nothing is unloaded
-because of this field.
-
-### Guard flags on port 8080
-
-The app adds these to the server command only when a second model is chosen. The
-guard reads them and does not pass them to `mlx_lm`; a bad or repeated flag stops
-the start (an unusable `--studio-cache-limit-mb` value is ignored instead).
-
-| Flag | Value |
-|---|---|
-| `--studio-also-model` | second model id |
-| `--studio-max-models` | `1` or `2` (the app sends `2`) |
-| `--studio-budget-bytes` | the estimate's `budget_bytes` at start, at least 1 |
-| `--studio-kv-tokens` | context per model T, in tokens |
-
-A set user setting adds `--studio-max-context` (ignored while two models run),
-`--studio-memory-percent` or `--studio-cache-limit-mb`, with one model too ([6b](#6b-user-settings)).
-
-The app also passes `--prompt-cache-bytes` (`cache_cap_bytes`) then. `mlx_lm`
-trims to it only on its batch path, so in two-model mode the guard also sets the
-cache's own byte limit, which covers requests run one at a time (for example with
-`seed`). A one-model start passes none of the four flags in the table, and has a byte cap
-only if `prompt_cache_bytes` is set. If the guard falls back to one model (`multi_off`), the flags were still
-passed, so `mlx_lm` receives the cache cap but the guard sets no byte limit.
-
-At each load of a model that is not in memory, at the preload of the second model
-and at each periodic refresh, the guard works out its budget as the smallest of:
-the start budget, the number in the `MLX_STUDIO_BUDGET_FILE` file
-([DATABASE.md](DATABASE.md)), and its own active memory plus free memory minus
-2 GB (skipped, with one line on stderr, if `vm_stat` cannot be read). It never
-goes above the start budget. A switch between loaded models loads nothing and is
-not checked. Clients keep using one base URL and choose by the `model` field.
-Models take turns.
+`POST /api/server/start` takes `{repo, background, engine, anthropic}`. A non-empty
+`also` gets `400` ("the server serves one model"). `/api/server/estimate` and
+`/api/loadtest/apply` are removed, as are the memory, resident-model and prompt-limit
+fields of `/api/state`.
 
 ## 6. Chat stream
 
@@ -249,28 +131,8 @@ See [ADR-011](adr/ADR-011-chat-through-the-api-server.md) and
 
 ## 6a. API server prompt limit
 
-2.0.13 source (unreleased). A prompt longer than the model's limit on this server
-(counted after the chat template, tools included) is answered `400` before
-generation:
-
-```json
-{"error": {"message": "This model's maximum context length is 8192 tokens on this server. However, your prompt is 9000 tokens. Start a new chat, or let your client compact the conversation to fit.",
-  "type": "invalid_request_error", "param": "messages", "code": "context_length_exceeded"}}
-```
-
-The limit is calculated, never above the model's own
-([formula and figures](ARCHITECTURE.md#62-prompt-limit)). The one-model automatic
-figure and a set max context take off the memory other apps held when the server
-started. When the result is below 4096 tokens the code is `insufficient_memory`
-(`param` stays `messages`), so a client should not compact and retry; the server
-log says so once, and `message` is: "This server accepts no prompt for this model.
-Its safe context is below 4096 tokens: with it the whole Mac would use more than
-80% of this Mac's memory. Memory in use now: 82%. Close other apps (web browsers,
-code editors, virtual machines, other model apps), then on the API Server page
-press Stop, then Start Server. Or choose a smaller model." An accepted request's
-`max_tokens` is lowered to what the prompt leaves of the limit, at least 1.
-The percentage is `memory_limit_percent` when that is set. A set
-`max_context_tokens` replaces the calculated one-model limit ([6b](#6b-user-settings)).
+Removed in 2.0.13. The MLX server has no prompt limit; OptiQ drops older text beyond
+the max context.
 
 ## 6b. User settings
 

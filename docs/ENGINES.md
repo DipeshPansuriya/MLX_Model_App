@@ -9,7 +9,7 @@ and the load test. Changes made after that commit are checked with fakes only.
 
 | Engine | State |
 |---|---|
-| MLX (built in, `mlx_guard.py`) | default; command unchanged |
+| MLX (built in) | default; 2.0.13 starts `mlx_lm server` itself, without the earlier request guard |
 | OptiQ 0.8.6 | install on Setup, then choose it on the API Server card |
 | Splash, Rapid-MLX | shown as "Not available yet: security review pending"; no install, no command |
 
@@ -36,11 +36,7 @@ and the load test. Changes made after that commit are checked with fakes only.
 - At each start the engine folder is checked again: no linked folder, the install marker
   matches the shipped lock, and no package (pip aside) that the lock does not name at that
   version. Files inside a package are not checked.
-- Memory: when the app looks at the server (every 2 seconds until ready, then about every
-  30) it compares the whole Mac's memory use with the memory limit (80%, or your lower
-  value) and stops the server with the reason. This is sampling: memory can pass the limit
-  between two looks, so it cannot be guaranteed. There is no look while the first request,
-  which loads the model, is running. Nothing watches while the app is closed.
+- Memory: no limit. The app does not stop the server for memory (removed in 2.0.13).
 - Keys are replaced by `[key hidden]` in the server output, also in the background
   `server.log`.
 - Only the max reply tokens, max context, prompt cache and performance settings are passed
@@ -54,23 +50,28 @@ and the load test. Changes made after that commit are checked with fakes only.
 |---|---|---|---|
 | OpenAI compatible (OptiQ) | `http://127.0.0.1:8080/v1` | `default_model` | Copy key |
 | Claude Code (OptiQ, Anthropic route on) | `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` | `ANTHROPIC_MODEL=default_model` | `ANTHROPIC_AUTH_TOKEN` |
-| MLX | `http://127.0.0.1:8080/v1` | the model id | none; no Anthropic route |
+| MLX | `http://127.0.0.1:8080/v1` | `default_model` (or the exact started id; another name loads that model) | none; no Anthropic route |
 
 The OpenAI and Anthropic routes answered plain HTTP requests in the live check. A
 connection from Claude Code or another client program has not been tried.
 
-## Protections OptiQ does not have
+## Protections the engines do not have
 
-The API Server card lists them (`engines.py`, `Optiq.missing`): no memory limit inside the
-server (only the sampled stop above), long prompts drop older text, the reply cap is a default only, no web page
-checks beyond the key, a key holder may send draft model or file paths, and `/health`,
-`/v1/optiq/context` and `OPTIONS` answer without the key.
+The API Server card lists them for the chosen engine (`engines.py`, `missing`).
+
+- **MLX:** no API key, memory limit, prompt limit, reply cap, request size limit, web
+  page checks beyond `--allowed-origins`, or refusal of other models, folders, draft
+  models and adapters. [Full list](../README.md#protections-removed-in-2013).
+- **OptiQ:** no memory limit, long prompts drop older text, the reply cap is a default
+  only, no web page checks beyond the key, a key holder may send draft model or file
+  paths, and `/health`, `/v1/optiq/context` and `OPTIONS` answer without the key.
 
 ## Load Test
 
 Choose the engine before **Start test**. The OptiQ test uses a spare port, without the
 Anthropic route. A run fails a size if the server drops part of the prompt.
-**Apply** is offered for MLX results only.
+No percentage memory limit applies; the test server is still stopped on critical
+memory pressure, swap growth, unreadable memory or a sampling gap.
 **Thinking** is sent to both engines as `chat_template_kwargs.enable_thinking` (read
 in the installed mlx_lm and OptiQ source; not tried with a running engine).
 

@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "ADR-012 — Load test in a supervisor process, settings on their own page"
-status: "Accepted"
+status: "Superseded in part (2.0.13, unreleased)"
 date: 2026-11-27
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -12,6 +12,9 @@ related:
 ---
 
 # ADR-012 — Load test in a supervisor process
+
+> **Superseded in part on 2026-11-28 (row 887, the owner's decision):** the load test's memory limit, gate and Apply (the separate test process and its other stops stay) is removed in
+> 2.0.13, with no replacement. [What is no longer protected](../../README.md#protections-removed-in-2013).
 
 Unreleased, 2.0.13 source. Verified with fakes only.
 

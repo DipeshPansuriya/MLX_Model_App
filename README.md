@@ -165,8 +165,7 @@ model of its own. Released builds load a second copy for Chat.
 
 - Start the API server first. While it is stopped, Chat says so and offers
   **Go to API Server**; while it starts or restarts, typing is off.
-- The **Model** list holds only the served models. One model is selected already;
-  with two, your choice is kept while it is served.
+- The **Model** list holds only the served model, already selected.
 - Streaming replies. A reply's reasoning sits in a collapsed **Thinking** block
   above the answer.
 - Under each reply, a small line: reply size, time to the first answer, writing
@@ -199,33 +198,32 @@ model of its own. Released builds load a second copy for Chat.
   Downloads section that starts collapsed and shows count and progress. Cancelling inside a Xet-backed file was not tested.
 
 ### API Server
-- Starts `mlx_lm server` through MLX Studio's request guard on
+2.0.13 source (unreleased).
+
+- Starts `mlx_lm server` itself, with no MLX Studio wrapper or proxy, on
   `http://127.0.0.1:8080/v1`, with 8192 reply tokens by default.
-- Live server output, copyable endpoint and `curl` example.
-- Unreleased (2.0.12 source): one card, **Models (max 2)**. **+ Add model** opens
-  the searchable list; **×** removes a model. See
-  [the API Server card](#the-api-server-card).
-- Context, reply limits, cache and memory settings are on the
-  [Configuration page](#configuration) (2.0.13, unreleased).
+- **MLX has no memory limit.** See
+  [what is no longer protected](#protections-removed-in-2013).
+- One model per server. Live server output, copyable endpoint and `curl` example.
 - Warns when the chosen model is marked as unable to call tools.
 - **Background**: the server keeps running after the window closes. Its process
   id is saved in `~/.mlx_studio/server.pid` and adopted on the next launch only if
   the command line and start time still match.
 - If the server dies, the view shows a banner with **Restart** and records the
-  event.
-- Since 2.0.10: can keep [two models loaded](#one-or-two-models) at once.
+  event. See [the API Server card](#the-api-server-card).
 
 ### Configuration
 2.0.13 source (unreleased). Replaces the Settings box on the API Server card.
 
-- Pick **All models (defaults)** or an installed model. Fields: max context,
-  server reply cap, Chat reply cap, temperature, top-p, prompt cache size and
-  bytes, two-model context cap, and the memory limit (All models only).
+- Pick **All models (defaults)** or an installed model. Fields: max context
+  (OptiQ only), server reply cap (a default only), Chat reply cap, temperature,
+  top-p, and prompt cache size and bytes.
 - Each field shows the value that applies; empty means automatic, or under a model
   the All models value. **Save** stores only what you changed; **Reset this
   entry** clears one entry.
-- A max context lowered to fit memory is said on the page. Server limits apply at
-  the next start or **Apply changes**; Chat values apply to the next message.
+- Server settings apply at the next start or **Apply changes**; Chat values apply
+  to the next message.
+- The memory limit, MLX buffer cache limit and two-model context cap are removed.
 - [Keys and ranges](docs/API.md#6b-user-settings).
 
 #### Performance mode (no commands needed)
@@ -247,7 +245,7 @@ To try a mode:
    mode, and read the results: each one lists the settings it ran with.
 
 A model that cannot use compressed memory has the choice switched off, with the
-reason, and runs in Standard. The automatic prompt limit is the same in every mode.
+reason, and runs in Standard.
 
 ### Load Test
 2.0.13 source (unreleased). Measures one model on this Mac. **Not yet run with a
@@ -261,12 +259,16 @@ real model.** [How to run it safely](docs/RUNBOOK.md#37a-run-a-load-test-safely)
 - **Thinking** (on or off) is offered where the model's chat template has the
   `enable_thinking` switch. Thinking uses the reply token budget. Each result says
   which it was.
-- Shows live progress and memory, and **Cancel test**. A size is not sent when
-  memory is projected over the gate (75%), and the test server is ended at 77%.
-  Memory is sampled, so staying under 80% cannot be guaranteed.
+- Shows live progress and memory, and **Cancel test**.
+- **No memory limit:** every chosen size is tried. The test server is still ended
+  when macOS reports critical memory pressure, swap grows by more than 0.5 GB,
+  memory cannot be read, or memory is not sampled for more than 1 second (for
+  example the Mac slept). Memory is sampled, so the Mac can still freeze.
+- A model whose own limit is offered as a size (for example 1,000,000) can be
+  tested at that limit.
 - Results: size, read speed, first-token time, write speed, peak memory and the
-  settings used, with earlier runs. **Apply this size to config** saves a passed
-  size as that model's max context. Old results are tagged **stale**.
+  settings used, with earlier runs. Old results are tagged **stale**. A size can
+  no longer be applied to the config: MLX has no setting for it.
 
 ### Activity
 - Filterable log of chats, loads, downloads, deletes, installs and server events.
@@ -340,8 +342,8 @@ python3 packaging/release_manifest.py --verify --release --dist dist
 ## Engines
 
 MLX is the default. OptiQ can be installed on Setup and chosen on the API Server card;
-it needs an API key and has fewer protections. See [docs/ENGINES.md](docs/ENGINES.md).
-The rules below describe the MLX engine.
+it needs an API key. Both lack protections that earlier releases had; the card lists
+them. See [docs/ENGINES.md](docs/ENGINES.md).
 
 ## Connect DeepSeek Harness or any OpenAI-compatible client
 
@@ -356,29 +358,47 @@ Code) cannot connect to it directly. OptiQ has that route, switched on by defaul
 ```
 Base URL: http://127.0.0.1:8080/v1
 API Key:  local            (any value; the server does not check it)
-Model:    mlx-community/Qwen2.5-7B-Instruct-1M-4bit
+Model:    default_model
 ```
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"mlx-community/Qwen2.5-7B-Instruct-1M-4bit",
+  -d '{"model":"default_model",
        "messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-### Rules the server enforces
+`default_model` is the model the server was started with. The exact started model id
+works too. **Any other name makes `mlx_lm` load that model in its place**, from the
+local cache or from a local folder path. The app starts the server offline, so
+nothing is downloaded.
 
-| Rule | Otherwise |
+## Protections removed in 2.0.13
+
+Unreleased 2.0.13 source. MLX Studio's request guard and its 80% memory rule are
+gone; the MLX engine is `mlx_lm`'s own server.
+
+| Removed | Effect now |
 |---|---|
-| Use `127.0.0.1`, `localhost` or `[::1]` as the host name (any port) | `403` |
-| Send POSTs as `Content-Type: application/json` | `415` |
-| Name `default_model`, the started model, or a complete downloaded model | `400`; nothing is downloaded |
-| No `draft_model` or `adapters` | `400` |
-| Images must be `data:` URLs; `http(s)` and other URLs are refused | `400` |
-| Web pages on other origins | `403` |
+| 80% memory rule and memory-based context limit | A large model or prompt can exhaust memory, freeze or crash the Mac |
+| Max context setting and long prompt refusal (MLX) | The app sets no prompt limit. The setting is for OptiQ only (older text is dropped) |
+| Reply token cap | The setting is a default; a request may ask for more |
+| Two models in one server | One model |
+| MLX buffer cache limit setting | Gone |
+| `Host`, JSON-only and `Origin` checks on port 8080 | Only `--allowed-origins`: it limits which web pages can read replies, and does not stop them sending requests |
+| Request size limits | Gone |
+| Refusal of other models, draft models, adapters and file paths | Any local program, and possibly a web page, can make the server load another cached model, a local folder, an adapter or a draft model |
+| Null tool argument fix | Gone |
+| Loaded model and memory readout | Delete is refused only for the model the server was started with |
+| Default prompt cache of 2 conversations with a byte cap | `mlx_lm`'s default (10), no byte cap unless set |
+| Memory stop under OptiQ | The server is not stopped for memory |
+| Load Test size gate, 80% limit, memory estimates and **Apply this size to config** | Every size is tried |
 
-After updating, if the app shows **server unprotected**, open API Server and press
-**Restart now**.
+Still in place: both engines listen on `127.0.0.1` only; MLX gets
+`--allowed-origins` set to the app's origin and no `--trust-remote-code`; the server
+process gets a minimal environment with Hugging Face offline; OptiQ keeps its API key
+and port check; keys are hidden in the server log; leftover server processes are
+cleaned up; the app's own pages on port 8765 keep their request checks and token.
 
 ### Tool calling
 
@@ -396,8 +416,8 @@ in 8 of 8 tries. Adding this instruction to the client gave plain text in 24 of 
 
 ### Context window
 
-Set this in the client. The server has no context-size setting and does not
-reject long input; too much context fails through memory or quality.
+Set this in the client. The MLX server has no context-size setting and does not
+reject long input; too much context can freeze or crash the Mac, or lower quality.
 
 | Model | Recommended | In tokens |
 |---|---|---|
@@ -406,99 +426,22 @@ reject long input; too much context fails through memory or quality.
 
 The figures are for a 32 GB Mac and are **calculated from measured bytes per
 token, not load-tested**. They include the reply. 500K or 1M context is not
-proven and is not recommended here. They are for one model; with two models
-loaded, use the safe context the API Server view shows.
-
-In the unreleased 2.0.13 source the one-model limit also follows the memory other
-apps hold, and can be much lower than these figures:
-[prompt limit](docs/ARCHITECTURE.md#62-prompt-limit).
+proven and is not recommended here.
 
 ### The API Server card
 
-**Unreleased (2.0.12 source).**
+**Unreleased (2.0.13 source).**
 
 | Part | Behaviour |
 |---|---|
-| **Models (max 2)** | The chosen models, each with its context figure when known and a remove button. The same model cannot be added twice. At two, **+ Add model** is off and says why |
-| When the app opens | With the server stopped, the models of the last start that reported ready are already chosen, so **Start Server** is one click. Models no longer installed completely are left out; with nothing remembered the list is empty. Nothing starts by itself |
-| While a server runs | The list shows what it was started with. Your edits stay until you apply them or a new server starts; edits made while a start is under way stay after it |
-| **Restart** | After the server stops unexpectedly or cannot start: starts the models and mode that last ran, not an unapplied choice, leaving out models no longer installed completely. If a new set and the previous one both failed, it may retry the failed new set. **Background** mode is not remembered after the app is closed |
-| Memory | **Memory: X / Y GB**: what the choice needs (or, for the unchanged running server, uses) out of what the API server may use. Hidden while two models are refused. **Details** holds the longer explanations |
-| Warnings | A refusal or a shorter context is shown on the card without opening Details. One model is never refused; if it may not fit, the card says so |
-| **Start Server** | Off, with the reason shown, when no model is chosen or two do not fit |
-| **Apply changes** | On a running server, enabled when the models or **Background** differ. It restarts the server, so **a reply in progress is interrupted** |
-| Failed Apply | The two-model fit is checked before the old server stops. If the new server is then refused, cannot be started, exits, or cannot load its first model before it is ready, the last models that were ready (else the ones that were running) are started again once and **Changes not applied** says why. Applying again before the new server is ready keeps that fallback. If starting them fails, **API server stopped** gives both reasons. A restored server can also stop later; **API server stopped** then says both, and nothing more is started |
+| **Model** | One model with a remove button. With one chosen, **+ Add model** is off and says why |
+| When the app opens | With the server stopped, the model of the last start that reported ready is already chosen. A model no longer installed completely is left out. Nothing starts by itself |
+| While a server runs | The card shows what it was started with. Your edit stays until you apply it or a new server starts |
+| **Restart** | After the server stops unexpectedly or cannot start: starts the model and mode that last ran, not an unapplied choice |
+| **Start Server** | Off, with the reason shown, when no model is chosen or the engine cannot serve it |
+| **Apply changes** | On a running server, enabled when the model, engine, **Background** or saved server settings differ. It restarts the server, so **a reply in progress is interrupted** |
+| Failed Apply | If the new server cannot be started or cannot load its model before it is ready, the previous model is started again once and **Changes not applied** says why |
 | **Stop** | Stops the server, also while it is starting, and forgets the fallback |
-
-"Ready" is the server's own report that its models are loaded. Without that report,
-a server still running after 10 minutes counts as started.
-
-### One or two models
-
-In the released 2.0.9 the API server holds one model. A request naming another
-downloaded model makes it swap, after the running work finishes, which adds load
-time. In released builds the model loaded in the **Chat** tab is separate and uses its own memory;
-unload it if you only need the server.
-
-Since 2.0.10, add a second model on the API Server card to keep both loaded.
-
-| Point | Behaviour |
-|---|---|
-| Address | Both models answer on `http://127.0.0.1:8080/v1`; the client chooses by model name |
-| Turns | One model replies at a time. A request for the other waits for the running replies, then the server switches |
-| Third model | Naming another downloaded model evicts the least recently used one. If memory is still short, the server trims the prompt cache when that is enough; otherwise it evicts the other model too |
-| Context per model | Called **T** below. At most 32,768 tokens, rounded down to a multiple of 1,024, and never above a model's own limit. It is set at start and stays until the server is restarted |
-| Memory the pair may use | The smaller of 0.52 × RAM and what is free now: the free, speculative, purgeable and file-backed pages reported by `/usr/bin/vm_stat`, minus 2 GB left for macOS and other apps. A running server's own memory counts as free, because a restart gives it back. If `vm_stat` cannot be read, only the 52% rule is used and the view says so |
-| How T is worked out | (budget − weights of both models − 1.4 GB margin) ÷ (5.1 × cache bytes per token), rounded down and capped. 5.1 is 2 for the prompt cache plus 3.1 for one reply. The larger of the two models' cache bytes per token is used |
-| Shrink or refuse | From 8,192 up to 32,767 the server starts with that smaller T and the estimate says so. Below 8,192 two models are refused: **Start Server** or **Apply changes** is disabled, or the start is refused (`409`), with the figures. Close other apps or start one model |
-| Prompt cache | Capped at 2 × cache bytes per token × T, room for about one conversation of T tokens per model. **Keep prompts to T tokens or fewer. The prompt cache holds about 2T tokens in total; above that, older prompts are dropped and read again.** Treat T as the safe limit: by the cap arithmetic a conversation up to about 2 × T can still be cached, but it pushes out the other one, and above that it is read again every turn (not tested with real models) |
-| After start | Each load of a model that is not in memory checks free memory again and may trim the cache, evict, or load alone. A switch between the two loaded models is not checked. Nothing is unloaded just because free memory drops |
-| Prompt limit (2.0.13, unreleased) | A prompt over the limit is refused at once: `400`, code `context_length_exceeded` (`insufficient_memory` when no prompt is accepted). A reply is capped to what the prompt leaves. Never above the model's own limit. Two models: **T**. One model: what fits in 0.80 × RAM after taking off what other apps hold when the server starts; if that cannot be read, what fits in 0.52 × RAM, at least 32,768 (or the model's smaller limit), within 0.80 × RAM. Your own max context follows the same rule; there is no override. Below 4,096 every prompt is refused and the message says what to close. The API Server card shows the limit. Unknown model figures leave the model's limit. Calculated from measurements of one model on one Mac: [figures](docs/ARCHITECTURE.md#62-prompt-limit). Your own limit and other caps: [Settings](docs/API.md#6b-user-settings) |
-| One model chosen | One model: the prompt cache holds 2 conversations by default and has a calculated byte cap (2.0.13); no live memory check after the start. The view adds a measured memory line |
-| Older or changed `mlx-lm` hooks | The server keeps one model and the app says why |
-
-What the card says about memory (the longer lines are under **Details**):
-
-| Words | When |
-|---|---|
-| **Shorter context: about 10K tokens per model.** | On the card when T is below 32,768; **Close other apps for more.** is added for a choice not yet running when free memory is the limit |
-| **Two models: about 10K tokens each (one model alone can use more). Uses about … of … GB free.** | T is below 32,768. **Close other apps for more.** is added only when free memory, not the 52% rule, is the limit |
-| **Two models: 32K tokens each. Uses about … of … GB free.** | T is 32,768 |
-| **Uses about … of … GB available.** or **Needs about … GB, … GB would be available.** | A server is running and holds memory; "available" counts the running server's memory (same pair or different) |
-| **Not enough free memory for two models: … GB free, … GB needed for 8K each. Close other apps or start one model.** | Refused because of free memory. "Needed" includes the 2 GB left for macOS |
-| **Not enough memory for two models: … GB allowed for the API server, … GB needed for 8K each. Choose smaller models or start one model.** | Refused by the 52% rule, or free memory could not be read |
-| **Free memory could not be read; using the fixed 52% rule.** | Added to the estimate when `vm_stat` fails |
-| **Free memory is low** | Notice on a running pair: other apps now use memory the server was counting on. It appears only after the loading of both models at server start has ended |
-| **Loaded without enough memory** | Notice: a model does not fit in the memory the server may use now, with room for a reply, and was loaded on its own |
-
-Example for a 32 GB Mac with two 7B 4-bit Qwen2.5 models (4.284 GB of weights
-and 57,344 cache bytes per token each), with no Chat model loaded and no server
-running. **Calculated, not measured:**
-
-| Free memory at start | T per model | Memory the server needs |
-|---|---|---|
-| 19.9 GB or more (the 52% rule is the limit) | 26,624 | about 17.75 GB |
-| 15.11 GB | 10,240 | about 12.96 GB |
-| 11.78 GB | refused | 8K each needs about 14.4 GB free |
-
-**The real two-model re-test of these limits has not run yet.** An earlier real
-run, made before these limits, drove system swap from 0 to 4.60 GB on a busy
-Mac; the limits were changed because of it. The 2 GB reserve, the 3.1 reply
-factor (one data point) and the `vm_stat` free figure are not proven.
-
-Known limits: real two-model memory use, cache trim, eviction, switch time and
-swap with the new limits are **not measured**. The memory budget never rises
-above the figure set at start, so restart the server to get a larger context
-after closing apps. If memory runs
-short between stopping the old server and starting the new one, the app tries once
-to start the previous models again (unreleased) and shows the reason. Right after a server is killed, free
-memory may be read before macOS has returned it. A model whose own context limit
-is below 8,192 can make the "needed" figure too small. Screen readers may
-announce the notice or estimate again on later updates (not checked). Any local
-program using port 8080 can make the server switch models, and a switch between
-two loaded models does no memory check. More: [CHANGELOG](CHANGELOG.md).
-
----
 
 ## Model sizing
 
@@ -548,7 +491,7 @@ Full product, architecture and operational documentation lives in [`docs/`](docs
 ```
 MLX_Model_App/
 ├── app.py                      # backend: HTTP + JSON/SSE API, native window host
-├── mlx_guard.py                # request checks in front of mlx_lm server
+├── model_info.py               # model facts: context limit, weight size, compression
 ├── ui/
 │   ├── index.html              # single-page interface
 │   ├── style.css               # dark LM Studio–style theme
@@ -594,12 +537,14 @@ MLX_Model_App/
 ./scripts/security_audit.sh --quick  # skip the dependency scan
 ```
 
-Both local servers check who is calling. The app API on 8765 needs one loopback
+The app API on 8765 checks who is calling: it needs one loopback
 `Host` header, a matching `Origin` when one is sent, JSON POSTs and a per-launch
-token on every `/api/*` request except `/api/ping` and `/api/focus`. The API
-server on 8080 has the rules listed above. Neither has user authentication: other
-programs on the same Mac can still use them, and one can fetch `/` on 8765 to read
-the token. Chat prompts are not written to the activity log.
+token on every `/api/*` request except `/api/ping` and `/api/focus`. In the 2.0.13
+source the MLX server on 8080 has no such checks and no key; see
+[protections removed](#protections-removed-in-2013). There is no user
+authentication: other programs on the same Mac can use both ports, and in released
+builds one can fetch `/` on 8765 to read the token. Chat prompts are not written to
+the activity log.
 
 **Unreleased (2.0.10 source):** `/` no longer holds the token (it goes to the
 window in the URL fragment), every `Origin` header is checked, and replies carry a
@@ -608,8 +553,8 @@ full `Content-Security-Policy`. A POST needs exactly one `Content-Type`, and
 MLX Studio and open it again from its icon. This is still not user
 authentication. Remaining limits: [docs/SECURITY.md](docs/SECURITY.md) section 5.
 
-Known open risk: any local program can use port 8080 and switch between
-downloaded models.
+Known open risk: any local program can use port 8080 and make the MLX server load
+another model, folder or adapter.
 
 **No credential may enter the repository.** Enforced at three points: pre-commit
 (staged content), pre-push (commits leaving the machine), and CI (working tree
@@ -655,8 +600,7 @@ unreleased source the page no longer holds it.
 | POST | `/api/download/cancel` `{repo}` | Cancel a running download |
 | POST | `/api/delete` `{repo}` | Delete a cached model |
 | POST | `/api/reveal` `{repo}` | Show a cached model in Finder |
-| POST | `/api/server/start` `{repo, background}` | Start the API server. Unreleased: optional `also` with one more model; `409` if the pair does not fit in memory |
-| POST | `/api/server/estimate` `{repo, also}` | Unreleased: memory estimate for the choice |
+| POST | `/api/server/start` `{repo, background}` | Start the API server with one model |
 | POST | `/api/server/stop` | Stop it |
 | POST | `/api/server/notice/clear` | Dismiss the "server stopped" banner |
 | POST | `/api/install` `{kind}` | `install` \| `update` \| `reinstall` |
@@ -678,7 +622,6 @@ unreleased source the page no longer holds it.
 | User settings (unreleased) | `~/.mlx_studio/settings.json` |
 | Load test results (unreleased) | `~/.mlx_studio/loadtest.json` |
 | Last models that started (unreleased) | `~/.mlx_studio/server.last.json` |
-| Loaded models and memory (unreleased) | `~/.mlx_studio/server.resident.json`, removed on stop |
 
 Logs rotate at 2 MB with three backups (`server.log` before a background start).
 The folder is `0700`. The activity, application, launch and server logs are
@@ -735,20 +678,14 @@ raises the first window.
 
 **Port 8080 busy**: stop the other server before starting the API server.
 
-**`mlx_guard: refusing to start`** in server output: the installed `mlx-lm` does
-not match what the guard expects. Use **Setup → Install / Update**.
-
-**A client gets 400 "model is not available"**: download that model in MLX Studio
-first.
-
 **A client shows a tool call as text**: pick a model with verified
 [tool calling](#tool-calling).
 
 **Update check says "unknown"**: the request failed; check network or proxy.
 
-**Delete refused**: stop the API server or wait for the
-download. While the server runs, any model a client has asked it for since it
-started is also protected.
+**Delete refused**: stop the API server or wait for the download. Only the model
+the server was started with is protected; do not delete a model a client has asked
+the server to load.
 
 ---
 

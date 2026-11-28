@@ -27,10 +27,10 @@ change of mind is a new record that supersedes the old one.
 | [ADR-006](ADR-006-manifest-updates.md) | Manifest-based app updates, PyPI for packages | Accepted | — |
 | [ADR-007](ADR-007-adhoc-signing.md) | Ad-hoc code signature for distribution | Accepted, revisit | — |
 | [ADR-008](ADR-008-single-model-slot.md) | One resident model at a time | Superseded | ADR-011 |
-| [ADR-009](ADR-009-api-server-guard.md) | Request guard on the API server | Accepted | — |
-| [ADR-010](ADR-010-two-models-one-process.md) | API server keeps two models in one process (unreleased, 2.0.10) | Accepted, revisit | — |
+| [ADR-009](ADR-009-api-server-guard.md) | Request guard on the API server | Superseded (2.0.13) | — |
+| [ADR-010](ADR-010-two-models-one-process.md) | API server keeps two models in one process (unreleased, 2.0.10) | Superseded (2.0.13) | — |
 | [ADR-011](ADR-011-chat-through-the-api-server.md) | Chat asks the running API server (unreleased, 2.0.13) | Accepted | — |
-| [ADR-012](ADR-012-load-test.md) | Load test in a supervisor process (unreleased, 2.0.13) | Accepted | — |
+| [ADR-012](ADR-012-load-test.md) | Load test in a supervisor process (unreleased, 2.0.13) | Superseded in part (2.0.13) | — |
 
 ## Decision map
 

@@ -6,7 +6,32 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [2.0.13] — unreleased
 
 Checked with automated tests and the screen served against a fake API server. No
-model was loaded.
+model was loaded. The direct `mlx_lm` server below has never been started for real.
+
+### Removed (protections: read before upgrading)
+
+MLX is now `mlx_lm`'s own server. MLX Studio's request guard (`mlx_guard.py`) and the
+80% memory rule are gone, with no replacement. Entries further down that describe
+them for this version are superseded by this list
+([full table](README.md#protections-removed-in-2013)).
+
+- No memory limit anywhere: a large model or prompt can freeze or crash the Mac.
+  The OptiQ memory stop and the Load Test size gate are removed too.
+- No MLX prompt limit, long prompt refusal or reply token cap.
+- One model per server; no two-model mode.
+- No `Host`, JSON-only or `Origin` checks and no request size limits on port 8080;
+  only `--allowed-origins`.
+- A request can make the server load another cached model, a local folder, an
+  adapter or a draft model.
+- Settings removed: memory limit, MLX buffer cache limit, two-model context cap.
+  Max context is used by OptiQ only.
+- No memory estimates, loaded-model readout or **Apply this size to config**
+  (`/api/server/estimate` and `/api/loadtest/apply` are removed).
+
+Kept: `127.0.0.1` only, OptiQ key and port checks, the app page's request checks,
+clean offline server environment, process cleanup, key hiding. The Load Test still
+stops on critical memory pressure, swap growth over 0.5 GB, unreadable memory or a
+sampling gap over 1 second. Clients should send the model name `default_model`.
 
 ### Added
 
@@ -16,10 +41,9 @@ model was loaded.
   card lists them. Splash and Rapid-MLX are shown as not available yet. A live check over
   the app's HTTP routes passed with a real model; the Setup install button, clicks in the
   screens, a Claude Code client and the load test are untried.
-- Under OptiQ: the app stops the server when a memory reading is over the 80% limit (or
-  your lower one); sampling cannot guarantee the limit. The engine folder is checked at
-  each start, keys are hidden in the server log, and an installed engine is never
-  installed over. These were checked with fakes only.
+- Under OptiQ: the engine folder is checked at each start, keys are hidden in the
+  server log, and an installed engine is never installed over. These were checked
+  with fakes only.
 
 - Load Test: sizes up to 1,048,576 (up to 12 in one test), with 3600 seconds for a
   size above 32768; at the model's own limit the prompts stop short so the replies
