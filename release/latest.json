@@ -1,8 +1,8 @@
 {
-  "version": "2.0.9",
-  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.9/MLX.Studio-2.0.9.pkg",
-  "notes": "Security, robustness and build fixes, plus model search and copy. After updating: if the app shows server unprotected, open API Server and press Restart now.",
-  "published": "2026-11-25T22:58:10Z",
-  "sha256": "8ace82169bf180402ecbecb0b97e1f8cae887078458cce2332dd3434b571c66b",
-  "size": 984877
+  "version": "2.0.13",
+  "url": "https://github.com/DipeshPansuriya/MLX_Model_App/releases/download/v2.0.13/MLX.Studio-2.0.13.pkg",
+  "notes": "2.0.13: direct MLX and OptiQ engines, load test up to 1M, new start flow. Warning: the MLX server on port 8080 has no password, a website open in your browser can send it requests, and there is no memory limit. Stop the server when you are not using it.",
+  "published": "2026-11-28T09:45:30Z",
+  "sha256": "76695f2b7ef9cbe5eb515d7cccc4012c169ab3f957638449afb128a416901f9b",
+  "size": 1053096
 }

@@ -1,7 +1,7 @@
 ---
 type: Deployment
 title: "Deployment — MLX Studio"
-status: "2.0.9 released 2026-11-26; lines marked unreleased describe the working source"
+status: "2.0.13 is the latest release (2026-11-28); parts marked unreleased shipped after 2.0.9"
 date: 2026-11-25
 author: "Dipesh Pansuriya"
 project: mlx-studio
@@ -15,11 +15,13 @@ related:
 
 # Deployment — MLX Studio
 
-> **2.0.13 (unreleased) supersedes parts of this file.** `mlx_guard.py` and the 80%
+> **2.0.13 supersedes parts of this file.** `mlx_guard.py` and the 80%
 > memory rule are removed: MLX is `mlx_lm`'s own server with one model, no memory or
 > prompt limit and no request checks beyond `--allowed-origins`. Text, figures and
 > diagrams about the guard, memory limits or two models apply to 2.0.12 and earlier.
 > [What is no longer protected](../README.md#protections-removed-in-2013).
+>
+> In this file **unreleased** means not in 2.0.9: those changes shipped in 2.0.10 to 2.0.13 (latest release, 2026-11-28).
 
 MLX Studio is a desktop app. Deployment means building the `.pkg` and `.dmg`,
 publishing them as GitHub release assets and updating the two files in
@@ -98,7 +100,21 @@ Launches started together take turns at this, waiting about 5 seconds at most.
 
 ## 5. Release
 
-### 5.1 What GitHub has (after the 2.0.9 release, 2026-11-26)
+### 5.1 What GitHub has (2026-11-28)
+
+| Item | State |
+|---|---|
+| Latest release | `v2.0.13`; `v2.0.10` to `v2.0.13` no longer carry the pre-release mark |
+| `v2.0.13` tag | On `b877779`, the merged 2.0.13 source |
+| `release/latest.json` and `release/SHA256SUMS` | Describe 2.0.13 once this change is on `main`; the list keeps 2.0.9 |
+| `v2.0.10` to `v2.0.12` | No `release/SHA256SUMS` line, so the installer refuses `--version` for them |
+
+For 2.0.13 the order differed from 5.3: the release was marked latest (step 12)
+before the checksum change (steps 9 and 10) was merged. Until that merge, the
+one-line installer without `--version` refuses to install. The staging test
+(steps 11 and 12) has not been run.
+
+### 5.1.1 What GitHub had after the 2.0.9 release (2026-11-26)
 
 | Item | State |
 |---|---|

@@ -1,12 +1,14 @@
 # MLX Studio - API
 
-> **2.0.13 (unreleased):** MLX is `mlx_lm`'s own server on port 8080. The request guard,
+> **2.0.13:** MLX is `mlx_lm`'s own server on port 8080. The request guard,
 > the 80% memory rule, two models, memory estimates and the settings
 > `mlx_cache_limit_mb`, `two_model_context_tokens` and `memory_limit_percent` are
 > removed. Where a section below still describes them, it applies to 2.0.12 and
 > earlier. [What is no longer protected](../README.md#protections-removed-in-2013).
+>
+> In this file **unreleased** means not in 2.0.9: those changes shipped in 2.0.10 to 2.0.13 (latest release, 2026-11-28).
 
-**Date:** 2026-11-25 | **Applies to:** 2.0.9 (released 2026-11-26); parts marked unreleased describe the working source | **Security:** [SECURITY.md](SECURITY.md)
+**Date:** 2026-11-25 | **Applies to:** 2.0.9 (released 2026-11-26); parts marked unreleased shipped in 2.0.10 to 2.0.13 | **Security:** [SECURITY.md](SECURITY.md)
 
 ## 1. Overview
 

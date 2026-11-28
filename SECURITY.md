@@ -4,7 +4,8 @@
 
 | Version | Supported |
 |---|---|
-| 2.0.x | ✅ current release |
+| 2.0.13 | ✅ latest release |
+| 2.0.0 to 2.0.12 | ❌ update to the latest |
 | < 2.0 | ❌ superseded |
 
 ## Reporting a vulnerability
@@ -60,7 +61,7 @@ These are known and documented, not vulnerabilities:
 | Risk | Record |
 |---|---|
 | Ad-hoc signature, Gatekeeper warning on first launch | [ADR-007](docs/adr/ADR-007-adhoc-signing.md) |
-| No user authentication on the loopback ports: `/api/*` on 8765 needs a session token (except ping and focus), but in 2.0.9 any local process can read it from the app page (the unreleased source no longer serves it, which is still not user authentication); the MLX server on 8080 has no authentication | [docs/SECURITY.md](docs/SECURITY.md) §3, §5 |
+| No user authentication on the loopback ports: `/api/*` on 8765 needs a session token (except ping and focus), but in 2.0.9 any local process can read it from the app page (since 2.0.10 it is no longer served, which is still not user authentication); the MLX server on 8080 has no authentication | [docs/SECURITY.md](docs/SECURITY.md) §3, §5 |
 | The background API server's `server.log` can contain request content (the app's own chat log does not record prompts) | [docs/SECURITY.md](docs/SECURITY.md) §4.6 |
 | Zero required PR approvals (single maintainer) | [docs/GITHUB-POLICY.md](docs/GITHUB-POLICY.md) §5 |
 
@@ -68,16 +69,16 @@ These are known and documented, not vulnerabilities:
 
 | Issue | Severity | Record |
 |---|---|---|
-| In 2.0.9 the page's Content-Security-Policy only sets `frame-ancestors`, so it adds no second line of defence against script injection. No live injection was found in the parts checked. Fixed in the unreleased 2.0.10 source | Low (hardening) | [docs/SECURITY.md](docs/SECURITY.md) §5 |
-| Unreleased source, browser mode (L1): the token could reach the `open` command line if `osascript` failed | Low, fixed in the unreleased source | [docs/SECURITY.md](docs/SECURITY.md) §5 |
-| Unreleased source, browser mode (L2): the browser may keep the address with the token in its history (not checked live) | Low, documented known limit | [docs/SECURITY.md](docs/SECURITY.md) §5 |
-| Unreleased 2.0.13 source: the request guard and the 80% memory rule are removed. The MLX server on 8080 has no memory or prompt limit, no `Host`, `Origin` or JSON checks, and loads other models, folders or adapters on request | Open: availability and local or browser-origin requests | [docs/SECURITY.md](docs/SECURITY.md) §4.2 |
-| Unreleased source (I6): the policy allows inline style attributes; scripts are not affected | Info, documented known limit | [docs/SECURITY.md](docs/SECURITY.md) §5 |
-| Unreleased source: the app process does not set `HF_HUB_OFFLINE`, so a Chat load may contact the Hub or prefer a same-named local folder | UNVERIFIED, not tested | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| In 2.0.9 the page's Content-Security-Policy only sets `frame-ancestors`, so it adds no second line of defence against script injection. No live injection was found in the parts checked. Fixed in 2.0.10 | Low (hardening) | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Since 2.0.10, browser mode (L1): the token could reach the `open` command line if `osascript` failed | Low, fixed in 2.0.10 | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Since 2.0.10, browser mode (L2): the browser may keep the address with the token in its history (not checked live) | Low, documented known limit | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Since 2.0.13: the request guard and the 80% memory rule are removed. The MLX server on 8080 has no memory or prompt limit, no `Host`, `Origin` or JSON checks, and loads other models, folders or adapters on request | Open: availability and local or browser-origin requests | [docs/SECURITY.md](docs/SECURITY.md) §4.2 |
+| Since 2.0.10 (I6): the policy allows inline style attributes; scripts are not affected | Info, documented known limit | [docs/SECURITY.md](docs/SECURITY.md) §5 |
+| Since 2.0.10: the app process does not set `HF_HUB_OFFLINE`, so a Chat load may contact the Hub or prefer a same-named local folder | UNVERIFIED, not tested | [docs/SECURITY.md](docs/SECURITY.md) §5 |
 
-Also fixed in the unreleased 2.0.10 source: port 8765 needs exactly one
+Also fixed in 2.0.10: port 8765 needs exactly one
 `Content-Type` on a POST; `PYWEBVIEW_LOG` is ignored; the memory budget file is
-written and read without following links (N1, N2; the file is gone in 2.0.13); `/api/load` accepted only a completely installed model (N3; the route is removed in the 2.0.13 source).
+written and read without following links (N1, N2; the file is gone in 2.0.13); `/api/load` accepted only a completely installed model (N3; the route is removed in 2.0.13).
 
 ## More detail
 
