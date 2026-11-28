@@ -1,0 +1,16 @@
+/* Project folder panel (row 1104). Colours come from the page. */
+.project-panel summary { cursor: pointer; padding: 4px 0; }
+.project-body { max-height: 40vh; overflow: auto; }
+.project-list { list-style: none; margin: 8px 0; padding: 0; }
+.project-list li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 2px 0; }
+.project-path { overflow-wrap: anywhere; }
+.project-files { max-height: 180px; overflow: auto; }
+.project-file { font: inherit; color: inherit; background: none; border: 1px solid transparent;
+  border-radius: 6px; padding: 3px 8px; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.project-file[aria-pressed="true"] { border-color: currentColor; font-weight: 600; }
+.project-file[aria-pressed="true"]::before { content: "\2713  "; }
+.project-list [data-open][aria-pressed="true"] { text-decoration: underline; }
+.project-preview pre { max-height: 220px; overflow: auto; white-space: pre-wrap;
+  overflow-wrap: anywhere; border: 1px solid currentColor; border-radius: 6px; padding: 8px; }
+.project-warn:empty { display: none; }
+.project-warn { font-weight: 600; }

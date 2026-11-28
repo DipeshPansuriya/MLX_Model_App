@@ -1,0 +1,18 @@
+<!-- Paste into index.html just before the chat composer (see the row 1104 report). -->
+<details class="project-panel" id="projectPanel">
+  <summary>Project files (read only)</summary>
+  <div class="project-body">
+    <button type="button" class="btn btn-ghost" id="projectChoose">Choose folder…</button>
+    <p class="muted" id="projectNote" role="status"></p>
+    <ul class="project-list" id="projectList" aria-label="Projects"></ul>
+    <p class="muted" id="projectCount" role="status"></p>
+    <ul class="project-list project-files" id="projectFiles" aria-label="Files you can choose"></ul>
+    <button type="button" class="btn btn-ghost" id="projectPreviewBtn" disabled>Preview chosen files</button>
+    <p class="project-warn" id="projectWarning" role="status"></p>
+    <div class="project-preview" id="projectPreview" aria-label="Exact text that will be sent"></div>
+    <button type="button" class="btn btn-primary" id="projectAttach" disabled>Attach to next message</button>
+    <p class="project-warn" id="projectError" role="alert"></p>
+  </div>
+</details>
+<p class="muted" id="projectAttached" role="status"></p>
+<button type="button" class="btn btn-ghost" id="projectDetach" hidden>Remove attached files</button>
