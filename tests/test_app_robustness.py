@@ -82,6 +82,9 @@ class TestServerStartLock:
         real_popen = subprocess.Popen
         procs = []
 
+        # The watcher's own look at the port: nothing on this Mac is asked.
+        monkeypatch.setattr(app_module.engine_runtime, "listeners", lambda port, **k: set())
+
         def fake_popen(cmd, **kwargs):
             if cmd[0] == "ps":
                 return real_popen(cmd, **kwargs)

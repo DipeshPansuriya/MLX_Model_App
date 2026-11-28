@@ -274,20 +274,3 @@ def test_the_suite_refuses_a_real_engine_or_install(tail):
     import portguard
 
     assert portguard.real_launch(["/venv/bin/python", "-I", *tail])
-
-
-def test_the_mlx_guard_never_reads_or_repeats_an_authorization_header():
-    """Clients that kept an OptiQ key may send it to the MLX server on the same port."""
-    import importlib.util
-    from email.message import Message
-
-    source = (ROOT / "mlx_guard.py").read_text("utf-8")
-    assert "authorization" not in source.lower()
-    spec = importlib.util.spec_from_file_location("guard_row874", ROOT / "mlx_guard.py")
-    guard = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(guard)
-    headers = Message()
-    headers["Host"] = "evil.example"
-    headers["Authorization"] = f"Bearer {KEY}"
-    refusal = guard.check_headers("POST", headers, "http://127.0.0.1:8765")
-    assert refusal and KEY not in str(refusal)

@@ -35,8 +35,10 @@ def test_the_job_has_no_key_and_the_runner_gets_it_by_environment(rig):
 
 def test_an_mlx_job_is_unchanged(rig):
     job, env = rig.app._loadtest_job(REPO, [4096], "r1", rig.app.APP_DIR)
-    assert not {"engine", "key_env", "server_env", "request_model"} & set(job)
-    assert job["command"][1] == str(rig.app.GUARD_SCRIPT) and "OPTIQ_API_KEY" not in env
+    assert not {"engine", "key_env", "server_env"} & set(job)
+    assert job["request_model"] == "default_model" and "OPTIQ_API_KEY" not in env
+    assert job["command"][1:4] == ["-m", "mlx_lm", "server"]
+    assert job["command"][job["command"].index("--port") + 1] == "0"
     fingerprint = rig.app._loadtest_fingerprint(REPO)
     assert not {"engine", "engine_version"} & set(fingerprint)
     other = rig.app._loadtest_fingerprint(REPO, "optiq")
@@ -47,14 +49,6 @@ def test_an_engine_that_cannot_serve_the_model_starts_no_test(rig):
     (rig.snapshot / "config.json").write_text('{"vision_config": {}}')
     code, answer = rig.app.start_loadtest(REPO, [4096], "optiq")
     assert code == 409 and "image" in answer["error"] and rig.started == []
-
-
-def test_apply_is_refused_for_another_engines_result(rig):
-    record = {"id": "r1", "repo": REPO, "engine": "optiq",
-              "rows": [{"size": 4096, "status": "passed"}]}  # fmt: skip
-    rig.app._save_loadtest(record)
-    code, answer = rig.app.apply_loadtest(REPO, "r1", 4096)
-    assert code == 400 and "MLX" in answer["error"]
 
 
 def test_a_server_left_by_the_runner_is_ended(rig, monkeypatch):
@@ -154,7 +148,7 @@ def test_the_request_carries_the_key_and_reads_reasoning_content(monkeypatch):
 
 # ---- the page -------------------------------------------------------------------
 @needs_node
-def test_the_page_names_the_engine_and_offers_apply_only_for_mlx(tmp_path):
+def test_the_page_names_the_engine_of_each_result(tmp_path):
     out = run(
         tmp_path,
         """
@@ -163,4 +157,5 @@ def test_the_page_names_the_engine_and_offers_apply_only_for_mlx(tmp_path):
         return [resultRun(base, false), resultRun({ ...base, engine: "optiq" }, false)];
         """,
     )
-    assert "data-apply" in out[0] and "data-apply" not in out[1] and "optiq" in out[1]
+    assert "(MLX)" in out[0] and "optiq" in out[1].lower() and "(MLX)" not in out[1]
+    assert "data-apply" not in "".join(out)

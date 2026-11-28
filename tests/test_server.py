@@ -256,11 +256,11 @@ class TestToolSupport:
         assert "#serverToolsWarn" in script
 
 
-# F2: a server without the guard is shown, not hidden ------------------------ #
-class TestUnguardedServer:
+# A server left by an earlier version, started through its wrapper ---------- #
+class TestAdoptedOlderServer:
     TAIL = "--model org/model --host 127.0.0.1 --port 8080"
-    OLD = f"/usr/bin/python3 -m mlx_lm server {TAIL}"
-    NEW = f"/usr/bin/python3 /Apps/Resources/mlx_guard.py {TAIL}"
+    OLD = f"/usr/bin/python3 /Apps/Resources/mlx_guard.py {TAIL}"
+    NEW = f"/usr/bin/python3 -m mlx_lm server {TAIL}"
 
     @pytest.fixture
     def adopt(self, app_module, monkeypatch):
@@ -283,36 +283,17 @@ class TestUnguardedServer:
         run.touched = started
         return run
 
-    def test_an_old_server_is_adopted_and_marked(self, app_module, adopt):
-        server = adopt(self.OLD)
-        assert (server["running"], server["unguarded"], server["repo"]) == (True, True, "org/model")
+    @pytest.mark.parametrize(("command", "told"), [("OLD", True), ("NEW", False)])
+    def test_it_is_adopted_and_only_the_old_one_asks_for_a_restart(
+        self, app_module, adopt, command, told
+    ):
+        server = adopt(getattr(self, command))
+        assert (server["running"], server["repo"]) == (True, "org/model")
         assert adopt.touched == [], "it must not be restarted or signalled by itself"
-        warned = [e for e in app_module.read_app_log() if e["level"] == "warning"]
-        assert any("without the request guard" in e["message"] for e in warned)
-        assert any("without the request guard" in e["detail"] for e in app_module.read_activity())
+        said = [e["detail"] for e in app_module.read_activity()]
+        assert any("earlier version" in detail for detail in said) is told
 
-    def test_a_guarded_server_is_not_marked(self, adopt):
-        server = adopt(self.NEW)
-        assert (server["running"], server["unguarded"]) == (True, False)
-
-    def test_a_server_that_is_gone_is_not_marked(self, app_module, adopt, monkeypatch):
-        adopt(self.OLD)
-        monkeypatch.setattr(app_module, "_pid_alive", lambda pid: False)
-        assert app_module.STATE.snapshot()["server"]["unguarded"] is False
-
-    def test_stop_clears_the_mark(self, app_module, adopt, monkeypatch):
-        adopt(self.OLD)
-        monkeypatch.setattr(app_module, "_is_our_server", lambda *a, **k: False)
-        app_module.stop_server()
-        assert app_module.STATE.server_unguarded is False
-
-    def test_the_watcher_clears_the_mark_when_it_dies(self, app_module, monkeypatch):
-        app_module.STATE.server_pid = 4194303
-        app_module.STATE.server_unguarded = True
-        app_module._watch_server(4194303, "org/model", None)
-        assert app_module.STATE.server_unguarded is False
-
-    def test_restart_replaces_it_with_a_guarded_server(self, app_module, adopt, monkeypatch):
+    def test_restart_replaces_it_with_mlx_lm(self, app_module, adopt, monkeypatch):
         adopt(self.OLD)
         signalled, commands = [], []
         alive = {4242}
@@ -335,5 +316,5 @@ class TestUnguardedServer:
         app_module.worker_server_start("org/model", True)
         server = app_module.STATE.snapshot()["server"]
         assert signalled == [(4242, signal.SIGTERM)]
-        assert commands[0][1] == str(app_module.GUARD_SCRIPT)
-        assert (server["pid"], server["unguarded"]) == (4343, False)
+        assert commands[0][1:4] == ["-m", "mlx_lm", "server"]
+        assert server["pid"] == 4343
