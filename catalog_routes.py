@@ -13,6 +13,17 @@ def _first(query: dict, key: str) -> str:
     return (query.get(key) or [""])[0]
 
 
+class Names:
+    """A module's globals read as attributes, live. A copy of the module loaded
+    by path is not in ``sys.modules``, so it cannot be named there."""
+
+    def __init__(self, names: dict):
+        self._names = names
+
+    def __getattr__(self, name: str):
+        return self._names[name]
+
+
 class Routes:
     """``app`` is the running app module; its names are looked up on each request."""
 

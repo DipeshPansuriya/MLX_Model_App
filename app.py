@@ -249,7 +249,7 @@ def _build_static_allowlist(root: Path) -> dict[str, Path]:
 
 
 STATIC_FILES = _build_static_allowlist(UI_DIR)
-DOWNLOAD_ROUTES = catalog_routes.Routes(sys.modules[__name__])
+DOWNLOAD_ROUTES = catalog_routes.Routes(catalog_routes.Names(globals()))
 # Error messages and server output in the logs can quote chat text, so keep the
 # whole tree owner-only.
 for _private in (APP_DIR, LOG_DIR):
