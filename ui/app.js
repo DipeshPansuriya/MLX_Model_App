@@ -35,6 +35,8 @@ const state = {
   serverSending: false,
   lastApplyNotice: null,
   view: "",
+  theme: "system", // as last saved
+  themeSaving: 0, // while a choice is being saved, polls may still carry the old one
   // The Configuration page: whose values it shows, and each field as it was loaded.
   config: { repo: "", view: null, loaded: {}, seq: 0 },
   // The Load Test page: the model, its figures and what the user chose.
@@ -214,9 +216,39 @@ function refreshState() {
   return state.refreshing;
 }
 
+/* ───────────── appearance ───────────── */
+const THEMES = ["system", "light", "dark"];
+
+// The app window takes the colours from its native appearance; data-theme does the
+// same in a browser. "System" leaves both to macOS.
+function paintTheme(theme) {
+  state.theme = THEMES.includes(theme) ? theme : "system";
+  const root = document.documentElement;
+  if (state.theme === "system") delete root.dataset.theme;
+  else root.dataset.theme = state.theme;
+  for (const name of THEMES) $(`#theme-${name}`).checked = name === state.theme;
+}
+
+async function chooseTheme(theme) {
+  const before = state.theme;
+  state.themeSaving += 1;
+  paintTheme(theme);
+  try {
+    await api("/api/ui/settings", { method: "POST", body: JSON.stringify({ theme }) });
+  } catch (err) {
+    paintTheme(before);
+    toast(`Could not save the appearance: ${err.message}`, true);
+  } finally {
+    state.themeSaving -= 1;
+  }
+  refreshState();
+}
+
 function render(snap) {
   state.snapshot = snap; // what the Start areas read about installs
   const { app, hardware, python, versions, models, server, downloads, install } = snap;
+
+  if (!state.themeSaving) paintTheme(snap.ui?.theme);
 
   // sidebar
   setText($("#appVersion"), `v${app.version}`);
@@ -2399,6 +2431,9 @@ async function stopServer() {
 /* ───────────── wiring ───────────── */
 function wire() {
   wireEngines();
+  for (const name of THEMES) {
+    $(`#theme-${name}`).addEventListener("change", () => chooseTheme(name));
+  }
   createPicker("#serverModelSelect", {
     onLeave(escaped) {
       showAddPicker(false);

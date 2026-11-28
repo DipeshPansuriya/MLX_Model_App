@@ -90,6 +90,7 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/server/stop` | - (also cancels a start that has not launched yet) | - |
 | `/api/server/notice/clear` | - (unreleased: clears `down_notice` and `apply_notice`) | - |
 | `/api/server/settings` | unreleased: `values` or `reset`; optional `repo` ([6b](#6b-user-settings)) | 400, 500 |
+| `/api/ui/settings` | 2.0.14: `theme` ([6b](#6b-user-settings)) | 400, 500 |
 | `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running |
 | `/api/logs/clear` | - | 500 |
 | other paths | - | 404 |
@@ -188,10 +189,16 @@ Except the Chat values, a change applies at the next server start or **Apply cha
 The file is read only if it is a regular file of at most 65536 bytes (a link is not
 followed). A bad value falls back to its default, and a bad file to all defaults,
 with one `warning` line in `app.log`. Unknown keys are ignored. Saving writes the
-valid keys with mode `0600`, so unusable and unknown entries are dropped.
+valid keys with mode `0600`, so unusable and unknown entries are dropped. The `ui`
+block (below) is the exception: it is written back as it is.
 
 Not configurable, on purpose: ports, hosts, the token, the Origin, Host,
 Content-Type and CSP checks, file paths and every other security check.
+
+**Appearance (2.0.14).** `POST /api/ui/settings` takes `{"theme": "system" | "light" |
+"dark"}`; 400 for any other key or value. It is saved in the `ui` block of the same
+file and `/api/state` returns it as `ui`. An unusable saved value means `system`.
+Resets keep the block.
 
 `POST /api/server/settings` takes `{"values": {key: number or null}}` (merged into
 the global values), or `{"reset": true}` (drops the global values and keeps

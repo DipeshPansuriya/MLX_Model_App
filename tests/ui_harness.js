@@ -108,6 +108,7 @@ const ctx = {
     getElementById: (id) => get(`#${id}`),
     createElement: (tag) => element(`<${tag}>${Math.random()}`),
     body: element("body"),
+    documentElement: element("html"),
     listeners: {},
     addEventListener(name, fn) { this.listeners[name] = fn; },
   },

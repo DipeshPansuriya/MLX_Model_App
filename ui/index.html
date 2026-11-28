@@ -724,6 +724,16 @@
       <div class="scroll">
 
         <div class="panel">
+          <div class="panel-head"><span id="themeTitle">Appearance</span></div>
+          <div class="server-row" role="radiogroup" aria-labelledby="themeTitle">
+            <label class="check" for="theme-system"><input type="radio" name="theme" id="theme-system" value="system" /><span>System</span></label>
+            <label class="check" for="theme-light"><input type="radio" name="theme" id="theme-light" value="light" /><span>Light</span></label>
+            <label class="check" for="theme-dark"><input type="radio" name="theme" id="theme-dark" value="dark" /><span>Dark</span></label>
+          </div>
+          <p class="hint">System follows the macOS appearance.</p>
+        </div>
+
+        <div class="panel">
           <div class="panel-head">
             <span>Application</span>
             <span class="pill" id="setAppPill"></span>

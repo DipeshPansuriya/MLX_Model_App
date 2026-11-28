@@ -164,6 +164,11 @@ LOADTEST_WAIT_SECONDS = 40  # longer than the runner waits for its server
 # The keys a model may override under "models".
 MODEL_SETTINGS = tuple(SETTINGS)
 SETTINGS_MAX_BYTES = 64 * 1024
+# The ``ui`` block of settings.json: what the screens remember.
+UI_CHOICES = {"theme": ("system", "light", "dark")}
+UI_DEFAULTS = {"theme": "system"}
+# The native window behind the page: the same as --bg in ui/style.css.
+WINDOW_BACKGROUNDS = {"light": "#f6f7f9", "dark": "#0f1115"}
 SETTINGS_LOCK = threading.Lock()
 # How long a server may take to report ready. After it the app stops the server, and
 # a server that this one replaced is started again.
@@ -1149,6 +1154,7 @@ class State:
                 "lines": self.install["lines"][-400:],
             },
             "generating": self.generating,
+            "ui": ui_settings(),
         }
 
 
@@ -1960,9 +1966,13 @@ def _read_settings() -> tuple[dict, dict]:
     return _read_all_settings()[:2]
 
 
-def _read_all_settings() -> tuple[dict, dict, dict]:
-    """The global values, each model's own and the load test block. Never raises."""
-    shared, models, load_test, bad, problem = {}, {}, {}, [], ""
+def _read_all_settings() -> tuple[dict, dict, dict, dict]:
+    """The global values, each model's own, the load test and ui blocks. Never raises.
+
+    The ui block is returned as it is in the file, so that a write keeps all of it,
+    entries this version does not know included; read it through ``ui_settings``.
+    """
+    shared, models, load_test, ui, bad, problem = {}, {}, {}, {}, [], ""
     try:
         data = json.loads(_read_small(_settings_file(), SETTINGS_MAX_BYTES).decode("utf-8"))
         if not isinstance(data, dict):
@@ -1986,6 +1996,10 @@ def _read_all_settings() -> tuple[dict, dict, dict]:
                     load_test[key] = value
                 else:
                     bad.append(f"load_test: {key}")
+        ui = data.get("ui", {})
+        if not isinstance(ui, dict):
+            ui, bad = {}, [*bad, "ui"]
+        bad += [f"ui: {key}" for key in UI_DEFAULTS if key in ui and not _valid_ui(key, ui[key])]
         if bad:
             names = ", ".join(sorted(set(bad)))
             problem = f"settings.json: unusable value for {names}; using the default"
@@ -1996,7 +2010,36 @@ def _read_all_settings() -> tuple[dict, dict, dict]:
     if problem and problem != STATE.settings_complaint:
         log_app("warning", problem)
     STATE.settings_complaint = problem  # each problem is said once
-    return shared, models, load_test
+    return shared, models, load_test, ui
+
+
+def _valid_ui(key: str, value) -> bool:
+    return isinstance(value, str) and value in UI_CHOICES.get(key, ())
+
+
+def ui_settings() -> dict:
+    """Every key of UI_DEFAULTS: the saved value, else the default."""
+    saved = _read_all_settings()[3]
+    return {
+        key: saved[key] if key in saved and _valid_ui(key, saved[key]) else default
+        for key, default in UI_DEFAULTS.items()
+    }
+
+
+def _ui_change_problem(body: dict) -> str | None:
+    if not body:
+        return "nothing to change"
+    for key, value in body.items():
+        if not _valid_ui(key, value):
+            return f"unknown setting or value: {str(key)[:40]}"
+    return None
+
+
+def save_ui(changes: dict) -> None:
+    """Merge checked ``changes`` into the ui block."""
+    with SETTINGS_LOCK:
+        shared, models, load_test, ui = _read_all_settings()
+        _store_settings(shared, models, load_test, {**ui, **changes})
 
 
 def user_settings(repo: str | None = None) -> dict[str, int | None]:
@@ -2017,44 +2060,46 @@ def server_settings(repos: list[str]) -> dict[str, int | None]:
 def save_settings(changes: dict, repo: str | None = None) -> None:
     """Merge checked ``changes`` into the global or one model's values; None removes."""
     with SETTINGS_LOCK:
-        shared, models, load_test = _read_all_settings()
+        shared, models, load_test, ui = _read_all_settings()
         target = shared if repo is None else models.setdefault(repo, {})
         for key, value in changes.items():
             if value is None:
                 target.pop(key, None)
             else:
                 target[key] = value
-        _store_settings(shared, models, load_test)
+        _store_settings(shared, models, load_test, ui)
 
 
 def save_load_test(changes: dict | None) -> None:
     """Merge checked ``changes`` into the load test block; None removes."""
     with SETTINGS_LOCK:
-        shared, models, load_test = _read_all_settings()
+        shared, models, load_test, ui = _read_all_settings()
         merged = {} if changes is None else {**load_test, **changes}
         kept = {key: value for key, value in merged.items() if value is not None}
-        _store_settings(shared, models, kept)
+        _store_settings(shared, models, kept, ui)
 
 
 def reset_settings(repo: str | None = None) -> None:
     """Drop the global values, or one model's own; the rest is kept."""
     with SETTINGS_LOCK:
-        shared, models, load_test = _read_all_settings()
+        shared, models, load_test, ui = _read_all_settings()
         if repo is None:
             shared = {}
         else:
             models.pop(repo, None)
-        if shared or any(models.values()) or load_test:
-            _store_settings(shared, models, load_test)
+        if shared or any(models.values()) or load_test or ui:
+            _store_settings(shared, models, load_test, ui)
         else:
             _settings_file().unlink(missing_ok=True)
 
 
-def _store_settings(shared: dict, models: dict, load_test: dict) -> None:
+def _store_settings(shared: dict, models: dict, load_test: dict, ui: dict) -> None:
     models = {repo: own for repo, own in models.items() if own}
     data = {**shared, **({"models": models} if models else {})}
     if load_test:
         data["load_test"] = load_test
+    if ui:
+        data["ui"] = ui
     text = json.dumps(data)
     if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
         raise ValueError("too many model settings: reset some models first")
@@ -3917,6 +3962,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             return
 
+        if path == "/api/ui/settings":
+            if problem := _ui_change_problem(body):
+                self._json({"error": problem}, 400)
+                return
+            try:
+                save_ui(body)
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            except OSError as exc:
+                self._json({"error": f"could not save the settings: {exc.strerror}"}, 500)
+                return
+            if "theme" in body:
+                retheme_window(body["theme"])
+            self._json({"ok": True})
+            return
+
         if path == "/api/server/key":
             # Only when asked, only while our server alone holds the port; never logged.
             if not (_running_engine().direct and STATE.server_verdict == "ready"):
@@ -4185,6 +4247,92 @@ def adopt_bundle_identity() -> None:
         log_app("warning", "could not set the app icon", error=str(exc)[:200])
 
 
+# --------------------------------------------------------------------------- #
+# Appearance of the app window. The page follows it through prefers-color-scheme.
+# --------------------------------------------------------------------------- #
+def apply_native_theme(theme: str) -> None:
+    """Window, title bar, dialogs and page in light or dark; "system" follows macOS.
+
+    Main thread only. Cosmetic, so a failure is only logged.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import (
+            NSAppearance,
+            NSAppearanceNameAqua,
+            NSAppearanceNameDarkAqua,
+            NSApplication,
+        )
+
+        name = {"light": NSAppearanceNameAqua, "dark": NSAppearanceNameDarkAqua}.get(theme)
+        appearance = NSAppearance.appearanceNamed_(name) if name else None
+        NSApplication.sharedApplication().setAppearance_(appearance)
+    except Exception as exc:
+        log_app("warning", "could not set the appearance", error=str(exc)[:200])
+
+
+def _appearance_theme(appearance) -> str:
+    from AppKit import NSAppearanceNameAqua, NSAppearanceNameDarkAqua
+
+    names = [NSAppearanceNameAqua, NSAppearanceNameDarkAqua]
+    best = appearance.bestMatchFromAppearancesWithNames_(names)
+    return "light" if best == NSAppearanceNameAqua else "dark"
+
+
+def window_background(theme: str) -> str:
+    """The colour the window opens with, so that Light does not flash dark first."""
+    if theme not in WINDOW_BACKGROUNDS:
+        try:
+            from AppKit import NSApplication
+
+            theme = _appearance_theme(NSApplication.sharedApplication().effectiveAppearance())
+        except Exception:
+            theme = "dark"
+    return WINDOW_BACKGROUNDS[theme]
+
+
+def follow_window_background(window) -> None:
+    """Give the window a colour that changes with its appearance.
+
+    pywebview sets one fixed colour; ``before_show`` runs on the main thread, once
+    the native window exists.
+    """
+
+    def colour(appearance):
+        from AppKit import NSColor
+
+        value = WINDOW_BACKGROUNDS[_appearance_theme(appearance)]
+        red, green, blue = (int(value[at : at + 2], 16) / 255 for at in (1, 3, 5))
+        return NSColor.colorWithSRGBRed_green_blue_alpha_(red, green, blue, 1.0)
+
+    def paint() -> None:
+        try:
+            from AppKit import NSColor
+
+            dynamic = NSColor.colorWithName_dynamicProvider_("MLXStudioBackground", colour)
+            window.native.setBackgroundColor_(dynamic)
+        except Exception as exc:
+            log_app("warning", "could not set the window colour", error=str(exc)[:200])
+
+    try:
+        window.events.before_show += paint
+    except Exception as exc:
+        log_app("warning", "could not set the window colour", error=str(exc)[:200])
+
+
+def retheme_window(theme: str) -> None:
+    """Apply a new choice to an open app window; browser mode needs nothing."""
+    if STATE.window is None:
+        return
+    try:
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(apply_native_theme, theme)
+    except Exception as exc:
+        log_app("warning", "could not set the appearance", error=str(exc)[:200])
+
+
 class LocalServer(ThreadingHTTPServer):
     """The stdlib server looks the host's name up between bind and listen. On a
     Mac with slow name lookup that takes tens of seconds, and nothing here uses
@@ -4249,14 +4397,17 @@ def main() -> None:
         import webview
 
         adopt_bundle_identity()
+        theme = ui_settings()["theme"]
+        apply_native_theme(theme)
         STATE.window = webview.create_window(
             f"{APP_NAME} {APP_VERSION}",
             launch_url(),
             width=1360,
             height=900,
             min_size=(1080, 720),
-            background_color="#0f1115",
+            background_color=window_background(theme),
         )
+        follow_window_background(STATE.window)
         webview.start()
     except Exception as exc:
         # A library error may quote the address it was loading.
