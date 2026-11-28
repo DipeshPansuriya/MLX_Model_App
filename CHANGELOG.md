@@ -3,9 +3,10 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.14] — 2026-11-28
 
-2.0.14, not released. `APP_VERSION` is 2.0.14; the update manifest still points at 2.0.13.
+Not released as the latest version: pre-release build; the latest release, 2.0.13, has none
+of these changes. The update manifest still points at 2.0.13.
 
 ### Read before you use it
 

@@ -159,6 +159,50 @@ Directories are set to `0700`, and the files the app writes to `0600`. Review a
 diagnostic bundle before sharing: it includes the logs, local paths, model names and the value of
 `MLX_STUDIO_UPDATE_URL`.
 
+### 4.7 Added in 2.0.14
+
+2.0.14 is not the latest release. All routes below sit behind the checks of §4.1.
+
+#### Start at login and its key
+
+| Control | Detail |
+|---|---|
+| Opt-in | Off until switched on. Writes one user LaunchAgent, `~/Library/LaunchAgents/com.mlxstudio.app.login-server.plist`, holding the app's launcher and one flag: no key, no environment. Only the installed app can do this, not a source run, a disk image or a translocated copy |
+| Password required | Only an engine with its own key support may start at login; the built-in MLX server is refused |
+| One try | `KeepAlive` is false. The start is refused for an incomplete model, low memory, or a busy or unknown port |
+| Key file | `~/.mlx_studio/autostart.key`, mode `0600`. A link, a file open to others or text that is not a key is refused. The key reaches the server in the environment, not on the command line; the auto-start status gives no key |
+| Revoking | Switching off or **Clear default** removes the file; switching on again makes a new key. A running server keeps its key until **Stop**. Update your clients |
+| Limits | Programs of the same user can read the key file. A program answering as the app on port 8765 makes the login start skip. A normal launch of another copy of the app points the login item at that copy |
+
+#### Chat history
+
+| Control | Detail |
+|---|---|
+| Storage | `~/.mlx_studio/chats/`, one file per chat, **plain text, not encrypted**. Folder `0700`, files `0600`, no link followed, at most 16 MiB each |
+| Names | The app makes each id (32 hex characters); any other id is refused, and the resulting path must be inside the chats folder |
+| When saved | **Save history** is on by default. Temporary chats, and chats sent while it is off, are not saved. Switching it off deletes nothing |
+| Deleting | Only **Delete** and **Delete all**, which need confirmation. Not a secure erase. Chats never expire |
+| Logs | The chat store logs nothing and the diagnostic bundle does not read the chat files. `server.log` (§4.6), which the bundle includes, may quote prompt text, file text included (UNVERIFIED) |
+
+#### Project folder files
+
+| Control | Detail |
+|---|---|
+| Choosing a folder | Only through the app window's own folder dialog; no web request can give a path, and browser mode cannot choose. The home folder, its parents, `/System` and private folders (for example `~/.ssh`, `~/Library`, `~/.config`) are refused |
+| Reading | Read only: nothing is written or run in a project. No link is followed. At most 256 KiB per file, 50 files and a token budget per message |
+| Secret files | Names that usually hold secrets (`.env*`, key and certificate files, `*secret*`, `*credential*` and others) are never listed or read. **The list cannot be complete** |
+| Before sending | A preview shows the exact text, with pattern-based key warnings; a file changed since the preview is refused. The page cannot supply file text itself |
+| Where it goes | To the running model server, after a port owner check. The MLX server has no password (§4.2). With **Save history** on, the text is kept in the chat file and goes again with later messages |
+
+#### Release check
+
+| Control | Detail |
+|---|---|
+| When | Only when you press the button. GitHub sees your IP address and the request |
+| Request | One anonymous GET of the fixed HTTPS address of the latest release; redirects refused |
+| Reply | Treated as untrusted: at most 512 KiB, drafts and pre-releases refused, only a strict `x.y.z` version taken, no GitHub text shown |
+| Result | The release page link is built by the app. Nothing is downloaded, saved or run. The timeout applies to each read, not the whole exchange |
+
 ## 5. Accepted and open risks
 
 | Risk | State | Reason or workaround |
@@ -216,6 +260,7 @@ diagnostic bundle before sharing: it includes the logs, local paths, model names
 | Unreleased source: full test run before the memory limits | 1406 passed, reported by that fix run | 2026-11-26 |
 | Unreleased source with the memory limits: full test run (functional, not a security review; no security review of these limit changes is recorded here) | 1503 passed, 0 skipped, temporary `HOME`; no real model loaded | 2026-11-26 |
 | Signature, checksums and dependency scan for 2.0.9 | `--verify --release` passed; audit `--release`: 37 pass, 2 expected signing warnings, 0 fail; published assets matched `release/SHA256SUMS`; CI `Security audit` job with `pip-audit` passed | 2026-11-26 |
+| 2.0.14 (§4.7): three security reviews by static reading, no Critical, High or Medium left open; the first asked for a fix of key revocation, confirmed closed by the second. No app, login start, dialog or release check was run by them | Security reviews of the 2.0.14 changes | 2026-11-28 |
 
 [SECURITY-AUDIT.md](SECURITY-AUDIT.md) is the historical audit of 2.0.0. To
 report a vulnerability, use [the security policy](../SECURITY.md).
