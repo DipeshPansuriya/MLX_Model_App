@@ -91,6 +91,7 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/server/notice/clear` | - (unreleased: clears `down_notice` and `apply_notice`) | - |
 | `/api/server/settings` | unreleased: `values` or `reset`; optional `repo` ([6b](#6b-user-settings)) | 400, 500 |
 | `/api/ui/settings` | 2.0.14: `theme` ([6b](#6b-user-settings)) | 400, 500 |
+| `/api/server/test` | 2.0.14: `{}`; sends the ready server a short reply and one tool call (never run) and returns `reply` and `tool`, each with `status` (`pass`, `warn`, `fail`, `skipped`) and `detail`; no key in the answer | 409 not ready, load test or test running, or another program on the port |
 | `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running |
 | `/api/logs/clear` | - | 500 |
 | other paths | - | 404 |

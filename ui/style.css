@@ -513,6 +513,7 @@ html, body {
 
 /* ───────────── Key-value ───────────── */
 .kv { display: flex; flex-direction: column; }
+.kv[hidden] { display: none; }
 .kv-row {
   display: flex; align-items: center; gap: 12px;
   padding: 10px 0; border-bottom: 1px solid var(--line);

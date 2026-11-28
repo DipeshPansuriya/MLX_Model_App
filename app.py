@@ -104,6 +104,8 @@ CHAT_BEAT_SECONDS = 1.0  # how often a silent wait is reported to the browser
 CHAT_LINE_BYTES = 1024 * 1024
 CHAT_ERROR_BYTES = 64 * 1024
 CHAT_CUT_SHORT = "The API server stopped before the reply finished. Check the API Server page."
+CONNECTION_TEST_SECONDS = 90  # for each of the two requests of Test Connection
+CONNECTION_TEST_LOCK = threading.Lock()
 # mlx_lm cuts replies at 512 tokens when a client sends no max_tokens.
 SERVER_MAX_TOKENS = 8192
 # Limits for reading server.last.json: far above two real model ids.
@@ -1190,17 +1192,56 @@ def _chat_target(repo: str, messages: list[dict], settings: dict) -> tuple[dict,
 
 
 def _chat_headers() -> dict:
-    """The key of a direct engine, only while every listener on its port is our server."""
+    """The headers for the running server, only while every listener on its port is it.
+
+    Asked just before anything is sent, for both engines. A direct engine's key is
+    one of them; MLX has none, but its prompts are no one else's either.
+    """
     engine = _running_engine()
-    if not engine.direct:
-        return {}
-    key = engine.read_key(_key_file())
-    if not key or not engine_runtime.listener_is(_server_port(), STATE.server_pid):
+    key = engine.read_key(_key_file()) if engine.direct else None
+    if (engine.direct and not key) or not engine_runtime.listener_is(
+        _server_port(), STATE.server_pid
+    ):
+        unsent = "The key was not sent" if engine.direct else "Nothing was sent"
         raise engine_runtime.Refused(
-            "The key was not sent: another program may listen on the server's port. "
+            f"{unsent}: another program may listen on the server's port. "
             "Press Stop, then Start Server."
         )
-    return {"Authorization": f"Bearer {key}"}
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def connection_test() -> tuple[int, dict]:
+    """``(status, answer)``: a short reply and a tool call from the running server."""
+    if STATE.testing():
+        return 409, {"error": LOADTEST_BUSY}
+    with STATE.lock:
+        repo = next(iter(STATE.server_repos), "")
+        pid = STATE.server_pid
+    if problem := _chat_problem(repo):
+        return 409, {"error": problem}
+    if not CONNECTION_TEST_LOCK.acquire(blocking=False):
+        return 409, {"error": "A connection test is already running."}
+    try:
+        engine, port = _running_engine(), _server_port()
+
+        def headers() -> dict:
+            # The owner check and the key are of this server, not of one that took over.
+            if (STATE.server_pid, _server_port()) != (pid, port):
+                raise engine_runtime.Refused(
+                    "The server changed during the test. Nothing more was sent. Test again."
+                )
+            return _chat_headers()
+
+        results = engine_runtime.check_connection(
+            port, engine.request_model, headers, CONNECTION_TEST_SECONDS
+        )
+    except engine_runtime.Refused as exc:
+        return 409, {"error": str(exc)}
+    finally:
+        CONNECTION_TEST_LOCK.release()
+    statuses = {name: result["status"] for name, result in results.items()}
+    log_app("info", "connection test", engine=engine.id, **statuses)
+    return 200, {"ok": True, "pid": pid, "model": repo, "engine": engine.id, **results}
 
 
 def _read_reply(conn: http.client.HTTPConnection, body: bytes, put, headers=None) -> None:
@@ -3960,6 +4001,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": f"could not save the settings: {exc.strerror}"}, 500)
                 return
             self._json({"ok": True})
+            return
+
+        if path == "/api/server/test":
+            code, answer = connection_test()
+            self._json(answer, code)
             return
 
         if path == "/api/ui/settings":

@@ -35,6 +35,8 @@ const state = {
   serverSending: false,
   lastApplyNotice: null,
   view: "",
+  // Test Connection: of the server with this pid, while it runs or what it found.
+  test: { pid: null, running: false, result: null, error: "" },
   theme: "system", // as last saved
   themeSaving: 0, // while a choice is being saved, polls may still carry the old one
   // The Configuration page: whose values it shows, and each field as it was loaded.
@@ -400,6 +402,7 @@ function render(snap) {
   // A Restart button goes away with its notice: leave the focus on something that stays.
   if (held === $("#serverRestartBtn") && $("#serverNotice").hidden) spareControl().focus();
   renderToolsWarning(server);
+  paintTest(server);
   renderModelCards(models, server, downloads);
   renderDownloads(downloads);
   renderCatalog();
@@ -1468,6 +1471,49 @@ function renderToolsWarning(server) {
     (verified ? ` For tool use, choose ${verified}.` : ""));
 }
 
+/* ───────────── test connection ───────────── */
+const TEST_WORDS = {
+  pass: ["ok", "Passed"], warn: ["warn", "Check"],
+  fail: ["bad", "Failed"], skipped: ["", "Not tried"],
+};
+
+function testRow(row) {
+  const [tone, word] = TEST_WORDS[row?.status] || TEST_WORDS.fail;
+  return `<span class="pill ${tone}">${word}</span> ${esc(row?.detail)}`;
+}
+
+// A result belongs to one running server: another one starts empty.
+function paintTest(server) {
+  const test = state.test;
+  const pid = server?.running && server.ready ? server.pid : null;
+  if (test.pid !== pid) Object.assign(test, { pid, result: null, error: "" });
+  $("#testBtn").disabled = pid === null || test.running;
+  $("#testResults").hidden = !(test.result || (test.running && pid !== null));
+  const rows = test.result || {};
+  setHTML($("#testReply"), test.running ? "Testing…" : test.result ? testRow(rows.reply) : "");
+  setHTML($("#testTool"), test.running ? "Testing…" : test.result ? testRow(rows.tool) : "");
+  setText($("#testError"), test.error);
+}
+
+async function testConnection() {
+  const test = state.test;
+  if (test.running || test.pid === null) return;
+  const asked = test.pid;
+  Object.assign(test, { running: true, result: null, error: "" });
+  paintTest(state.server);
+  let result = null;
+  let error = "";
+  try {
+    result = await api("/api/server/test", { method: "POST", body: "{}" });
+  } catch (err) {
+    error = err.message;
+  }
+  test.running = false;
+  // An answer about a server that is gone says nothing about this one.
+  if (test.pid === asked && (!result || result.pid === asked)) Object.assign(test, { result, error });
+  paintTest(state.server);
+}
+
 function fillSelect(sel, values, current) {
   const el = $(sel);
   if (!el) return;
@@ -2431,6 +2477,7 @@ async function stopServer() {
 /* ───────────── wiring ───────────── */
 function wire() {
   wireEngines();
+  $("#testBtn").addEventListener("click", testConnection);
   for (const name of THEMES) {
     $(`#theme-${name}`).addEventListener("change", () => chooseTheme(name));
   }

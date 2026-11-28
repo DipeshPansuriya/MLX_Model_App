@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.client
 import json
@@ -13,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -206,6 +208,207 @@ def warm_up(port: int, key: str | None, model: str, timeout: float) -> bool:
 # --------------------------------------------------------------------------- #
 # Install and remove, from a hash lock the app ships
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Test Connection: one short reply and one tool call
+# --------------------------------------------------------------------------- #
+TEST_REPLY_TOKENS = 512
+TEST_REPLY_BYTES = 256 * 1024
+# Offered to the model, never run. ``unit`` is optional, to see if null is sent.
+TEST_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a city.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name."},
+                "unit": {
+                    "type": "string",
+                    "enum": ["celsius", "fahrenheit"],
+                    "description": "Optional. Leave out if not asked for.",
+                },
+            },
+            "required": ["city"],
+        },
+    },
+}
+UNREADABLE = "The reply could not be read."
+
+
+def _result(status: str, detail: str) -> dict[str, str]:
+    return {"status": status, "detail": detail}
+
+
+def _ask(port: int, body: dict, headers, timeout: float) -> tuple[int | None, bytes | str, str]:
+    """``(HTTP status, reply, key sent)``; no status: the reply is why there is none.
+
+    ``headers()`` is called once connected and may refuse: then nothing is sent.
+    ``timeout`` covers the whole exchange, so a trickling server cannot hold it.
+    """
+    conn = http.client.HTTPConnection(HOST, port, timeout=timeout)
+    expired = threading.Event()
+    late = f"No answer within {timeout:g} seconds."
+    timer = None
+    try:
+        try:
+            conn.connect()
+        except OSError:
+            return None, "The server could not be reached.", ""
+        sock = conn.sock
+        conn.auto_open = 0  # a closed connection is not opened again, unchecked
+        extra = headers()
+        key = extra.get("Authorization", "").removeprefix("Bearer ")
+
+        def cut() -> None:
+            expired.set()
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+
+        timer = threading.Timer(timeout, cut)
+        timer.daemon = True
+        timer.start()
+        try:
+            conn.request(
+                "POST",
+                "/v1/chat/completions",
+                json.dumps(body).encode("utf-8"),
+                {"Content-Type": "application/json", **extra},
+            )
+            response = conn.getresponse()
+            raw = response.read(TEST_REPLY_BYTES + 1)
+        except TimeoutError:
+            return None, late, key
+        except (OSError, http.client.HTTPException):
+            why = late if expired.is_set() else "The connection closed before the reply ended."
+            return None, why, key
+        if expired.is_set():
+            return None, late, key
+        return response.status, raw, key
+    finally:
+        if timer:
+            timer.cancel()
+        conn.close()
+
+
+def _message(raw: bytes) -> dict | None:
+    if len(raw) > TEST_REPLY_BYTES:
+        return None
+    try:
+        message = json.loads(raw.decode("utf-8"))["choices"][0]["message"]
+    except (ValueError, KeyError, IndexError, TypeError, RecursionError):
+        return None
+    return message if isinstance(message, dict) else None
+
+
+def _only_thinking(message: dict) -> bool:
+    return bool(message.get("reasoning") or message.get("reasoning_content"))
+
+
+def _judge_reply(message: dict) -> dict[str, str]:
+    text = message.get("content")
+    if isinstance(text, str) and text.strip():
+        return _result("pass", "The model answered.")
+    if _only_thinking(message):
+        return _result(
+            "warn",
+            f"The server answered, but thinking used all {TEST_REPLY_TOKENS} tokens "
+            "before any answer.",
+        )
+    return _result("fail", "The server answered with an empty reply.")
+
+
+def _judge_tool(message: dict) -> dict[str, str]:
+    calls = message.get("tool_calls")
+    name = TEST_TOOL["function"]["name"]
+    if not calls:
+        text = message.get("content")
+        text = text if isinstance(text, str) else ""
+        if name in text or "<tool_call" in text:
+            return _result(
+                "fail",
+                "The model wrote the tool call as text, so a coding tool cannot run it.",
+            )
+        if not text.strip() and _only_thinking(message):
+            return _result("fail", "No tool call: thinking used all the tokens of the test.")
+        return _result("fail", "The model answered in text and did not call the tool.")
+    try:
+        function = calls[0]["function"]
+        called, written = function["name"], function["arguments"]
+    except (KeyError, IndexError, TypeError):
+        return _result("fail", "The tool call could not be read.")
+    if called != name:
+        return _result("fail", "The model called a tool that was not offered.")
+    try:
+        arguments = json.loads(written)
+        if not isinstance(arguments, dict):
+            raise ValueError("not an object")
+    except (ValueError, TypeError, RecursionError):
+        return _result("fail", "The tool call's arguments are not valid JSON.")
+    city = arguments.get("city")
+    if not (isinstance(city, str) and city.strip()):
+        return _result("fail", "The tool call arrived without the required value (city).")
+    if empty := [key for key, value in arguments.items() if value is None]:
+        names = ", ".join(empty)[:80]
+        return _result(
+            "warn",
+            f"The tool call arrived, but the model sent null for: {names}. Some tools "
+            "reject this, and MLX Studio does not change replies.",
+        )
+    return _result(
+        "pass",
+        "The tool call arrived in the expected form. One pass does not prove it always will.",
+    )
+
+
+def check_connection(port: int, model: str, headers, timeout: float) -> dict[str, dict]:
+    """A short reply and a tool call from the server on ``port``, judged in plain words.
+
+    ``headers()`` runs before each request and raises ``Refused`` when nothing may
+    be sent. No key is part of the answer.
+    """
+    checks = (
+        ("reply", "Reply with one word: ok", {}, _judge_reply),
+        (
+            "tool",
+            "What is the weather in Paris? Use the get_weather tool.",
+            {"tools": [TEST_TOOL]},
+            _judge_tool,
+        ),
+    )
+    results = {}
+    reachable = True
+    for name, prompt, extra, judge in checks:
+        if not reachable:
+            results[name] = _result("skipped", "Not tried: the first request got no answer.")
+            continue
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": TEST_REPLY_TOKENS,
+            "temperature": 0,
+            "stream": False,
+            **extra,
+        }
+        status, raw, key = _ask(port, body, headers, timeout)
+        if status is None:
+            result, reachable = _result("fail", raw), False
+        elif status != 200:
+            said = raw.decode("utf-8", "replace")
+            if key:  # hidden before it is cut short
+                said = said.replace(key, "[key hidden]")
+            said = redact(said)[:300]
+            result = _result("fail", f"The server refused the request (HTTP {status}): {said}")
+        elif (message := _message(raw)) is None:
+            result = _result("fail", UNREADABLE)
+        else:
+            result = judge(message)
+        if key:
+            result["detail"] = result["detail"].replace(key, "[key hidden]")
+        results[name] = result
+    return results
+
+
 def file_sha256(path: Path) -> str:
     with open(path, "rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()

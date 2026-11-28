@@ -104,6 +104,8 @@ def upstream(app_module, monkeypatch):
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     monkeypatch.setattr(app_module, "SERVER_PORT", httpd.server_address[1])
+    # The stand-in listens in this process; the owner check has its own tests (row 892).
+    monkeypatch.setattr(app_module.engine_runtime, "listener_is", lambda port, pid, **k: True)
     monkeypatch.setattr(app_module, "CHAT_BEAT_SECONDS", 0.05)
     try:
         yield fake
