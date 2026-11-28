@@ -136,8 +136,11 @@ The dialogs are UI controls. A direct API call skips them.
 
 ### 4.5 Secrets and TLS
 
-- The app stores no credential. `huggingface_hub` may use your `HF_TOKEN`; the
-  diagnostic bundle records it only as `set` or empty.
+- The app stores no credential. `huggingface_hub` may use your saved token or
+  `HF_TOKEN`. Model search and sizes are asked without it. A download asks
+  without it first and sends it only when the Hub refuses a stranger (401, 403 or
+  404) or marks the model gated or private. The diagnostic bundle records
+  `HF_TOKEN` only as `set` or empty.
 - `truststore` is used for the PyPI and update-manifest requests when it is
   available, otherwise the default CA bundle. The app does not switch
   certificate verification off.

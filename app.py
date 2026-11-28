@@ -752,7 +752,7 @@ def search_hf(query: str) -> list[dict]:
     try:
         from huggingface_hub import HfApi
 
-        api = HfApi()
+        api = HfApi(token=False)  # a public search: the saved token stays here
         wanted = {"author": HF_ORG, "search": query or None, "limit": 80}
         try:
             found = list(
@@ -1499,6 +1499,25 @@ def cancel_download(repo: str) -> bool:
     return True
 
 
+def _download_info(repo: str):
+    """``(repo info, token)`` for a download. The Hub is asked without the saved
+    token first: it goes out (``None``) only for a gated or private model.
+    """
+    from huggingface_hub import HfApi
+
+    wanted = {"repo_id": repo, "repo_type": "model", "files_metadata": True}
+    try:
+        info = HfApi(token=False).repo_info(**wanted)
+    except Exception as exc:
+        # A private model looks absent to a stranger.
+        if getattr(getattr(exc, "response", None), "status_code", None) not in (401, 403, 404):
+            raise
+    else:
+        if not (getattr(info, "gated", False) or getattr(info, "private", False)):
+            return info, False
+    return HfApi().repo_info(**wanted), None
+
+
 def worker_download(repo: str) -> None:
     with STATE.lock:
         running = STATE.downloads.get(repo, {}).get("status") == "running"
@@ -1511,10 +1530,9 @@ def worker_download(repo: str) -> None:
     marker = CACHE_DIR / f"models--{repo.replace('/', '--')}" / DOWNLOAD_MARKER
     pct = 0
     try:
-        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub import hf_hub_download
 
-        api = HfApi()
-        repo_info = api.repo_info(repo_id=repo, repo_type="model", files_metadata=True)
+        repo_info, token = _download_info(repo)
         files = [
             (s.rfilename, getattr(s, "size", None) or 0) for s in repo_info.siblings if s.rfilename
         ]
@@ -1554,6 +1572,7 @@ def worker_download(repo: str) -> None:
                 filename=filename,
                 cache_dir=str(CACHE_DIR),
                 tqdm_class=_byte_progress(cancel, report),
+                token=token,
             )
             done += size
 

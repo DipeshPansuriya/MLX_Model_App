@@ -249,6 +249,9 @@ class TestCacheDir:
 # M8 ------------------------------------------------------------------------- #
 def fake_hub(monkeypatch, files, download):
     class Api:
+        def __init__(self, token=None):
+            pass
+
         def repo_info(self, repo_id, repo_type=None, files_metadata=False):
             siblings = [
                 types.SimpleNamespace(rfilename=name, size=size if files_metadata else None)
@@ -266,7 +269,7 @@ class TestByteProgressAndCancel:
     def test_progress_follows_bytes_and_names_the_current_file(self, app_module, monkeypatch):
         seen = []
 
-        def download(repo_id, filename, cache_dir, tqdm_class):
+        def download(repo_id, filename, cache_dir, tqdm_class, token=None):
             entry = app_module.STATE.downloads[repo_id]
             seen.append((entry["detail"], entry["pct"]))
             size = 10 if filename == "config.json" else 990
@@ -284,7 +287,7 @@ class TestByteProgressAndCancel:
     def test_cancel_stops_mid_file(self, server, app_module, monkeypatch):
         started = []
 
-        def download(repo_id, filename, cache_dir, tqdm_class):
+        def download(repo_id, filename, cache_dir, tqdm_class, token=None):
             started.append(filename)
             bar = tqdm_class(total=100, initial=0)
             bar.update(10)
@@ -334,7 +337,7 @@ class TestCompleteness:
         assert self.complete(app_module) == {"org/model": False}
 
     def test_failed_download_is_not_offered_as_installed(self, app_module, monkeypatch):
-        def download(repo_id, filename, cache_dir, tqdm_class):
+        def download(repo_id, filename, cache_dir, tqdm_class, token=None):
             if filename == "tokenizer.json":
                 raise OSError("network down")
             make_model(app_module, repo_id, files=(filename,))

@@ -35,6 +35,9 @@ def search(app_module, monkeypatch, *hits, ram_gb=32, old_library=False):
     seen = []
 
     class Api:
+        def __init__(self, token=None):
+            pass
+
         def list_models(self, **kwargs):
             seen.append(kwargs)
             if old_library and "expand" in kwargs:
