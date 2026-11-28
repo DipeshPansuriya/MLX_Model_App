@@ -86,6 +86,7 @@ const refuse = () => { if (boot.storageBroken) throw new Error("storage is off")
 const sessionStorage = {
   getItem(k) { refuse(); return stored.get(k) ?? null; },
   setItem(k, v) { refuse(); stored.set(k, String(v)); },
+  removeItem(k) { refuse(); stored.delete(k); },
 };
 const location = { hash: boot.hash || "", pathname: "/", search: "" };
 const replaced = [];

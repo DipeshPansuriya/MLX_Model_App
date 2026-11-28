@@ -1633,6 +1633,7 @@ function switchAutostart() {
 /* ───────────── test connection ───────────── */
 const TEST_POLL_MS = 1000;
 const TEST_POLL_MISSES = 5; // polls in a row that may fail before the test is given up
+const TEST_MARK = "mlx-testing"; // kept over a reload while a test is followed
 const TEST_WORDS = {
   pass: ["ok", "Passed"], warn: ["warn", "Check"],
   fail: ["bad", "Failed"], skipped: ["", "Not tried"],
@@ -1649,7 +1650,7 @@ function paintTest(server) {
   const pid = server?.running && server.ready ? server.pid : null;
   if (test.pid !== pid) {
     Object.assign(test, { pid, result: null, error: "" });
-    if (pid !== null) resumeTest();
+    if (pid !== null && !test.running && testMarked()) resumeTest();
   }
   // Not disabled: that would drop the keyboard focus. testConnection ignores the press.
   $("#testBtn").setAttribute("aria-disabled", String(pid === null || test.running));
@@ -1660,31 +1661,28 @@ function paintTest(server) {
   setText($("#testError"), test.error);
 }
 
-// The test the app is at work on, or null.
-async function runningTest() {
-  const now = await api("/api/server/test").catch(() => null);
-  return now?.running ? now : null;
-}
-
-async function startTest() {
+function markTest(on) {
   try {
-    return await api("/api/server/test", { method: "POST", body: "{}" });
-  } catch (err) {
-    // One may be at work already, or this start's answer was lost: join it.
-    const found = await runningTest();
-    if (found) return found;
-    throw err;
-  }
+    if (on) sessionStorage.setItem(TEST_MARK, "1");
+    else sessionStorage.removeItem(TEST_MARK);
+  } catch (_) { /* storage refused: a reload then forgets the test */ }
 }
 
-// After a reload the app may still be testing this server.
+function testMarked() {
+  try { return !!sessionStorage.getItem(TEST_MARK); } catch (_) { return false; }
+}
+
+// Follows a test the app is still at work on: after a reload, a refused or lost
+// start, or polls that stopped getting through.
 async function resumeTest() {
-  const found = await runningTest();
-  if (found) await followTest(() => found);
+  const found = await api("/api/server/test").catch(() => null);
+  if (found?.running) await followTest(() => found);
 }
 
-function testConnection() {
-  return followTest(startTest);
+async function testConnection() {
+  if (state.test.running || state.test.pid === null) return;
+  await followTest(() => api("/api/server/test", { method: "POST", body: "{}" }));
+  if (state.test.error) await resumeTest();
 }
 
 async function followTest(start) {
@@ -1692,6 +1690,7 @@ async function followTest(start) {
   if (test.running || test.pid === null) return;
   const asked = test.pid;
   Object.assign(test, { running: true, result: null, error: "" });
+  markTest(true);
   paintTest(state.server);
   let result = null;
   let error = "";
@@ -1713,6 +1712,7 @@ async function followTest(start) {
     error = err.message;
   }
   test.running = false;
+  markTest(false);
   // An answer about a server that is gone says nothing about this one.
   if (test.pid === asked && (!result || result.pid === asked)) Object.assign(test, { result, error });
   paintTest(state.server);

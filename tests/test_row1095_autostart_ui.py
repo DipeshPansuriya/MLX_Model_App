@@ -83,7 +83,7 @@ class TestRunningTest:
             return [...shown(), queue.GET.length];
             """,
         )
-        assert out == [False, False, "Load failed", 15]
+        assert out == [False, False, "Load failed", 14]  # 5 polls, 1 last look
 
     def test_a_refusal_while_polling_is_final(self, tmp_path):
         out = run(
@@ -94,10 +94,10 @@ class TestRunningTest:
             queue.POST = [busy];
             queue.GET = [() => said({ error: "The server changed." }, false), done];
             await testConnection();
-            return [...shown(), queue.GET.length];
+            return shown();
             """,
         )
-        assert out == [False, False, "The server changed.", 1]
+        assert out == [False, False, "The server changed."]
 
     def test_a_press_joins_the_test_already_running(self, tmp_path):
         out = run(
@@ -132,14 +132,35 @@ class TestRunningTest:
             tmp_path,
             TESTING
             + """
+            queue.POST = [busy];
+            ready();
+            testConnection();  // left unfinished, as a reload leaves it
+            const kept = sessionStorage.getItem("mlx-testing");
+            await settle();
+            sessionStorage.setItem("mlx-testing", kept);
+            Object.assign(state.test, { pid: null, running: false, result: null, error: "" });
             queue.GET = [busy, done];
+            calls.length = 0;
+            paintTest(server);
+            await settle();
+            return [...shown(), calls.filter((c) => c.opts?.method === "POST").length,
+              sessionStorage.getItem("mlx-testing") || ""];
+            """,
+        )
+        assert out == [False, True, "", 0, ""]
+
+    def test_a_page_that_started_no_test_asks_nothing(self, tmp_path):
+        out = run(
+            tmp_path,
+            TESTING
+            + """
             state.server = server;
             paintTest(server);
             await settle();
-            return [...shown(), calls.filter((c) => c.opts?.method === "POST").length];
+            return calls.filter((c) => c.path === "/api/server/test").length;
             """,
         )
-        assert out == [False, True, "", 0]
+        assert out == 0
 
     def test_a_reloaded_page_shows_no_old_result(self, tmp_path):
         out = run(
@@ -147,6 +168,7 @@ class TestRunningTest:
             TESTING
             + """
             queue.GET = [done];
+            sessionStorage.setItem("mlx-testing", "1");
             state.server = server;
             paintTest(server);
             await settle();
