@@ -335,7 +335,8 @@ class TestNoOrphans:
         assert json.loads(out.splitlines()[-1])["status"] == "cancelled"
         until(lambda: not alive(server))
 
-    def test_a_killed_runner_leaves_no_server(self, tmp_path):
+    def test_a_killed_runner_closes_its_servers_pipe(self, tmp_path):
+        """Only a server that reads the pipe (the stand-in) ends by this alone."""
         proc, server = self.start(tmp_path)
         proc.kill()
         proc.wait(timeout=15)
@@ -627,3 +628,21 @@ class TestLeftovers:
         finally:
             proc.kill()
             proc.wait(timeout=10)
+
+    def test_the_app_ends_the_server_of_a_runner_that_is_gone(self, app_module, tmp_path):
+        """mlx_lm's server does not follow its parent, so the app's watcher ends it."""
+        app = app_module
+        app.APP_DIR.mkdir(parents=True, exist_ok=True)
+        server = self.sleeper("-m", "mlx_lm", "server", "--model", REPO, "--host", "127.0.0.1")
+        try:
+            until(lambda: app._ps_field(server.pid, "lstart"))
+            runner = subprocess.Popen([sys.executable, "-c", "pass"], stdout=subprocess.PIPE)
+            record = {"id": "1", "repo": REPO, "status": "running", "rows": []}
+            run = {"proc": runner, "record": record, "repo": REPO, "cancel": False, "active": True}
+            app._write_loadtest_pidfile(run, server=server.pid)
+            app._watch_loadtest(run, tmp_path / "work")
+            assert server.wait(timeout=10) == -signal.SIGKILL
+            assert record["status"] == "failed" and "unexpectedly" in record["reason"]
+        finally:
+            server.kill()
+            server.wait(timeout=10)
