@@ -345,6 +345,8 @@ html, body {
 .check[hidden] { display: none; }
 .check input { accent-color: var(--accent); cursor: pointer; margin: 0; }
 .check:hover { border-color: var(--line-2); color: var(--text); }
+.check:has(input[aria-disabled="true"]) { opacity: .45; cursor: not-allowed; }
+.check input[aria-disabled="true"] { cursor: not-allowed; }
 
 .btn {
   border: 1px solid var(--line-2); border-radius: var(--radius-sm);

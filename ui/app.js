@@ -53,6 +53,7 @@ const state = {
   autostartAt: null,
   autostartBusy: false,
   autostartError: "",
+  autostartChanges: 0,
   theme: "system", // as last saved
   themeSaving: 0, // while a choice is being saved, polls may still carry the old one
   // The Configuration page: whose values it shows, and each field as it was loaded.
@@ -89,7 +90,8 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error || msg; } catch (_) {}
-    throw new Error(msg);
+    // answered: the app said no, unlike a request that never got through.
+    throw Object.assign(new Error(msg), { answered: true });
   }
   return res.json();
 }
@@ -1551,12 +1553,20 @@ function watchAutostart(server) {
 }
 
 async function loadAutostart() {
+  const before = state.autostartChanges;
+  let found;
   try {
-    state.autostart = await api("/api/autostart");
+    found = await api("/api/autostart");
   } catch (_) {
     state.autostartAt = null; // asked again with the next poll
     return;
   }
+  // Read before or during a change: it must not overwrite what the change answered.
+  if (state.autostartBusy || before !== state.autostartChanges) {
+    state.autostartAt = null;
+    return;
+  }
+  state.autostart = found;
   paintAutostart();
   paintServerCard();
 }
@@ -1599,6 +1609,7 @@ async function changeAutostart(path, body) {
     state.autostartError = err.message;
   }
   state.autostartBusy = false;
+  state.autostartChanges += 1;
   paintAutostart();
   paintServerCard();
 }
@@ -1621,6 +1632,7 @@ function switchAutostart() {
 
 /* ───────────── test connection ───────────── */
 const TEST_POLL_MS = 1000;
+const TEST_POLL_MISSES = 5; // polls in a row that may fail before the test is given up
 const TEST_WORDS = {
   pass: ["ok", "Passed"], warn: ["warn", "Check"],
   fail: ["bad", "Failed"], skipped: ["", "Not tried"],
@@ -1635,7 +1647,10 @@ function testRow(row) {
 function paintTest(server) {
   const test = state.test;
   const pid = server?.running && server.ready ? server.pid : null;
-  if (test.pid !== pid) Object.assign(test, { pid, result: null, error: "" });
+  if (test.pid !== pid) {
+    Object.assign(test, { pid, result: null, error: "" });
+    if (pid !== null) resumeTest();
+  }
   // Not disabled: that would drop the keyboard focus. testConnection ignores the press.
   $("#testBtn").setAttribute("aria-disabled", String(pid === null || test.running));
   $("#testResults").hidden = !(test.result || (test.running && pid !== null));
@@ -1645,7 +1660,34 @@ function paintTest(server) {
   setText($("#testError"), test.error);
 }
 
-async function testConnection() {
+// The test the app is at work on, or null.
+async function runningTest() {
+  const now = await api("/api/server/test").catch(() => null);
+  return now?.running ? now : null;
+}
+
+async function startTest() {
+  try {
+    return await api("/api/server/test", { method: "POST", body: "{}" });
+  } catch (err) {
+    // One may be at work already, or this start's answer was lost: join it.
+    const found = await runningTest();
+    if (found) return found;
+    throw err;
+  }
+}
+
+// After a reload the app may still be testing this server.
+async function resumeTest() {
+  const found = await runningTest();
+  if (found) await followTest(() => found);
+}
+
+function testConnection() {
+  return followTest(startTest);
+}
+
+async function followTest(start) {
   const test = state.test;
   if (test.running || test.pid === null) return;
   const asked = test.pid;
@@ -1654,13 +1696,20 @@ async function testConnection() {
   let result = null;
   let error = "";
   try {
-    result = await api("/api/server/test", { method: "POST", body: "{}" });
+    result = await start();
     // A slow model: the app keeps testing and is asked again, so no request times out.
+    let missed = 0;
     while (result.running) {
       await new Promise((done) => setTimeout(done, TEST_POLL_MS));
-      result = await api("/api/server/test");
+      try {
+        result = await api("/api/server/test");
+        missed = 0;
+      } catch (err) {
+        if (err.answered || ++missed >= TEST_POLL_MISSES) throw err;
+      }
     }
   } catch (err) {
+    result = null;
     error = err.message;
   }
   test.running = false;
@@ -3063,6 +3112,10 @@ function wire() {
   $("#testBtn").addEventListener("click", testConnection);
   $("#setDefault").addEventListener("click", setDefaultModel);
   $("#autostartSwitch").addEventListener("change", switchAutostart);
+  $("#autostartSwitch").addEventListener("click", (event) => {
+    // aria-disabled keeps the focus but not the box: stop it flipping.
+    if (event.target.getAttribute("aria-disabled") === "true") event.preventDefault();
+  });
   for (const name of THEMES) {
     $(`#theme-${name}`).addEventListener("change", () => chooseTheme(name));
   }
