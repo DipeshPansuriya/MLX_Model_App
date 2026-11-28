@@ -163,35 +163,24 @@ numbers except `chat_temperature` and `chat_top_p`, which also take decimals.
 The global flags are on the server's command line; a model that differs is sent in
 `MLX_STUDIO_MODEL_PERFORMANCE` and applied when it is loaded, in one or two model
 mode. A model with a sliding-window cache, or whose head size does not divide by
-the group size, gets none: the app checks `config.json`, the guard checks the
-loaded model as well, runs it in Standard and says so. `GET /api/config` returns
+the group size, gets none: the app checks `config.json` and uses Standard. `GET /api/config` returns
 `performance` (`mode`, `reason`, `blocked`); saving a blocked choice for a model
 is refused. `/api/state` has `server.performance`: `saved`, and per served model
-`saved`, `in_force` (from the server, `null` until it says) and `note`. Memory
-limits are the same in every mode.
+`saved`, `in_force` (the mode the ready server was started with, else `null`)
+and `note`.
 
 ### Per model
 
 `models` holds overrides for one model id. For each key the value that applies is
-the model's own, else the global one, else automatic. `memory_limit_percent` is
-global only.
+the model's own, else the global one, else automatic.
 
 ```json
-{"memory_limit_percent": 70, "chat_max_reply_tokens": 1024,
+{"chat_max_reply_tokens": 1024,
  "models": {"org/name": {"max_context_tokens": 8192}}}
 ```
 
 A model's values apply to a server started with that model; the Chat cap follows
-the model asked. A server with two models takes one value for each key: the
-stricter (lower) one. A model without a value does not loosen the other's, except
-the server reply cap, where it counts as 8192 once either model sets one.
-`max_context_tokens` is the exception: the server is given the global value
-(`--studio-max-context`) and every model's own (`MLX_STUDIO_MODEL_CONTEXTS`, JSON
-`{repo: tokens}`), and the guard applies the one of the model that is loaded, also
-after a request switches models. It is not applied while two models run; in the
-fallback to one model it is. `mlx_cache_limit_mb` is sent the same way
-(`MLX_STUDIO_MODEL_CACHE_LIMITS`), except that two models get the lower of their
-own figures as the flag. The card edits and shows the global values only.
+the model asked. `max_context_tokens` is passed to OptiQ only.
 
 Except the Chat values, a change applies at the next server start or **Apply changes**.
 
@@ -209,8 +198,7 @@ the global values), or `{"reset": true}` (drops the global values and keeps
 means the file could not be written. `/api/state` adds under `server`: `settings`
 (`value`, `min`, `max`, `effective` for each key) and `settings_pending` (the
 running server was started with other values) and `model_settings` (the
-overrides by model id). The estimate adds
-`context_warning`, `capped_by_setting` and `budget_percent`.
+overrides by model id).
 
 The same route takes `{"load_test": {key: value or null}}` (merged; `null` for the
 whole block removes it). Saving and resetting other settings keep the block.
@@ -221,7 +209,6 @@ whole block removes it). Saving and resetting other settings keep the block.
 | `last_sizes` | empty | as `sizes`, may be empty |
 | `reply_tokens` | 256 | 32 to 1024 |
 | `rounds` | 2 | 1 to 3 |
-| `margin_percent` | 5 | 5 to 20 |
 | `timeout_seconds` (per size) | 900 | 60 to 3600; a size above 32768 always gets 3600 |
 
 ## 6c. Configuration and Load Test
