@@ -36,13 +36,13 @@ def write_raw(app, data) -> None:
 
 class TestStore:
     def test_the_default_is_system_and_reading_writes_nothing(self, app_module):
-        assert app_module.ui_settings() == {"theme": "system"}
+        assert app_module.ui_settings() == {"theme": "system", "save_history": "on"}
         assert not (app_module.APP_DIR / "settings.json").exists()
 
     @pytest.mark.parametrize("theme", ["light", "dark", "system"])
     def test_a_saved_theme_is_read_back_from_a_private_file(self, app_module, theme):
         app_module.save_ui({"theme": theme})
-        assert app_module.ui_settings() == {"theme": theme}
+        assert app_module.ui_settings() == {"theme": theme, "save_history": "on"}
         assert stored(app_module) == {"ui": {"theme": theme}}
         mode = (app_module.APP_DIR / "settings.json").stat().st_mode
         assert stat.S_IMODE(mode) == 0o600
@@ -52,7 +52,7 @@ class TestStore:
         app_module.save_settings({"max_context_tokens": 24000}, "org/model")
         app_module.save_settings({"max_context_tokens": 16000})
         app_module.save_load_test({"rounds": 1})
-        assert app_module.ui_settings() == {"theme": "light"}
+        assert app_module.ui_settings() == {"theme": "light", "save_history": "on"}
         app_module.reset_settings("org/model")
         app_module.reset_settings()
         app_module.save_load_test(None)
@@ -77,13 +77,13 @@ class TestStore:
     )
     def test_a_bad_value_uses_the_default_and_spares_the_rest(self, app_module, block):
         write_raw(app_module, {"ui": block, "max_context_tokens": 16000})
-        assert app_module.ui_settings() == {"theme": "system"}
+        assert app_module.ui_settings() == {"theme": "system", "save_history": "on"}
         assert app_module.user_settings()["max_context_tokens"] == 16000
         assert "settings.json" in app_module.STATE.settings_complaint
 
     def test_an_unknown_ui_key_is_not_used(self, app_module):
         write_raw(app_module, {"ui": {"theme": "dark", "colour": "red"}})
-        assert app_module.ui_settings() == {"theme": "dark"}
+        assert app_module.ui_settings() == {"theme": "dark", "save_history": "on"}
 
     def test_a_per_model_entry_in_the_ui_block_survives_every_writer(self, app_module):
         # Room for a later per-model alias: no save or reset may drop it.
@@ -100,16 +100,16 @@ class TestStore:
         ):
             write()
             assert stored(app_module)["ui"]["models"] == entries
-        assert app_module.ui_settings() == {"theme": "light"}
+        assert app_module.ui_settings() == {"theme": "light", "save_history": "on"}
 
     def test_a_broken_file_gives_the_default(self, app_module):
         app_module.APP_DIR.mkdir(parents=True, exist_ok=True)
         (app_module.APP_DIR / "settings.json").write_text("{oops", encoding="utf-8")
-        assert app_module.ui_settings() == {"theme": "system"}
+        assert app_module.ui_settings() == {"theme": "system", "save_history": "on"}
 
     def test_the_snapshot_carries_it(self, app_module):
         app_module.save_ui({"theme": "dark"})
-        assert app_module.STATE.snapshot()["ui"] == {"theme": "dark"}
+        assert app_module.STATE.snapshot()["ui"] == {"theme": "dark", "save_history": "on"}
 
 
 # ─────────────────────────────── the route ───────────────────────────────
@@ -148,7 +148,7 @@ def main_thread(monkeypatch):
 class TestRoute:
     def test_it_saves_the_choice(self, app_module, base_url, main_thread):
         assert post(base_url, {"theme": "light"}) == (200, {"ok": True})
-        assert app_module.ui_settings() == {"theme": "light"}
+        assert app_module.ui_settings() == {"theme": "light", "save_history": "on"}
 
     @pytest.mark.parametrize(
         "body",
@@ -179,7 +179,7 @@ class TestRoute:
     )
     def test_only_this_app_may_change_it(self, app_module, base_url, headers):
         assert post(base_url, {"theme": "light"}, headers)[0] == 403
-        assert app_module.ui_settings() == {"theme": "system"}
+        assert app_module.ui_settings() == {"theme": "system", "save_history": "on"}
 
     def test_a_window_is_repainted_on_the_main_thread(self, app_module, base_url, main_thread):
         app_module.STATE.window = object()
@@ -195,7 +195,7 @@ class TestRoute:
         monkeypatch.setitem(sys.modules, "PyObjCTools", None)  # the import fails
         app_module.STATE.window = object()
         assert post(base_url, {"theme": "dark"}) == (200, {"ok": True})
-        assert app_module.ui_settings() == {"theme": "dark"}
+        assert app_module.ui_settings() == {"theme": "dark", "save_history": "on"}
 
 
 # ────────────────────────────── the native app ──────────────────────────────

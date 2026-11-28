@@ -243,6 +243,11 @@ def clean_message(value) -> dict:
     return _message(value, 0)
 
 
+def clean_extras(system, settings) -> tuple[str, dict]:
+    """A checked system prompt and per chat settings; Invalid otherwise."""
+    return _text(system, "the system prompt", SYSTEM_MAX_CHARS), _settings(settings)
+
+
 def _messages(value, now: int | None) -> list[dict]:
     if not isinstance(value, (list, tuple)):
         raise Invalid("messages must be a list")
@@ -362,14 +367,36 @@ class ChatStore:
             raise Stale("this chat was changed in another window: open it again")
         return chat
 
-    def append(self, chat_id: str, updated: int, messages, *, model: str | None = None) -> dict:
-        """Add a turn to the chat last seen at ``updated``."""
+    def current(self, chat_id: str, updated: int) -> dict:
+        """The saved chat, if it has not changed since ``updated``."""
+        with WRITE_LOCK:
+            return self._current(chat_id, updated)
+
+    def append(
+        self,
+        chat_id: str,
+        updated: int,
+        messages,
+        *,
+        model: str | None = None,
+        system: str | None = None,
+        settings: dict | None = None,
+    ) -> dict:
+        """Add a turn to the chat last seen at ``updated``, with what it was asked with."""
         now = _now_ms()
         added = _messages(messages, now)
         if not added:
             raise Invalid("there is nothing to add")
+        if system is not None:
+            system = _text(system, "the system prompt", SYSTEM_MAX_CHARS)
+        if settings is not None:
+            settings = _settings(settings)
         with WRITE_LOCK:
             chat = self._current(chat_id, updated)
+            if system is not None:
+                chat["system"] = system
+            if settings is not None:
+                chat["settings"] = settings
             if not chat["messages"] and chat["title"] == NEW_TITLE:
                 chat["title"] = _auto_title(added)
             chat["messages"] += added
@@ -401,6 +428,11 @@ class ChatStore:
         with WRITE_LOCK:
             chat = self._current(chat_id, updated)
             return self._write({**chat, **changes, "updated": max(_now_ms(), updated + 1)})
+
+    @staticmethod
+    def summary(chat: dict) -> dict:
+        """A chat without its text, as ``list`` gives it."""
+        return _summary(chat)
 
     def rename(self, chat_id: str, title: str) -> dict:
         """``updated`` stays, so a reply being written can still be saved."""

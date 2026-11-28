@@ -44,6 +44,7 @@ from pathlib import Path
 # bundle, breaks its signature.
 sys.dont_write_bytecode = True
 
+import chat_store  # noqa: E402
 import engine_runtime  # noqa: E402
 import engines  # noqa: E402
 import login_agent  # noqa: E402
@@ -183,8 +184,8 @@ LOADTEST_WAIT_SECONDS = 40  # longer than the runner waits for its server
 MODEL_SETTINGS = tuple(SETTINGS)
 SETTINGS_MAX_BYTES = 64 * 1024
 # The ``ui`` block of settings.json: what the screens remember.
-UI_CHOICES = {"theme": ("system", "light", "dark")}
-UI_DEFAULTS = {"theme": "system"}
+UI_CHOICES = {"theme": ("system", "light", "dark"), "save_history": ("on", "off")}
+UI_DEFAULTS = {"theme": "system", "save_history": "on"}
 # The native window behind the page: the same as --bg in ui/style.css.
 WINDOW_BACKGROUNDS = {"light": "#f6f7f9", "dark": "#0f1115"}
 SETTINGS_LOCK = threading.Lock()
@@ -1355,14 +1356,23 @@ def _reply_stats(usage: dict, asked: float, first, ended: float, mode: str | Non
     }
 
 
-def stream_chat(repo: str, messages: list[dict], stop: threading.Event):
+def stream_chat(
+    repo: str,
+    messages: list[dict],
+    stop: threading.Event,
+    system: str = "",
+    own: dict | None = None,
+):
     """Ask the running API server, yielding ``(event, data)`` for the browser.
 
     ``status`` is repeated while nothing arrives, so the screen can say it is waiting
     and a browser that has gone away is noticed. Closing this generator closes the
     request to the server.
     """
-    asked_body, port = _chat_target(repo, messages, chat_settings(repo))
+    # The only system message is the one added here; ``own`` are this chat's settings.
+    if system.strip():
+        messages = [{"role": "system", "content": system}, *messages]
+    asked_body, port = _chat_target(repo, messages, {**chat_settings(repo), **(own or {})})
     body = json.dumps(asked_body).encode("utf-8")
     conn = http.client.HTTPConnection(HOST, port, timeout=CHAT_CONNECT_SECONDS)
     try:
@@ -3747,6 +3757,92 @@ def loadtest_view(repo: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Saved chats: ``chats/`` in the app's private folder. Their text is never logged.
+# --------------------------------------------------------------------------- #
+def saved_chats() -> chat_store.ChatStore:
+    return chat_store.ChatStore(APP_DIR / "chats")
+
+
+def _chat_extras(body: dict) -> tuple[str, dict, dict | None]:
+    """``(system, settings, save)`` sent with a message; ChatError if unusable.
+
+    ``save`` is None for a temporary chat and while history is switched off.
+    """
+    system, own = chat_store.clean_extras(body.get("system", ""), body.get("settings", {}))
+    save = body.get("save")
+    if save is None:
+        return system, own, None
+    if not isinstance(save, dict):
+        raise chat_store.Invalid("save must name the chat")
+    if ui_settings()["save_history"] != "on":
+        return system, own, None
+    if save.get("id") is not None:  # a lost or stale chat is said before the model is asked
+        saved_chats().current(save["id"], save.get("updated"))
+    return system, own, save
+
+
+def _split_reply(reasoning: str, content: str) -> tuple[str, str]:
+    """``(thinking, answer)``, as the screen splits them (``splitReply`` in app.js)."""
+    text = content.lstrip()
+    if text.startswith("<think>"):
+        thought, _, answer = text[len("<think>") :].partition("</think>")
+        return (reasoning + thought).strip(), answer.lstrip()
+    return reasoning.strip(), content
+
+
+def _save_turn(repo: str, messages: list[dict], extras: tuple, reply: dict, done: dict) -> dict:
+    """Save an answered or stopped turn; what to add to the ``done`` event."""
+    system, own, save = extras
+    thinking, answer = _split_reply(reply["reasoning"], reply["token"])
+    if save is None or not answer.strip():
+        return {}
+    turns = [{"role": m["role"], "content": m["content"]} for m in messages]
+    turns.append(
+        {
+            "role": "assistant",
+            "content": answer,
+            "thinking": thinking,
+            "stats": done.get("stats") or {},
+            "stopped": bool(done.get("stopped")),
+        }
+    )
+    kept = {"model": repo, "system": system, "settings": own}
+    try:
+        if save.get("id") is None:
+            chat = saved_chats().create(turns, **kept)
+        else:
+            chat = saved_chats().append(save["id"], save["updated"], turns[-2:], **kept)
+    except chat_store.ChatError as exc:
+        return {"save_error": f"This reply was not saved: {exc}."}
+    return {"chat": saved_chats().summary(chat)}
+
+
+def chat_change(name: str, body: dict) -> tuple[int, dict]:
+    """The POST routes under ``/api/chats/``: ``(status, answer)``."""
+    store = saved_chats()
+    chat_id = body.get("id")
+    try:
+        if name in ("delete", "delete-all") and body.get("confirm") is not True:
+            return 400, {"error": "confirm must be true"}
+        if name == "search":
+            return 200, store.search(body.get("query"))
+        if name == "rename":
+            return 200, store.summary(store.rename(chat_id, body.get("title")))
+        if name == "settings":
+            system, own = chat_store.clean_extras(body.get("system"), body.get("settings"))
+            chat = store.update(chat_id, body.get("updated"), system=system, settings=own)
+            return 200, store.summary(chat)
+        if name == "delete":
+            store.delete(chat_id)
+            return 200, {"ok": True}
+        if name == "delete-all":
+            return 200, store.delete_all()
+    except chat_store.ChatError as exc:
+        return exc.status, {"error": str(exc)}
+    return 404, {"error": "unknown chat action"}
+
+
+# --------------------------------------------------------------------------- #
 # HTTP handler
 # --------------------------------------------------------------------------- #
 # POST routes that act on a model named by the "repo" field.
@@ -3969,6 +4065,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/autostart":
             self._json(login_agent.status(sys.modules[__name__]))
             return
+        if path in ("/api/chats", "/api/chats/get"):
+            try:
+                if path == "/api/chats":
+                    self._json(saved_chats().list())
+                else:
+                    self._json(saved_chats().get((query.get("id") or [""])[0]))
+            except chat_store.ChatError as exc:
+                self._json({"error": str(exc)}, exc.status)
+            return
         if path == "/api/server/test":
             code, answer = connection_test_result()
             self._json(answer, code)
@@ -4068,14 +4173,24 @@ class Handler(BaseHTTPRequestHandler):
                 and messages
                 and all(
                     isinstance(m, dict)
-                    and isinstance(m.get("role"), str)
+                    and m.get("role") in ("user", "assistant")
                     and isinstance(m.get("content"), str)
                     for m in messages
                 )
             ):
                 self._json({"error": "messages required: a list of {role, content}"}, 400)
                 return
-            self._stream_chat(repo, messages)
+            try:
+                extras = _chat_extras(body)
+            except chat_store.ChatError as exc:
+                self._json({"error": str(exc)}, exc.status)
+                return
+            self._stream_chat(repo, messages, extras)
+            return
+
+        if path.startswith("/api/chats/"):
+            code, answer = chat_change(path.removeprefix("/api/chats/"), body)
+            self._json(answer, code)
             return
 
         if path == "/api/chat/stop":
@@ -4337,7 +4452,7 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.deleting.discard(repo)
 
     # -- SSE chat -------------------------------------------------------- #
-    def _stream_chat(self, repo: str, messages: list[dict]) -> None:
+    def _stream_chat(self, repo: str, messages: list[dict], extras: tuple) -> None:
         stop = threading.Event()
         busy = _chat_problem(repo)
         with STATE.lock:
@@ -4361,9 +4476,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
-            with contextlib.closing(stream_chat(repo, messages, stop)) as reply:
+            parts = {"token": "", "reasoning": ""}
+            own = {
+                name: value
+                for name, value in zip(("system", "own"), extras[:2], strict=True)
+                if value
+            }
+            asked = stream_chat(repo, messages, stop, **own)
+            with contextlib.closing(asked) as reply:
                 for kind, payload in reply:
-                    emit(kind, payload)
+                    if kind in parts:
+                        parts[kind] += payload
+                    added = {}
+                    if kind == "done":  # saved first: the event names the saved chat
+                        added = _save_turn(repo, messages, extras, parts, payload)
+                    emit(kind, {**payload, **added} if added else payload)
                     if kind == "done":
                         log_activity(
                             "chat",

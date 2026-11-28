@@ -186,7 +186,7 @@ def test_other_saves_and_resets_keep_the_alias(cache):
     cache.reset_settings(REPO)
     cache.reset_settings()
     assert cache.model_aliases() == {REPO: "coder"}
-    assert cache.ui_settings() == {"theme": "dark"}
+    assert cache.ui_settings() == {"theme": "dark", "save_history": "on"}
 
 
 def test_saving_an_alias_keeps_the_rest_of_the_settings(cache):
@@ -194,7 +194,7 @@ def test_saving_an_alias_keeps_the_rest_of_the_settings(cache):
     cache.save_ui({"theme": "light"})
     cache.save_alias(REPO, "coder")
     assert cache.user_settings(REPO)["chat_temperature"] == 0.5
-    assert cache.ui_settings() == {"theme": "light"}
+    assert cache.ui_settings() == {"theme": "light", "save_history": "on"}
 
 
 @pytest.mark.parametrize("name", ["coder", "CODER", "Coder"])
@@ -240,7 +240,7 @@ def test_the_alias_of_a_removed_model_is_released_to_the_next(cache):
     shutil.rmtree(cache.CACHE_DIR / "models--org--Gone-4bit")
     assert cache.save_alias(REPO, "coder") is None
     assert cache.model_aliases() == {REPO: "coder"}
-    assert cache.ui_settings() == {"theme": "dark"}
+    assert cache.ui_settings() == {"theme": "dark", "save_history": "on"}
 
 
 @pytest.mark.parametrize(
