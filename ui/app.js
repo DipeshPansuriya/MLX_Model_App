@@ -40,6 +40,11 @@ const state = {
   view: "",
   // Test Connection: of the server with this pid, while it runs or what it found.
   test: { pid: null, running: false, result: null, error: "" },
+  // Start at login: what the app last said, and for which server it was asked.
+  autostart: null,
+  autostartAt: null,
+  autostartBusy: false,
+  autostartError: "",
   theme: "system", // as last saved
   themeSaving: 0, // while a choice is being saved, polls may still carry the old one
   // The Configuration page: whose values it shows, and each field as it was loaded.
@@ -411,6 +416,7 @@ function render(snap) {
   if (held === $("#serverRestartBtn") && $("#serverNotice").hidden) spareControl().focus();
   renderToolsWarning(server);
   paintTest(server);
+  watchAutostart(server);
   renderModelCards(models, server, downloads);
   renderDownloads(downloads);
   renderCatalog();
@@ -649,8 +655,23 @@ function paintClientSettings(picked) {
       "model instead.") + " No password: any program on this Mac, and a website open in " +
     "your browser, can send it requests while it runs.");
   $("#mlxOpenWarn").hidden = direct;
-  setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ` +
-    (direct ? "press Copy key (new at every start)" : "not needed"));
+  const auto = state.autostart;
+  const stable = direct && !!auto?.key_in_use;
+  const keyWords = !direct ? "not needed"
+    : stable ? "press Copy key (kept for start at login)" : "press Copy key (new at every start)";
+  setText($("#openaiSettings"), `Base URL: ${base}/v1\nModel: ${model}\nAPI key: ${keyWords}`);
+  const saved = running && auto?.enabled && auto.default?.repo === chosen &&
+    auto.default?.engine === runningEngine();
+  $("#keyUse").hidden = !direct;
+  setText($("#keyUse"), [
+    "Send the key as the header Authorization: Bearer <key> or x-api-key. Claude Code reads " +
+      "it from ANTHROPIC_AUTH_TOKEN; in DeepSeek Harness put it in this provider's API key " +
+      "field. Keep it in the tool's own secret setting or an environment variable, never in " +
+      "a shared file.",
+    stable ? "This key stays the same while start at login is on for this model, so set your " +
+      `tool up once. It is also in the file ${auto.key_file}.`
+      : saved ? "Press Stop, then Start Server, to use the saved start at login key." : "",
+  ].filter(Boolean).join(" "));
   $("#connectPanel").hidden = !running;
   const waiting = running && aliasOf(chosen) !== (server.alias || "");
   setText($("#connectState"), [
@@ -661,8 +682,7 @@ function paintClientSettings(picked) {
   const typed = Number($("#dshContext").value);
   const context = Number.isInteger(typed) && typed > 0 ? typed : null;
   setText($("#dshSettings"), `Type: OpenAI compatible\nBase URL: ${base}/v1\nModel: ${model}\n` +
-    `Context window: ${context ?? "(type a number above)"}\nAPI key: ` +
-    (direct ? "press Copy key (new at every start)" : "not needed"));
+    `Context window: ${context ?? "(type a number above)"}\nAPI key: ${keyWords}`);
   $("#copyDsh").disabled = !context;
   const claude = direct && (running ? !!server.anthropic : anthropicWanted());
   setText($("#claudeSettings"), claude
@@ -721,7 +741,8 @@ async function copyServerKey() {
   try {
     const { key } = await api("/api/server/key", { method: "POST", body: "{}" });
     await navigator.clipboard.writeText(key);
-    toast("Key copied. It changes at every start.");
+    toast(state.autostart?.key_in_use ? "Key copied. It is kept for start at login."
+      : "Key copied. It changes at every start.");
   } catch (err) {
     toast(err.message || "The key was not copied. Press Copy key again.", true);
   }
@@ -1497,6 +1518,88 @@ function renderToolsWarning(server) {
     (repos.length > 1 ? `${without.map(displayName).join(", ")}: ` : "") +
     "Agent clients will not get tool calls from it; they may show them as plain text." +
     (verified ? ` For tool use, choose ${modelLabel(verified)}.` : ""));
+}
+
+/* ───────────── start at login ───────────── */
+// Asked when the page is shown and when the running server changes.
+function watchAutostart(server) {
+  if (state.view !== "server") {
+    state.autostartAt = null;
+    return;
+  }
+  const at = `${server?.pid} ${!!server?.ready}`;
+  if (state.autostartAt === at) return;
+  state.autostartAt = at;
+  loadAutostart();
+}
+
+async function loadAutostart() {
+  try {
+    state.autostart = await api("/api/autostart");
+  } catch (_) {
+    state.autostartAt = null; // asked again with the next poll
+    return;
+  }
+  paintAutostart();
+  paintServerCard();
+}
+
+// Why the switch cannot be turned on. It can always be turned off.
+function autostartBlock(auto) {
+  if (!auto) return "Reading…";
+  if (auto.enabled) return "";
+  if (!auto.available) return auto.unavailable_reason;
+  if (!auto.default) return "Choose a default model first: pick it above, then press Set as default model.";
+  return auto.autostart_refusal || "";
+}
+
+function paintAutostart() {
+  const auto = state.autostart;
+  const block = autostartBlock(auto);
+  const chosen = auto?.default;
+  $("#setDefault").setAttribute("aria-disabled", String(state.autostartBusy));
+  $("#autostartSwitch").checked = !!auto?.enabled;
+  $("#autostartSwitch").setAttribute("aria-disabled", String(state.autostartBusy || !!block));
+  setText($("#defaultState"), !auto ? "" : !chosen ? "No default model."
+    : `Default model: ${modelLabel(chosen.repo)} (${chosen.engine === "mlx" ? "MLX"
+      : engineInfo(chosen.engine)?.name || chosen.engine}). Its saved server settings apply.`);
+  setText($("#autostartWhy"), block || (auto.enabled
+    ? "On: the server starts at your next login." : "Off: nothing starts at login."));
+  setText($("#autostartNote"), auto?.password_note || "");
+  const last = auto?.last;
+  setText($("#autostartLast"), last
+    ? `Last login start (${last.at}): ${last.result}${last.reason ? `. ${last.reason}` : ""}` : "");
+  setText($("#autostartProblem"), state.autostartError || auto?.problem || "");
+}
+
+async function changeAutostart(path, body) {
+  if (state.autostartBusy) return;
+  Object.assign(state, { autostartBusy: true, autostartError: "" });
+  paintAutostart();
+  try {
+    state.autostart = await api(path, { method: "POST", body: JSON.stringify(body) });
+  } catch (err) {
+    state.autostartError = err.message;
+  }
+  state.autostartBusy = false;
+  paintAutostart();
+  paintServerCard();
+}
+
+// The model, engine and route as the card above shows them.
+function setDefaultModel() {
+  const [repo = ""] = serverSet();
+  return changeAutostart("/api/autostart/default",
+    { repo, engine: engineId(), anthropic: anthropicWanted() });
+}
+
+function switchAutostart() {
+  const wanted = $("#autostartSwitch").checked;
+  if ($("#autostartSwitch").getAttribute("aria-disabled") === "true") {
+    paintAutostart(); // puts the box back
+    return;
+  }
+  return changeAutostart("/api/autostart", { enabled: wanted });
 }
 
 /* ───────────── test connection ───────────── */
@@ -2566,6 +2669,8 @@ async function stopServer() {
 function wire() {
   wireEngines();
   $("#testBtn").addEventListener("click", testConnection);
+  $("#setDefault").addEventListener("click", setDefaultModel);
+  $("#autostartSwitch").addEventListener("change", switchAutostart);
   for (const name of THEMES) {
     $(`#theme-${name}`).addEventListener("change", () => chooseTheme(name));
   }

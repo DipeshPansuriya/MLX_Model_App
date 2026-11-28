@@ -37,6 +37,7 @@ def clone(target: Path) -> Path:
         "optiq_engine.py",
         "engine_runtime.py",
         "engines.py",
+        "login_agent.py",
         "packaging/optiq-lock.txt",
     ):
         shutil.copy(ROOT / name, target / name)

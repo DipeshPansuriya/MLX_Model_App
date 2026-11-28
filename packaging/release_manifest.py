@@ -75,6 +75,7 @@ SHIPPED = (
     "optiq_engine.py",
     "engine_runtime.py",
     "engines.py",
+    "login_agent.py",
     "ui",
     "packaging",
 )
@@ -85,6 +86,7 @@ BUNDLED = (
     "optiq_engine.py",
     "engine_runtime.py",
     "engines.py",
+    "login_agent.py",
     "packaging/optiq-lock.txt",
     "ui/index.html",
     "ui/style.css",

@@ -53,7 +53,7 @@ class TestModelCardButtons:
         out = go(
             tmp_path,
             MODELS + " let asked; confirm = (q) => { asked = q; return false; };"
-            " draw(); await press(act('delete')); return [asked, paths()];",
+            " draw(); await press(act('delete')); return [asked, posts()];",
         )
         assert out == ["Delete org/a&b from disk?", []]
 

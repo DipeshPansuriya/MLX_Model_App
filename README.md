@@ -214,6 +214,9 @@ model of its own. Released builds load a second copy for Chat.
 - If the server dies, the view shows a banner with **Restart** and records the
   event. See [the API Server card](#the-api-server-card).
 
+**Start at login** (off by default): set a default model and the server starts when you
+log in. OptiQ only, because it needs a password. [How it works](docs/ENGINES.md#start-at-login-2014).
+
 ### Configuration
 2.0.13 source (unreleased). Replaces the Settings box on the API Server card.
 

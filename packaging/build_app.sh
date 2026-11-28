@@ -53,6 +53,7 @@ cp "$ROOT/mlx_loadtest.py" "$APP/Contents/Resources/mlx_loadtest.py"
 cp "$ROOT/optiq_engine.py" "$APP/Contents/Resources/optiq_engine.py"
 cp "$ROOT/engine_runtime.py" "$APP/Contents/Resources/engine_runtime.py"
 cp "$ROOT/engines.py" "$APP/Contents/Resources/engines.py"
+cp "$ROOT/login_agent.py" "$APP/Contents/Resources/login_agent.py"
 # The only packages Setup may install for OptiQ, by hash.
 mkdir -p "$APP/Contents/Resources/packaging"
 cp "$ROOT/packaging/optiq-lock.txt" "$APP/Contents/Resources/packaging/optiq-lock.txt"

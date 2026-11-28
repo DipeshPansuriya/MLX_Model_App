@@ -3,6 +3,17 @@
 All notable changes to MLX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Set a default model and start its server at Mac login (off by default; OptiQ only,
+  because it can require a password). The key then stays the same, so tools are set up once.
+
+### Fixed
+- Test Connection no longer fails in the app window when a model takes over a minute,
+  keeps keyboard focus, and announces its result.
+- An MLX server start is refused when another program already uses the port.
+
 ## [2.0.13] — 2026-11-28
 
 Not released as the latest version: pre-release build; the released 2.0.9 app has none

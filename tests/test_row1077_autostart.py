@@ -12,7 +12,6 @@ import os
 import plistlib
 import stat
 import subprocess
-import sys
 import types
 from pathlib import Path
 
@@ -125,7 +124,7 @@ def bundle(tmp_path):
     return contents / "Resources", launcher
 
 
-def switch_on(app, bundle, engine="mlx"):
+def switch_on(app, bundle, engine="optiq"):
     login_agent.set_default(app, REPO, engine)
     login_agent.enable(app, resources=bundle[0])
 
@@ -317,27 +316,6 @@ def test_refresh_does_nothing_while_off(app_module, mac, bundle):
 # --------------------------------------------------------------------------- #
 # The headless start
 # --------------------------------------------------------------------------- #
-def test_mlx_starts_with_the_apps_own_command_on_loopback(app_module, mac, bundle):
-    switch_on(app_module, bundle)
-    had_webview = "webview" in sys.modules
-    assert login_agent.login_start(app_module, sleep=ready(app_module)) == 0
-    [proc] = mac.started
-    settings = app_module.server_settings([REPO])
-    assert proc.args == app_module._server_command(
-        REPO, settings, app_module.SERVER_PORT, app_module.performance_flags(REPO)[0]
-    )
-    assert proc.args[proc.args.index("--host") + 1] == "127.0.0.1"
-    assert proc.kwargs["start_new_session"] is True
-    assert proc.returncode is None  # left running
-    assert json.loads((app_module.APP_DIR / "server.pid").read_text())["background"] is True
-    assert result(app_module)["result"] == "started"
-    assert result(app_module)["password"] is False
-    assert ("webview" in sys.modules) == had_webview
-    assert not login_agent.key_file(app_module).exists()
-    view = login_agent.status(app_module)
-    assert view["password"] is False and "no password" in view["password_note"]
-
-
 def test_optiq_starts_with_a_stored_key_that_only_the_environment_carries(app_module, mac, bundle):
     switch_on(app_module, bundle, "optiq")
     stored = login_agent.key_file(app_module)
@@ -358,8 +336,7 @@ def test_optiq_starts_with_a_stored_key_that_only_the_environment_carries(app_mo
     assert keys == [key, key]
     assert key not in everything_written(app_module)
     assert key not in json.dumps(login_agent.status(app_module))
-    # The app's own starts still get a new key unless wired to ask for this one.
-    assert optiq.new_key() != key
+    assert optiq.new_key() != key  # the engine itself still makes new ones
     assert login_agent.client_key(app_module, "optiq", REPO) == key
 
 
@@ -395,8 +372,11 @@ def _no_model(app, mac, monkeypatch):
     monkeypatch.setattr(app, "_complete_models", set)
 
 
-def _no_mlx(app, mac, monkeypatch):
-    monkeypatch.setattr(app, "pkg_version", lambda name: None)
+def _no_engine(app, mac, monkeypatch):
+    def missing(app_dir):
+        raise app.engine_runtime.Refused("OptiQ is not installed.")
+
+    monkeypatch.setattr(app.engines.OPTIQ, "program", missing)
 
 
 def _port_busy(app, mac, monkeypatch):
@@ -424,7 +404,7 @@ def _window_open(app, mac, monkeypatch):
     ("break_it", "words"),
     [
         (_no_model, "not downloaded"),
-        (_no_mlx, "not installed"),
+        (_no_engine, "not installed"),
         (_port_busy, "port 8080"),
         (_too_large, "memory"),
         (_no_free_memory, "free"),
@@ -435,7 +415,7 @@ def _window_open(app, mac, monkeypatch):
 def test_a_failed_check_refuses_and_logs(app_module, mac, bundle, monkeypatch, break_it, words):
     switch_on(app_module, bundle)
     break_it(app_module, mac, monkeypatch)
-    assert login_agent.login_start(app_module) == 0
+    assert login_agent.login_start(app_module, wait_seconds=0) == 0
     assert mac.started == []
     assert result(app_module)["result"] == "skipped"
     assert words in result(app_module)["reason"]
@@ -546,7 +526,6 @@ def test_a_launch_that_raises_is_recorded(app_module, mac, bundle, monkeypatch, 
     assert login_agent.login_start(app_module) == 0
     assert result(app_module)["result"] == "failed"
     assert "no room" in result(app_module)["reason"]
-    assert "new_key" not in vars(app_module.engines.OPTIQ)
 
 
 def test_an_optiq_server_that_answers_without_the_key_is_stopped(

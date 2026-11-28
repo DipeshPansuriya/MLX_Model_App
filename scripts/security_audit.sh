@@ -65,7 +65,7 @@ PY
 }
 
 # Python files that ship inside the app; every source check covers all of them.
-SOURCES=(app.py model_info.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py)
+SOURCES=(app.py model_info.py mlx_loadtest.py optiq_engine.py engine_runtime.py engines.py login_agent.py)
 
 # ── SA-01 static patterns ────────────────────────────────────────────────────
 section "SA-01  Dangerous code patterns"

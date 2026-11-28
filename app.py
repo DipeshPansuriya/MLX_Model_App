@@ -46,6 +46,7 @@ sys.dont_write_bytecode = True
 
 import engine_runtime  # noqa: E402
 import engines  # noqa: E402
+import login_agent  # noqa: E402
 import model_info  # noqa: E402
 
 APP_NAME = "MLX Studio"
@@ -119,6 +120,8 @@ CONNECTION_TEST_LOCK = threading.Lock()
 CONNECTION_TEST_HOLD_SECONDS = 20
 CONNECTION_TEST_RUNS: list[ConnectionRun] = []  # only the latest one
 CONNECTION_TEST_RUN_LOCK = threading.Lock()
+AUTOSTART_LOCK = threading.Lock()  # one change of the start-at-login files at a time
+AUTOSTART_PATHS = ("/api/autostart", "/api/autostart/default", "/api/autostart/clear")
 # mlx_lm cuts replies at 512 tokens when a client sends no max_tokens.
 SERVER_MAX_TOKENS = 8192
 # Limits for reading server.last.json: far above two real model ids.
@@ -2970,7 +2973,8 @@ def _launch_direct(
         anthropic=anthropic,
     )
     root = APP_DIR / "engines" / engine.id / "run"
-    key = engine.new_key()
+    # The default model keeps one key while it starts at login, so clients stay set up.
+    key = login_agent.client_key(sys.modules[__name__], engine.id, repo) or engine.new_key()
     env = engine.environment(root, key)
     engines.link_model(root, name, snapshot)
     engine_runtime.write_key(_key_file(), key)
@@ -3766,6 +3770,33 @@ class BadBody(Exception):
         self.code = code
 
 
+def autostart_change(path: str, body: dict) -> tuple[int, dict]:
+    """Set or clear the default model, or switch start at login. Nothing starts now."""
+    app = sys.modules[__name__]
+    repo, engine = body.get("repo"), body.get("engine", "mlx")
+    anthropic, enabled = body.get("anthropic", True), body.get("enabled")
+    if path.endswith("/default"):
+        if not (isinstance(repo, str) and isinstance(engine, str) and type(anthropic) is bool):
+            return 400, {"error": "repo, engine and anthropic (true or false) required"}
+    elif path == "/api/autostart" and type(enabled) is not bool:
+        return 400, {"error": "enabled must be true or false"}
+    with AUTOSTART_LOCK:
+        try:
+            if path.endswith("/default"):
+                login_agent.set_default(app, repo, engine, anthropic)
+            elif path.endswith("/clear"):
+                login_agent.clear_default(app)
+            elif enabled:
+                login_agent.enable(app)
+            else:
+                login_agent.disable(app)
+        except engine_runtime.Refused as exc:
+            return 409, {"error": str(exc)}
+        except OSError as exc:
+            return 500, {"error": f"could not save the start at login choice: {exc.strerror}"}
+        return 200, login_agent.status(app)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"{APP_NAME}/{APP_VERSION}"
     protocol_version = "HTTP/1.1"
@@ -3934,6 +3965,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/state":
             self._json(STATE.snapshot())
+            return
+        if path == "/api/autostart":
+            self._json(login_agent.status(sys.modules[__name__]))
             return
         if path == "/api/server/test":
             code, answer = connection_test_result()
@@ -4169,6 +4203,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": f"could not save the settings: {exc.strerror}"}, 500)
                 return
             self._json({"ok": True})
+            return
+
+        if path in AUTOSTART_PATHS:
+            code, answer = autostart_change(path, body)
+            self._json(answer, code)
             return
 
         if path == "/api/server/test":
@@ -4583,6 +4622,9 @@ def serve() -> ThreadingHTTPServer:
 
 
 def main() -> None:
+    # The login item: one headless server start. No window, no web server.
+    if login_agent.FLAG in sys.argv[1:]:
+        sys.exit(login_agent.login_start(sys.modules[__name__]))
     if not UI_DIR.exists():
         print(f"UI directory missing: {UI_DIR}")
         sys.exit(1)
@@ -4621,6 +4663,7 @@ def main() -> None:
     threading.Thread(target=worker_check_versions, daemon=True).start()
     log_activity("app", "-", "info", f"{APP_NAME} {APP_VERSION} launched")
     restore_server_state()
+    login_agent.refresh(sys.modules[__name__])  # the app may have moved
     restore_loadtest()
 
     # At debug level pywebview logs the window address, which holds the token.

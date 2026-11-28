@@ -7,9 +7,9 @@ once: nothing here, and nothing in launchd, starts a server again.
 
 ``app`` is the running ``app`` module, passed in so this file never imports it.
 
-Keys: only an engine with its own key support gets one. It is kept in a 0600 file
-under the app's folder and reaches the server through the environment. The built-in
-MLX server has no key support, so it runs without a password.
+Keys: a login start needs a password, so only an engine with its own key support
+may be started this way (the built-in MLX server has none). The key is kept in a
+0600 file under the app's folder and reaches the server through the environment.
 """
 
 from __future__ import annotations
@@ -90,6 +90,16 @@ def _engine_problem(app, engine_id, repo: str) -> str | None:
     return app._engine_refusal(engine.id, [repo], port_too=False)
 
 
+def _password_problem(engine) -> str | None:
+    """Why this engine may not start at login: nobody is there to watch an open server."""
+    if engine.direct:
+        return None
+    return (
+        f"Start at login needs a password, and {engine.name} has no password support. "
+        "Choose OptiQ and set the default model again."
+    )
+
+
 def set_default(app, repo: str, engine: str = "mlx", anthropic: bool = True) -> None:
     """Remember the model to serve at login. The server settings saved for it apply."""
     refused = app.engine_runtime.Refused
@@ -99,6 +109,9 @@ def set_default(app, repo: str, engine: str = "mlx", anthropic: bool = True) -> 
         raise refused(why)
     previous = read_default(app)
     autostart = bool(previous and previous["autostart"])
+    if autostart and _password_problem(app.engines.get(engine)):
+        disable(app)
+        autostart = False
     if autostart:
         _prepare_key(app, engine)
     _save(
@@ -127,11 +140,9 @@ def _stored_key(app, engine) -> str:
     return key
 
 
-def _prepare_key(app, engine_id: str) -> str | None:
-    """The key for login starts, made once. None for an engine without key support."""
+def _prepare_key(app, engine_id: str) -> str:
+    """The key for login starts, made once. For engines with key support only."""
     engine = app.engines.get(engine_id)
-    if not engine.direct:
-        return None
     if not os.path.lexists(key_file(app)):
         app.engine_runtime.write_key(key_file(app), engine.new_key())
     return _stored_key(app, engine)
@@ -151,21 +162,13 @@ def client_key(app, engine_id: str, repo: str) -> str | None:
         return None
 
 
-@contextlib.contextmanager
-def _with_key(engine, key: str | None):
-    """Hand ``key`` to the app's direct launch, which asks the engine for a new one."""
-    if key is None:
-        yield
-        return
-    own = vars(engine).get("new_key")
-    engine.new_key = lambda: key
-    try:
-        yield
-    finally:
-        if own is None:
-            del engine.new_key
-        else:
-            engine.new_key = own
+def _key_in_use(app) -> bool:
+    """Whether the running server has the stored key. The key itself never leaves here."""
+    engine = app._running_engine()
+    if not app.STATE.server_pid or not engine.direct or key_file(app).is_symlink():
+        return False
+    stored = engine.read_key(key_file(app))
+    return bool(stored) and engine.read_key(app._key_file()) == stored
 
 
 # --------------------------------------------------------------------------- #
@@ -231,6 +234,8 @@ def enable(app, resources: Path | None = None) -> None:
     record = read_default(app)
     if record is None:
         raise refused("Choose a default model first.")
+    if why := _password_problem(app.engines.get(record["engine"]) or app.engines.MLX):
+        raise refused(why)
     launcher = bundle_executable(app, resources)
     if why := _engine_problem(app, record["engine"], record["repo"]):
         raise refused(why)
@@ -286,9 +291,10 @@ def status(app, resources: Path | None = None) -> dict:
         problem = "The default model record cannot be read. Choose the default model again."
     elif enabled and item != "ok":
         problem = "Auto-start is on, but its login item is not right. Switch it off and on again."
-    password = note = key_path = None
+    password = note = key_path = refusal = None
     if record and (engine := app.engines.get(record["engine"])):
         password = engine.direct
+        refusal = _password_problem(engine)
         if password:
             key_path = str(key_file(app))
             note = (
@@ -309,6 +315,8 @@ def status(app, resources: Path | None = None) -> dict:
         "password": password,
         "password_note": note,
         "key_file": key_path,
+        "key_in_use": _key_in_use(app),
+        "autostart_refusal": refusal,
         "last": _read_json(app, result_file(app)),
         "problem": problem,
     }
@@ -400,17 +408,20 @@ def _start(app, record: dict, seconds: float, sleep) -> tuple[str, str | None]:
     if why := _engine_problem(app, record["engine"], repo):
         return "skipped", why
     engine = app.engines.get(record["engine"])
-    port = engine.port if engine.direct else app.SERVER_PORT
-    if why := _memory_problem(app, repo) or app.engine_runtime.port_problem(port):
+    if why := (
+        _password_problem(engine)
+        or _memory_problem(app, repo)
+        or app.engine_runtime.port_problem(engine.port)
+    ):
         return "skipped", why
     try:
-        key = _prepare_key(app, engine.id)
+        _prepare_key(app, engine.id)
     except app.engine_runtime.Refused as exc:
         return "skipped", str(exc)
     if app.instance_is_running():  # opened during the checks: the window decides
         return window
     _report(app, record, "starting", None)
-    with app.STATE.server_lock, _with_key(engine, key):
+    with app.STATE.server_lock:  # the launch asks ``client_key`` for the stored key
         proc = app._launch_server(repo, True, None, engine.id, record["anthropic"])
     if proc is None:
         why = app.STATE.server_last_error or app.STATE.server_down_notice

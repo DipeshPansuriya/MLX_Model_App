@@ -74,6 +74,21 @@ too when its port owner cannot be read for 600 seconds.
   route), DeepSeek Harness (you choose the context window) and other OpenAI clients. The
   app writes no other app's settings file and shows no key.
 
+## Start at login (2.0.14)
+
+- OptiQ only. The built-in MLX server has no password support, so it cannot be started
+  at login. Off by default.
+- API Server page: choose the model and OptiQ, press "Set as default model", then turn
+  the switch on. The server starts at the next login, without a window, once.
+- Files: `~/.mlx_studio/default-model.json`, `autostart.key` and `login-start.json`
+  (all private), and `~/Library/LaunchAgents/com.mlxstudio.app.login-server.plist`.
+- One key is kept for the default model while the switch is on, also for starts from
+  the app. It goes to the server by environment, never in arguments, the plist or logs.
+  `/health` and `/v1/optiq/context` answer without it.
+- Clients send `Authorization: Bearer <key>` or `x-api-key`: Claude Code through
+  `ANTHROPIC_AUTH_TOKEN`, DeepSeek Harness in the provider's API key field.
+- Turn the switch off before deleting the app or going back to an older version.
+
 ## Client settings
 
 | Client | Base URL | Model | Key |

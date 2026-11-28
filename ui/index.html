@@ -368,6 +368,7 @@
           <p class="hint" id="connectState" role="status"></p>
           <p class="field-error" id="mlxOpenWarn" hidden>Open server: no password. Any program on this Mac, and a website open in your browser, can send it requests. Press Stop when you are not using it.</p>
           <p class="hint">Copy these into your tool yourself: MLX Studio does not change any other app's settings files. The key is never shown here; use Copy key.</p>
+          <p class="hint" id="keyUse"></p>
           <p class="hint">Claude Code</p>
           <pre class="code" id="claudeSettings"></pre>
           <button class="btn btn-mini" type="button" id="copyClaude">Copy Claude Code settings</button>
@@ -382,6 +383,22 @@
           <p class="hint">Other OpenAI-compatible clients</p>
           <pre class="code" id="openaiSettings"></pre>
           <button class="btn btn-mini" type="button" id="copyOpenai">Copy OpenAI settings</button>
+        </div>
+        <div class="panel" id="autostartPanel">
+          <div class="panel-head">
+            <span>Start at login</span>
+            <button class="btn btn-mini" type="button" id="setDefault" aria-describedby="defaultState">Set as default model</button>
+          </div>
+          <p class="hint" id="defaultState" role="status"></p>
+          <label class="check">
+            <input type="checkbox" role="switch" id="autostartSwitch" aria-describedby="autostartWhy autostartRule" aria-disabled="true" />
+            <span>Start the default model's server when I log in</span>
+          </label>
+          <p class="hint" id="autostartWhy" role="status"></p>
+          <p class="hint" id="autostartRule">Start at login needs a password, so it works with OptiQ only: the built-in MLX server has no password support.</p>
+          <p class="hint" id="autostartNote"></p>
+          <p class="hint" id="autostartLast"></p>
+          <p class="field-error" id="autostartProblem" role="alert"></p>
         </div>
         <div class="panel">
           <div class="panel-head">

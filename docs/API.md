@@ -91,7 +91,10 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/server/notice/clear` | - (unreleased: clears `down_notice` and `apply_notice`) | - |
 | `/api/server/settings` | unreleased: `values` or `reset`; optional `repo` ([6b](#6b-user-settings)) | 400, 500 |
 | `/api/ui/settings` | 2.0.14: `theme` ([6b](#6b-user-settings)) | 400, 500 |
-| `/api/server/test` | 2.0.14: `{}`; sends the ready server a short reply and one tool call (never run) and returns `reply` and `tool`, each with `status` (`pass`, `warn`, `fail`, `skipped`) and `detail`; no key in the answer | 409 not ready, load test or test running, or another program on the port |
+| `/api/server/test` | 2.0.14: `{}`; sends the ready server a short reply and one tool call (never run) and returns `reply` and `tool`, each with `status` (`pass`, `warn`, `fail`, `skipped`) and `detail`; no key in the answer A test longer than 20 s answers 202 `{"running": true}`; ask `GET /api/server/test` until it returns the result. | 409 not ready, load test or test running, or another program on the port; GET: 404 before any test |
+| `/api/autostart/default` | 2.0.14: `repo`, `engine`, `anthropic`; saves the default model (an MLX default switches start at login off) and returns the status | 400 types; 409 cannot be served |
+| `/api/autostart` | 2.0.14: `enabled` (true or false); writes or removes the login item, starts nothing now. `GET /api/autostart` returns the status; no key in any answer | 400; 409 no default, MLX (no password), not the installed app |
+| `/api/autostart/clear` | 2.0.14: `{}`; switches off and forgets the default model | 409, 500 |
 | `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running |
 | `/api/logs/clear` | - | 500 |
 | other paths | - | 404 |
