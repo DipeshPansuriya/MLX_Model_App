@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -659,3 +660,51 @@ class TestBudget:
     def test_the_warning_names_the_open_server(self):
         assert "password" in projects.SERVER_WARNING
         assert "website" in projects.SERVER_WARNING
+
+
+class TestPreviewAndSendAgree:
+    """Row 1087 finding 2: the preview must count with the factor the send uses."""
+
+    @pytest.mark.parametrize("factor", [0.75, 1.0, 2.5, 4.0])
+    def test_the_preview_counts_with_the_given_factor(self, store, project, root, factor):
+        put(root, "notes.txt", "word " * 2000)
+        shown = store.preview(project["id"], ["notes.txt"], factor=factor)
+        files = store.snapshot(project["id"], picks(store, project, "notes.txt"))
+        message = {"role": "user", "content": "q", "files": files}
+        if shown["tokens"] > shown["limit"]:
+            with pytest.raises(projects.OverBudget):
+                projects.plan_request([message], factor=factor)
+        else:
+            sent = projects.plan_request([message], factor=factor)
+            assert sent["meter"]["files"] == shown["tokens"]
+
+    def test_a_calibrated_factor_shows_the_files_over_their_share(self, store, project, root):
+        put(root, "notes.txt", "word " * 2000)
+        assert store.preview(project["id"], ["notes.txt"])["tokens"] <= projects.FILES_TOKENS
+        shown = store.preview(project["id"], ["notes.txt"], factor=4.0)
+        assert shown["tokens"] > shown["limit"]
+
+
+class TestAFileThatGoesAwayDuringTheListing:
+    """Row 1087 finding 1: one vanished file must not fail or cut short the listing."""
+
+    @pytest.mark.parametrize("folder", ["", "src/"])
+    def test_only_that_entry_is_left_out(self, store, project, root, monkeypatch, folder):
+        for name in ("b.txt", "gone.txt", "z.txt"):
+            put(root, folder + name)
+        real = os.scandir
+
+        @contextlib.contextmanager
+        def scan_then_remove(handle):
+            with real(handle) as entries:
+                found = list(entries)
+            if any(entry.name == "gone.txt" for entry in found):  # listed, now gone
+                (root / f"{folder}gone.txt").unlink()
+            yield iter(found)
+
+        monkeypatch.setattr(projects.os, "scandir", scan_then_remove)
+        result = store.list_files(project["id"])
+        paths = {entry["path"] for entry in result["files"]}
+        assert {f"{folder}b.txt", f"{folder}z.txt", "README.md", "src/app.py"} <= paths
+        assert f"{folder}gone.txt" not in paths
+        assert result["excluded"] == 1

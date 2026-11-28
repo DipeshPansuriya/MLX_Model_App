@@ -255,15 +255,21 @@ def _list_files(top: int) -> dict:
                 path = "/".join(below)
                 if len(path) > PATH_MAX_CHARS or not _plain(path) or is_secret(entry.name):
                     excluded += 1
-                elif entry.is_dir(follow_symlinks=False):
+                    continue
+                try:  # one entry that went away or cannot be read costs only itself
+                    is_folder = entry.is_dir(follow_symlinks=False)
+                    size = None
+                    if not is_folder and entry.is_file(follow_symlinks=False):
+                        size = entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    excluded += 1
+                    continue
+                if is_folder:
                     if len(parts) < DEPTH_MAX:
                         waiting.append(below)
                     else:
                         truncated = True
-                elif (
-                    entry.is_file(follow_symlinks=False)
-                    and (size := entry.stat(follow_symlinks=False).st_size) <= FILE_MAX_BYTES
-                ):
+                elif size is not None and size <= FILE_MAX_BYTES:
                     if len(files) >= LIST_MAX_FILES:
                         return {"files": files, "excluded": excluded, "truncated": True}
                     files.append({"path": path, "size": size})
@@ -423,14 +429,18 @@ class ProjectStore:
             raise Invalid("a file is chosen twice")
         return files
 
-    def preview(self, project_id: str, paths: list[str]) -> dict:
-        """Exactly what adding these files would send, for the user to look at."""
+    def preview(self, project_id: str, paths: list[str], factor: float = 1.0) -> dict:
+        """Exactly what adding these files would send, for the user to look at.
+
+        ``factor`` must be the one the send will give ``plan_request``, or files
+        shown within the limit can be refused.
+        """
         if not isinstance(paths, list):
             raise Invalid("choose files as a list")
         files = self._read(project_id, paths)
         return {
             "files": [{**f, "warnings": key_warnings(f["text"])} for f in files],
-            "tokens": estimate_tokens(file_block(files)),
+            "tokens": estimate_tokens(file_block(files), factor),
             "limit": FILES_TOKENS,
             "notice": SERVER_WARNING,
         }

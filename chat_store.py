@@ -183,6 +183,7 @@ def _settings(value) -> dict:
 def _stats(value) -> dict:
     if not isinstance(value, dict) or len(value) > STATS_MAX:
         raise Invalid("message figures are not usable")
+    clean = {}
     for key, figure in value.items():
         usable = (
             figure is None
@@ -192,7 +193,10 @@ def _stats(value) -> dict:
         )
         if not (isinstance(key, str) and len(key) <= STAT_TEXT_MAX and usable):
             raise Invalid("message figures are not usable")
-    return dict(value)
+        clean[_text(key, "a message figure")] = (
+            _text(figure, "a message figure") if isinstance(figure, str) else figure
+        )
+    return clean
 
 
 def _file(value) -> dict:

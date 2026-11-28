@@ -494,3 +494,21 @@ class TestDelete:
         chat = store.create([ASK])
         os.utime(path_of(folder, chat), (0, 0))
         assert [c["id"] for c in store.list()["chats"]] == [chat["id"]]
+
+
+class TestSurrogatesInFigures:
+    """Row 1087 finding 3: half a character pair in a figure must not break the save."""
+
+    @staticmethod
+    def turn() -> dict:
+        figures = {"mo\ud800de": "fa\udc00st", "n": 2}
+        return {"role": "assistant", "content": "ok", "stats": figures}
+
+    def test_create_saves_it(self, store):
+        chat = store.create([self.turn()])
+        assert store.get(chat["id"])["messages"][0]["stats"] == {"mo?de": "fa?st", "n": 2}
+
+    def test_append_saves_it(self, store):
+        chat = store.create()
+        saved = store.append(chat["id"], chat["updated"], [self.turn()])
+        assert store.get(chat["id"]) == saved
