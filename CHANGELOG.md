@@ -5,15 +5,16 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-2.0.14, not released. The version number and update manifest are still 2.0.13.
+2.0.14, not released. `APP_VERSION` is 2.0.14; the update manifest still points at 2.0.13.
 
 ### Read before you use it
 
 - The built-in MLX server still has **no password**, and there is still no memory limit.
 - Not in 2.0.14: a built-in agent harness (a model cannot write files or run commands),
   image input or generation, and video.
-- A reopened saved chat sends its attached file text again without showing the file
-  names. With **Save history** on, that text is stored as plain text in the chat file.
+- A message with attached files names them, and their saved text goes to the model
+  again with later messages. With **Save history** on, that text is stored as plain text
+  in the chat file.
 - With a model alias on the MLX engine, clients must send the alias or `default_model`.
   Other cached models are no longer found by name; a folder path in a request can still
   load other files.
@@ -27,8 +28,9 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Chat history. Chats are saved on this Mac by default (**Save history**) as plain text in
   `~/.mlx_studio/chats`, in files only your user account can read. Open, search, rename and
   delete them under **History**; a **Temporary** chat is never saved. Nothing expires, and
-  Delete is not a secure erase. Turns sent while saving is off are not added to a chat that
-  is already saved, also after saving is turned on again.
+  Delete is not a secure erase. A later save also adds the turns on screen that the saved
+  chat lacks (sent while saving was off, or after a failed save); those turns have no
+  thinking text or figures and carry the later time.
 - Chat settings for one chat: system prompt, max reply tokens, temperature and top p.
   An empty number uses the Configuration value.
 - Appearance on Setup: System, Light or Dark.
@@ -54,6 +56,23 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The start-at-login switch looks disabled when it cannot be used, an older status can no
   longer overwrite a change, and a running Test Connection survives a missed check or a
   page reload.
+- With attached files, the capped reply limit applies to that request only and is no
+  longer saved as the chat's setting.
+- Turns made while saving was off or after a failed save are no longer lost from a saved
+  chat, and the save warning stays until a save succeeds.
+- When a save answer is lost, the next send from the same screen continues the saved chat
+  instead of failing or making a second copy: the same question replaces the unseen turn,
+  another question keeps both. The app remembers this for its last 32 screens, until it
+  restarts. **Save** on chat settings can still say "changed in another window" until the
+  next send.
+- Messages with attached files name them, and opening such a chat announces that their
+  text is sent again.
+- **Remove attached files** and the two new Setup buttons keep keyboard focus.
+- The MLX server cannot be started while packages install, and **Install or update all**
+  does not run if a server start got in first.
+- The Install or update all list is refreshed when an engine changes, and asked again
+  after a failed request.
+- A process check that times out no longer drops the record of a running API server.
 
 ### Changed
 - The saved Hugging Face token is sent only to download a gated or private model, not for

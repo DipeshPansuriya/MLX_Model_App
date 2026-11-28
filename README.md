@@ -190,11 +190,16 @@ In the 2.0.14 source (unreleased).
 - **History** lists saved chats: open, search titles and messages, rename, delete
   one or all. Nothing expires. Delete removes the file; it is not a secure erase.
 - **Temporary** saves nothing. Switching it starts a new chat.
-- With **Save history** off, nothing new is saved. Turns sent while it is off are
-  **not added** to a chat that is already saved, also after you turn it on again. A
-  chat that was never saved is saved whole by the next reply after you turn it on,
-  unless it is Temporary.
-- A reply that fails or holds only thinking is not saved. If a save fails, Chat says so.
+- With **Save history** off, nothing new is saved. After you turn it on again, the
+  next save also adds the turns on screen that the saved chat lacks; those have no
+  thinking text or figures and carry the later time. A chat that was never saved is
+  saved whole by the next reply, unless it is Temporary.
+- A reply that fails or holds only thinking is not saved. If a save fails, Chat says so
+  until a save succeeds, and the next save adds the missing turns.
+- If the answer to a save is lost, the next send from the same screen continues the
+  saved chat: the same question replaces the unseen turn, another question keeps both.
+  The app remembers this for its last 32 screens, until it restarts. Saving chat
+  settings can say "changed in another window" until that next send.
 - **Chat settings** apply to one chat: system prompt, max reply tokens (64 to
   131072), temperature (0 to 2) and top p (0.05 to 1). An empty number uses the
   **Configuration** value. For a saved chat, **Save** stores them with it.
@@ -211,12 +216,13 @@ Open **Project files** on the Chat page, press **Choose folder…**, tick files,
   never listed or read. The list cannot be complete, and the key warnings in the
   preview do not catch every secret: **read the preview**.
 - Limits: 256 KB per file, 50 files and about 8,192 estimated tokens of file text per
-  message. With files attached, the reply limit is capped and the oldest turns may be
-  left out. A file changed after the preview is refused.
+  message. With files attached, the reply limit of that request is capped (your saved
+  setting is unchanged) and the oldest turns may be left out. A file changed after the
+  preview is refused.
 - With **Save history** on, the attached file text is saved in the chat file as plain
   text until you delete the chat.
-- A reopened saved chat **sends its old file text again** with a follow-up, and the
-  page does not show which files those are.
+- Each message with attached files names them. Their saved text **goes to the model
+  again** with later messages, also in a reopened chat, which announces this.
 - With the MLX engine the server has no password: see
   [protections removed](#protections-removed-in-2013).
 
@@ -388,7 +394,7 @@ In **2.0.14**:
 
 | Topic | State in the 2.0.14 source |
 |---|---|
-| Release | Not released. The version number and the update manifest are still 2.0.13 |
+| Release | Not released. `APP_VERSION` is 2.0.14; the update manifest still points at 2.0.13 |
 | Agent harness | None built in: a model cannot write files or run commands. Project files are read only. The DeepSeek Harness settings are only text you copy into that separate tool |
 | Image | No image input or image generation |
 | Video | None |

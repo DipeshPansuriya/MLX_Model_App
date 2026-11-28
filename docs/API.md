@@ -102,11 +102,11 @@ Port 8080: images must be `data:` URLs. `http(s)` and other URLs get 400.
 | `/api/autostart/default` | 2.0.14: `repo`, `engine`, `anthropic`; saves the default model (an MLX default switches start at login off) and returns the status | 400 types; 409 cannot be served |
 | `/api/autostart` | 2.0.14: `enabled` (true or false); writes or removes the login item, starts nothing now. `GET /api/autostart` returns the status; no key in any answer | 400; 409 no default, MLX (no password), not the installed app |
 | `/api/autostart/clear` | 2.0.14: `{}`; switches off and forgets the default model | 409, 500 |
-| `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running |
-| `/api/install/all` | 2.0.14: `{}`; runs the plan | 409 server or load test running, another install, or nothing to do |
+| `/api/install` | `kind` (`reinstall` forces reinstall; other values upgrade) | 409 when an install is already running. 2.0.14: until it ends, `/api/server/start` answers 409 |
+| `/api/install/all` | 2.0.14: `{}`; runs the plan | 409 server running or starting, load test running, another install, or nothing to do |
 | `/api/update/check` | 2.0.14: `{}`; one anonymous request to GitHub's latest release; downloads nothing | result is in the answer |
 | `/api/models/alias` | 2.0.14: `repo`, `alias` (`""` or `null` removes). `/api/state` gives `models[].alias` and `server.alias` | refused names ([rules](ENGINES.md#model-alias-2014)) |
-| `/api/chat` (2.0.14) | adds optional `system`, `settings` {`max_tokens`, `temperature`, `top_p`}, `save` {`id`: null} or {`id`, `updated`} (absent: not saved), and `attachment` on a user message. Only `user` and `assistant` roles | 400, 404, 409 |
+| `/api/chat` (2.0.14) | adds optional `system`, `settings` {`max_tokens`, `temperature`, `top_p`}, `save` {`id`: null} or {`id`, `updated`} (absent: not saved), and `attachment` on a user message. Optional `screen` (string, 1 to 64 characters) names the chat on screen, so a send after a lost save answer continues that save. Only `user` and `assistant` roles | 400, 404, 409 |
 | `/api/chats/search`, `/rename`, `/settings`, `/delete`, `/delete-all` (all under `/api/chats`) | 2.0.14: `query`; `id`, `title`; `id`, `updated`, `system`, `settings`; `id`, `confirm`: true; `confirm`: true | 400, 404, 409 |
 | `/api/projects/choose`, `/remove`, `/preview`, `/attach` (all under `/api/projects`) | 2.0.14: `{}` (the app's own folder dialog chooses); `id`; `id`, `paths`; `id`, `picks` [{`path`, `sha256`}] | 400, 404, 409, 500 |
 | `/api/logs/clear` | - | 500 |
@@ -280,7 +280,7 @@ Same session token, Host and Origin checks as the other routes.
 | `GET /api/engines` | `?repo=` | each engine with `eligible` and `reason` |
 | `POST /api/engines/install`, `/api/engines/remove` | `{"engine": "optiq"}` | `{"ok": true}`; 400 other engines, 409 while in use |
 | `POST /api/server/key` | `{}` | `{"key": ...}` only while our keyed server alone holds the port; else 409 |
-| `POST /api/server/start` | also `"engine"` (absent: `mlx`) and `"anthropic"` (OptiQ, default on) | 400 unknown engine, 409 refused with the reason |
+| `POST /api/server/start` | also `"engine"` (absent: `mlx`) and `"anthropic"` (OptiQ, default on) | 400 unknown engine, 409 refused with the reason; 2.0.14: also while packages install, for both engines (an engine's own install does not refuse MLX) |
 | `POST /api/loadtest/start` | also `"engine"` | as above |
 
 `GET /api/state` adds `server.engine`, `server.anthropic`, `server.engines`,
